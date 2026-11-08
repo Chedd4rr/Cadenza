@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cadenza mini player</title>
+<link rel="stylesheet" href="mini.css">
+</head>
+<!-- The menu-bar mini player. Cadenza loads this page in the small panel under its menu-bar icon and calls
+     mini.apply({...}) with what's playing. Open it in a browser for a demo: mini.html?theme=heist&style=mp3 -->
+<body data-theme="tide" data-style="theme">
+
+<!-- One layout for the five themes; each theme restyles it in mini.css. -->
+<main id="dev" class="dev">
+  <div class="deco" aria-hidden="true"></div>
+  <header class="top">
+    <span class="tag np" id="np">NOW PLAYING</span>
+    <span class="tag src">CADENZA</span>
+    <button class="like" id="like" title="Like"><svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg></button>
+  </header>
+  <div class="cover-wrap">
+    <div class="cover" id="cover" title="Double-click to open Cadenza">
+      <div class="tape" aria-hidden="true"></div>
+      <div class="art"><img id="art" alt=""></div>
+      <div class="cap" id="cap"></div>
+    </div>
+    <div class="badge" id="badge">PLAYING</div>
+  </div>
+  <div class="meta">
+    <div class="title" id="title">Nothing playing</div>
+    <div class="artist"><span id="artist"></span></div>
+    <div class="album" id="album"></div>
+  </div>
+  <div class="prog">
+    <span class="t" id="t0">0:00</span>
+    <div class="bar"><i id="fill"></i></div>
+    <span class="t" id="t1">0:00</span>
+  </div>
+  <div class="ctrl">
+    <button id="prev" title="Previous"><svg viewBox="0 0 24 24"><path d="M19 5v14l-10-7zM5 5h2.6v14H5z"/></svg></button>
+    <button id="play" class="play" title="Play / pause"><svg viewBox="0 0 24 24"><path id="playIcon" d="M7 4.5v15l12.5-7.5z"/></svg></button>
+    <button id="next" title="Next"><svg viewBox="0 0 24 24"><path d="M5 5v14l10-7zM16.4 5H19v14h-2.6z"/></svg></button>
+  </div>
+  <div class="vol">
+    <span class="t">VOL</span>
+    <div class="bar" id="volbar"><i id="volfill"></i></div>
+    <span class="t" id="volnum">70</span>
+  </div>
+</main>
+
+<!-- MP3 mode: a 2000s pocket MP3 player with a small colour screen and a round five-way pad. -->
+<main id="stick" class="mp3">
+  <div class="body">
+    <div class="edge" aria-hidden="true"><i class="jack"></i><i class="hold"><b></b></i></div>
+    <div class="bezel">
+      <div class="lcd" id="lcd">
+        <div class="row status">
+          <span id="lcdState">STOP</span>
+          <span class="right"><span id="lcdHeart" class="heart">♥</span><span class="batt"><i></i><i></i><i></i></span></span>
+        </div>
+        <div class="row mid">
+          <canvas id="dither" width="28" height="28"></canvas>
+          <div class="side">
+            <div class="lcd-artist" id="lcdArtist"></div>
+            <div class="eq" id="eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <div class="marquee"><span id="lcdTitle">NO DISC</span></div>
+        <div class="row pbar"><div class="pix"><i id="lcdFill"></i></div></div>
+        <div class="row times"><span id="lcdT0">0:00</span><span id="lcdVol">VOL 70</span><span id="lcdT1">0:00</span></div>
+      </div>
+    </div>
+    <div class="brand"><b>CADENZA</b><span>MP3 · 4GB</span><i class="led" id="led" aria-hidden="true"></i></div>
+    <div class="pad">
+      <button class="vplus" id="vup" title="Volume up"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></button>
+      <button class="prev" id="sprev" title="Previous"><svg viewBox="0 0 24 24"><path d="M19 6v12l-8-6zM11 6v12l-8-6z"/></svg></button>
+      <button class="mid" id="splay" title="Play / pause"><svg viewBox="0 0 24 24"><path d="M3 6v12l8-6zM14 6h2.5v12H14zM19 6h2.5v12H19z"/></svg></button>
+      <button class="next" id="snext" title="Next"><svg viewBox="0 0 24 24"><path d="M5 6v12l8-6zM13 6v12l8-6z"/></svg></button>
+      <button class="vminus" id="vdown" title="Volume down"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+    </div>
+    <div class="keys">
+      <button id="smenu" title="Open Cadenza">MENU</button>
+      <button id="slike" title="Like">♥</button>
+    </div>
+    <i class="eyelet" aria-hidden="true"></i>
+  </div>
+</main>
+
+<script src="mini.js"></script>
+</body>
+</html>

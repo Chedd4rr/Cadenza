@@ -1,0 +1,50 @@
+/* TIDE · BLUE. The base styles.css already uses this palette, so this file only adds the background. */
+
+#bg .base {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(120% 90% at 85% 10%, #1a73ff 0%, transparent 55%),
+    radial-gradient(90% 80% at 10% 100%, #0a2fb0 0%, transparent 60%),
+    linear-gradient(160deg, #041144 0%, #0828a0 45%, #0a3ad0 70%, #05165e 100%);
+}
+#bg .water { position: absolute; left: -8%; top: -8%; width: 116%; height: 116%; display: block; will-change: transform; animation: p3drift 24s ease-in-out infinite alternate; }
+@keyframes p3drift { to { transform: translate3d(5%, 3%, 0); } }
+#bg .slab { position: absolute; }
+#bg .slab.a { left: -20vw; top: 62vh; width: 140vw; height: 60vh; background: linear-gradient(180deg, rgba(2,8,40,.85), rgba(2,8,40,.98)); transform: rotate(-14deg); box-shadow: 0 -.5vh 0 var(--cyan), 0 -1.4vh 0 rgba(63,224,255,.25); }
+#bg .slab.b { left: 52vw; top: -30vh; width: 9vw; height: 160vh; background: linear-gradient(180deg, rgba(191,243,255,0), rgba(191,243,255,.16), rgba(191,243,255,0)); transform: rotate(24deg); }
+#bg .slab.c { left: 62vw; top: -30vh; width: 1.2vw; height: 160vh; background: rgba(191,243,255,.2); transform: rotate(24deg); }
+#bg .ghost { position: absolute; right: -4vw; bottom: -6vh; font-family: var(--display); font-style: normal; font-size: 34vh; line-height: .8; color: transparent; -webkit-text-stroke: 2px rgba(191,243,255,.09); transform: rotate(-14deg) skewX(var(--skew)); white-space: nowrap; }
+#bg .bubble { position: absolute; bottom: -4vh; border-radius: 50%; border: 1px solid rgba(191,243,255,.45); background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.5), rgba(255,255,255,0) 60%); animation: p3rise linear infinite; will-change: transform, opacity; }
+@keyframes p3rise { from { transform: translate3d(0,0,0); opacity: 0; } 10% { opacity: .8; } to { transform: translate3d(3vw,-115vh,0); opacity: 0; } }
+
+/* ---------- Transition ripple + tap ripple (driven by theme.js) ---------- */
+#sweep .th { transform: none; position: absolute; translate: 0 0; scale: 0; }
+#sweep .p3-ripple { left: 50%; top: 50%; width: 60vmin; height: 60vmin; margin: -30vmin 0 0 -30vmin; }
+#sweep .p3-tap { width: 22vh; height: 22vh; margin: -11vh 0 0 -11vh; }
+
+/* ---------- Little details ---------- */
+/* the selected home item and library card bob gently, like they're floating */
+.item.active .label { animation: p3bob 1.8s ease-in-out infinite alternate; }
+@keyframes p3bob { from { translate: 0 0; } to { translate: 0 -.35vh; } }
+.card.active .in { animation: p3bob2 2.2s ease-in-out infinite alternate; }
+@keyframes p3bob2 { from { translate: 0 0; } to { translate: 0 -.8vh; } }
+/* a light glint travels along the highlight bar */
+#hl .face { overflow: hidden; }
+#hl .face::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 26%;
+  background: linear-gradient(90deg, rgba(63,224,255,0), rgba(63,224,255,.4), rgba(63,224,255,0));
+  animation: p3glint 2.8s cubic-bezier(.5,0,.5,1) infinite; will-change: transform; }
+@keyframes p3glint { from { transform: translateX(-120%); } 60%, to { transform: translateX(480%); } }
+/* the cursor drifts like it's on a current */
+#hl .cursor { animation: p3wave 1.2s ease-in-out infinite alternate; }
+@keyframes p3wave { 0% { transform: translate(0, 0); } 50% { transform: translate(.5vw, -.25vh); } 100% { transform: translate(.2vw, .3vh); } }
+/* the polaroid floats while music plays */
+body.playing[data-view="home"] .art-wrap { animation: p3float 3.6s ease-in-out infinite alternate; }
+@keyframes p3float { from { translate: 0 0; rotate: 0deg; } to { translate: 0 -1.1vh; rotate: -1deg; } }
+/* panels slide with a little skew and settle */
+#toast { transition: transform .34s cubic-bezier(.3,1.5,.5,1); }
+#drawer { transform: translateX(110%) skewX(-8deg); transition: transform .36s cubic-bezier(.3,1.3,.5,1); }
+#drawer.on { transform: none; }
+#now { transition: transform .42s cubic-bezier(.3,1.3,.5,1), opacity .25s; }
+body:not([data-view="home"]) #now { transform: translate3d(1.5vw, -6vh, 0) scale(.5) skewX(-3deg); }
+.trk.active .in, .opt.active .in, .dev.active .in { transition-timing-function: cubic-bezier(.3,1.5,.5,1); }
+

@@ -1,0 +1,344 @@
+/* The menu-bar mini player: one layout (#dev) restyled by each theme, plus MP3 mode (#stick).
+   The panel is transparent; everything you see, shadows included, is drawn here. */
+
+@font-face { font-family: "Silkscreen"; src: url(fonts/silkscreen-latin-400-normal.woff2) format("woff2"); unicode-range: U+0000-00FF, U+2010-2027, U+2190-21FF, U+25A0-25FF, U+2665; }
+@font-face { font-family: "Silkscreen"; src: url(fonts/silkscreen-latin-ext-400-normal.woff2) format("woff2"); unicode-range: U+0100-024F, U+1E00-1EFF; }
+@font-face { font-family: "Anton"; src: url(../fonts/anton-400.woff2) format("woff2"); }
+@font-face { font-family: "Permanent Marker"; src: url(../fonts/permanent-marker.woff2) format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; src: url(../fonts/barlow-condensed-700-italic.woff2) format("woff2"); font-weight: 700; font-style: italic; }
+@font-face { font-family: "Barlow Condensed"; src: url(../fonts/barlow-condensed-900-italic.woff2) format("woff2"); font-weight: 900; font-style: italic; }
+@font-face { font-family: "Archivo Black"; src: url(../themes/heist/fonts/archivo-black.woff2) format("woff2"); }
+@font-face { font-family: "Abril Fatface"; src: url(../themes/heist/fonts/abril-fatface.woff2) format("woff2"); }
+@font-face { font-family: "Bebas Neue"; src: url(../themes/heist/fonts/bebas-neue.woff2) format("woff2"); }
+@font-face { font-family: "Chakra Petch"; src: url(../themes/neon/fonts/chakra-petch-latin-700-normal.woff2) format("woff2"); font-weight: 700; }
+@font-face { font-family: "Rajdhani"; src: url(../themes/neon/fonts/rajdhani-latin-600-normal.woff2) format("woff2"); font-weight: 600; }
+@font-face { font-family: "Share Tech Mono"; src: url(../themes/neon/fonts/share-tech-mono-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "Inter"; src: url(../themes/min/fonts/inter-latin-500-normal.woff2) format("woff2"); font-weight: 500; }
+@font-face { font-family: "Inter"; src: url(../themes/min/fonts/inter-latin-700-normal.woff2) format("woff2"); font-weight: 600 900; }
+@font-face { font-family: "Unbounded"; src: url(../themes/rogue/fonts/unbounded-latin-900-normal.woff2) format("woff2"); font-weight: 900; }
+@font-face { font-family: "Space Grotesk"; src: url(../themes/rogue/fonts/space-grotesk-latin-500-normal.woff2) format("woff2"); font-weight: 500; }
+@font-face { font-family: "JetBrains Mono"; src: url(../themes/rogue/fonts/jetbrains-mono-latin-700-normal.woff2) format("woff2"); font-weight: 700; }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: transparent; overflow: hidden; }
+/* Little room on top (the panel hangs right under the menu bar), more below for the shadow. */
+body {
+  padding: 4px 18px 24px; width: max-content;
+  -webkit-user-select: none; user-select: none; cursor: default;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; display: grid; place-items: center; }
+button svg { width: 100%; height: 100%; fill: currentColor; }
+img { -webkit-user-drag: none; }
+
+body[data-style="theme"] #stick, body[data-style="mp3"] #dev { display: none; }
+
+/* ============================================================
+   Shared layout (#dev)
+   ============================================================ */
+.dev { position: relative; width: 292px; padding: 16px 18px 18px; overflow: hidden; isolation: isolate; }
+.deco { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.top { display: flex; align-items: center; gap: 6px; height: 24px; }
+.tag { display: inline-block; white-space: nowrap; }
+.like { width: 24px; height: 24px; margin-left: auto; }
+.like svg { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linejoin: round; }
+.liked .like svg { fill: currentColor; }
+.cover-wrap { position: relative; margin: 14px auto 0; width: 220px; }
+.cover { position: relative; }
+.art { position: relative; width: 100%; aspect-ratio: 1; overflow: hidden; background: rgb(255 255 255 / .08); }
+.art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.noart .art img { display: none; }
+.noart .art::before { content: "♪"; position: absolute; inset: 0; display: grid; place-items: center; font: 400 96px/1 -apple-system, sans-serif; opacity: .35; }
+.noart[data-theme="tide"] .art::before, .noart[data-theme="heist"] .art::before { color: #1d1d2a; opacity: .25; }
+.noart[data-theme="min"] .art::before { color: #6e7178; }
+.tape, .cap { display: none; }
+.badge { position: absolute; white-space: nowrap; }
+.meta { margin-top: 14px; min-width: 0; }
+.title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.artist, .album { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prog, .vol { display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; gap: 8px; }
+.prog { margin-top: 12px; }
+.vol { margin-top: 8px; }
+.prog .t:last-child, .vol .t:last-child { text-align: right; }
+.bar { position: relative; height: 6px; overflow: hidden; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; }
+#volbar { cursor: pointer; }
+.ctrl { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 12px; }
+.ctrl button { width: 44px; height: 38px; padding: 10px; }
+.ctrl .play { width: 64px; height: 46px; padding: 11px; }
+
+/* ============================================================
+   TIDE · BLUE: deep water, a slanted light band, a taped polaroid, skewed buttons.
+   ============================================================ */
+[data-theme="tide"] .dev {
+  --navy: #06185a; --deep: #030c2e; --cyan: #3fe0ff; --ice: #bff3ff; --white: #f4fdff;
+  color: var(--white); font: italic 700 13px "Barlow Condensed", sans-serif;
+  background: linear-gradient(165deg, #0a35c8 0%, #0828a8 44%, #051c78 44.2%, #04154f 100%);
+  box-shadow: 0 0 0 1px rgb(63 224 255 / .5), 0 14px 30px rgb(0 0 0 / .45);
+}
+[data-theme="tide"] .deco {
+  background:
+    radial-gradient(ellipse 60% 22% at 30% 12%, rgb(255 255 255 / .10), transparent 70%),
+    radial-gradient(ellipse 50% 18% at 75% 30%, rgb(120 200 255 / .10), transparent 70%),
+    linear-gradient(165deg, transparent 43.6%, var(--cyan) 43.7% 44.2%, transparent 44.3%);
+}
+[data-theme="tide"] .tag { font-weight: 900; font-size: 12px; letter-spacing: .14em; padding: 2px 8px; transform: skewX(-12deg); }
+[data-theme="tide"] .np { background: var(--deep); color: var(--cyan); }
+[data-theme="tide"] .src { background: var(--cyan); color: var(--navy); }
+[data-theme="tide"] .like { color: var(--white); }
+[data-theme="tide"] .cover-wrap { width: 206px; transform: rotate(2deg); }
+[data-theme="tide"] .cover { background: #f6f1e7; padding: 10px 10px 34px; box-shadow: 9px 9px 0 var(--cyan), -10px 6px 0 -2px #0b1d63; }
+[data-theme="tide"] .tape { display: block; position: absolute; top: -9px; left: 50%; width: 74px; height: 20px; transform: translateX(-50%) rotate(-3deg); background: rgb(190 230 255 / .55); z-index: 2; }
+[data-theme="tide"] .cap { display: block; position: absolute; left: 12px; right: 12px; bottom: 7px; font: 400 15px "Permanent Marker", cursive; color: #1d1d2a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: capitalize; }
+[data-theme="tide"] .badge { left: -16px; top: 58%; background: var(--white); color: var(--navy); font-weight: 900; font-size: 15px; letter-spacing: .1em; padding: 2px 12px 2px 26px; transform: skewX(-12deg); box-shadow: 5px 5px 0 var(--cyan); }
+[data-theme="tide"] .badge::before { content: ""; position: absolute; left: 9px; top: 50%; border: 6px solid transparent; border-left: 10px solid var(--navy); border-right: 0; transform: translateY(-50%); }
+[data-theme="tide"] .meta { text-align: right; margin-top: 18px; }
+[data-theme="tide"] .title { font: 400 27px/1 "Anton", sans-serif; text-transform: uppercase; text-shadow: 3px 3px 0 var(--deep); }
+[data-theme="tide"] .artist { font-weight: 900; font-size: 17px; color: var(--cyan); margin-top: 4px; }
+[data-theme="tide"] .album { font-size: 12.5px; color: rgb(191 243 255 / .75); }
+[data-theme="tide"] .ctrl button { background: var(--deep); color: var(--white); transform: skewX(-12deg); box-shadow: inset 0 0 0 1.5px rgb(63 224 255 / .45); }
+[data-theme="tide"] .ctrl button svg { transform: skewX(12deg); }
+[data-theme="tide"] .ctrl .play { background: var(--white); color: var(--navy); box-shadow: 5px 5px 0 var(--cyan); }
+[data-theme="tide"] .bar { background: rgb(3 12 46 / .8); transform: skewX(-20deg); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .12); }
+[data-theme="tide"] #fill { background: var(--white); }
+[data-theme="tide"] #volfill { background: var(--cyan); }
+[data-theme="tide"] .t { font-size: 13px; color: var(--ice); }
+
+/* ============================================================
+   HEIST · RED: red rays and black, a jagged cut-out behind the photo, ransom-note letters.
+   ============================================================ */
+[data-theme="heist"] .dev {
+  --red: #e5001c; --blood: #a10012; --black: #0b0b0b; --white: #fbfbf7;
+  color: var(--white); font: 400 15px "Bebas Neue", sans-serif; letter-spacing: .03em;
+  background: var(--black);
+  box-shadow: 0 0 0 2px var(--white), 6px 6px 0 2px var(--red), 0 18px 30px rgb(0 0 0 / .5);
+}
+[data-theme="heist"] .deco {
+  background:
+    radial-gradient(rgb(0 0 0 / .22) 1px, transparent 1.4px) 0 0 / 5px 5px,
+    repeating-conic-gradient(from 0deg at 15% 0%, var(--red) 0 6deg, var(--blood) 6deg 12deg);
+  clip-path: polygon(0 0, 100% 0, 100% 22%, 64% 34%, 76% 46%, 38% 60%, 0 54%);
+}
+[data-theme="heist"] .np { font-size: 17px; line-height: 1; }
+[data-theme="heist"] .np b { display: inline-block; padding: 1px 2px; margin-right: 1px; font-weight: 400; }
+[data-theme="heist"] .np .fa { font-family: "Archivo Black", sans-serif; font-size: 14px; }
+[data-theme="heist"] .np .fb { font-family: "Abril Fatface", serif; font-size: 16px; }
+[data-theme="heist"] .np .fc { font-family: "Bebas Neue", sans-serif; font-size: 18px; }
+[data-theme="heist"] .np .lw { background: var(--white); color: var(--black); }
+[data-theme="heist"] .np .lk { background: var(--black); color: var(--white); box-shadow: 0 0 0 1px var(--white); }
+[data-theme="heist"] .np .lr { background: var(--red); color: var(--white); }
+[data-theme="heist"] .src { font-family: "Archivo Black", sans-serif; font-size: 10px; letter-spacing: .1em; background: var(--white); color: var(--black); padding: 2px 6px; transform: rotate(-3deg); margin-left: 4px; }
+[data-theme="heist"] .like { color: var(--white); }
+[data-theme="heist"] .cover-wrap { width: 200px; margin-top: 20px; transform: rotate(-3deg); }
+[data-theme="heist"] .cover-wrap::before { content: ""; position: absolute; inset: -18px -20px -16px -16px; background: var(--red); clip-path: polygon(0 18%, 8% 0, 22% 14%, 40% 2%, 58% 12%, 80% 0, 100% 16%, 94% 46%, 100% 82%, 76% 100%, 54% 86%, 32% 100%, 12% 86%, 0 100%, 5% 56%); z-index: -1; }
+[data-theme="heist"] .cover { background: var(--white); padding: 9px 9px 32px; box-shadow: 6px 6px 0 var(--black); }
+[data-theme="heist"] .tape { display: block; position: absolute; top: -8px; left: 56%; width: 64px; height: 18px; background: var(--red); transform: rotate(4deg); z-index: 2; opacity: .92; }
+[data-theme="heist"] .cap { display: block; position: absolute; left: 11px; right: 11px; bottom: 6px; font: 400 15px "Permanent Marker", cursive; color: var(--black); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+[data-theme="heist"] .badge { left: -24px; top: 52%; font: 400 17px "Archivo Black", sans-serif; letter-spacing: .08em; color: var(--black); background: var(--white); padding: 8px 22px 6px; clip-path: polygon(0 50%, 12% 18%, 10% 0, 30% 16%, 52% 4%, 70% 18%, 92% 6%, 88% 34%, 100% 50%, 88% 66%, 92% 94%, 70% 82%, 52% 96%, 30% 84%, 10% 100%, 12% 82%); transform: rotate(-10deg); }
+[data-theme="heist"] .meta { text-align: right; margin-top: 20px; }
+[data-theme="heist"] .title { font: 400 28px/1 "Anton", sans-serif; text-transform: uppercase; letter-spacing: 0; }
+[data-theme="heist"] .artist { margin-top: 6px; }
+[data-theme="heist"] .artist span { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; font: 400 16px "Archivo Black", sans-serif; background: var(--red); color: var(--white); padding: 2px 10px; box-shadow: 0 0 0 2px var(--white); transform: rotate(-1.5deg); }
+[data-theme="heist"] .album { font-size: 14px; margin-top: 4px; color: rgb(251 251 247 / .8); }
+[data-theme="heist"] .ctrl { gap: 4px; background: var(--black); box-shadow: 0 0 0 2px var(--white); padding: 4px; width: max-content; margin-left: auto; margin-right: auto; transform: rotate(-1deg); }
+[data-theme="heist"] .ctrl button { color: var(--white); }
+[data-theme="heist"] .ctrl .play { background: var(--red); box-shadow: 0 0 0 2px var(--white); transform: rotate(2deg) scale(1.04); }
+[data-theme="heist"] .bar { background: var(--white); height: 7px; transform: skewX(-24deg); }
+[data-theme="heist"] #fill, [data-theme="heist"] #volfill { background: var(--red); }
+[data-theme="heist"] .t { font-size: 16px; }
+
+/* ============================================================
+   NEON · CITY: HUD frame, clipped corners, scanlines, chromatic title, segmented meters.
+   ============================================================ */
+[data-theme="neon"] .dev {
+  --yellow: #fcee0a; --red: #ff003c; --teal: #5ef6ff; --ink: #050608;
+  color: var(--teal); font: 600 14px "Rajdhani", sans-serif;
+  background: linear-gradient(180deg, #0b0d14, var(--ink));
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+}
+[data-theme="neon"] .deco {
+  background:
+    repeating-linear-gradient(0deg, rgb(255 255 255 / .035) 0 1px, transparent 1px 3px),
+    linear-gradient(rgb(255 0 60 / .12) 1px, transparent 1px) 0 100% / 100% 18px,
+    linear-gradient(90deg, rgb(255 0 60 / .10) 1px, transparent 1px) 0 0 / 18px 100%;
+  -webkit-mask: linear-gradient(transparent 55%, #000);
+}
+[data-theme="neon"] .dev::before, [data-theme="neon"] .dev::after { content: ""; position: absolute; width: 14px; height: 14px; border: 1.5px solid var(--yellow); pointer-events: none; }
+[data-theme="neon"] .dev::before { left: 6px; top: 6px; border-right: 0; border-bottom: 0; }
+[data-theme="neon"] .dev::after { right: 6px; bottom: 6px; border-left: 0; border-top: 0; }
+[data-theme="neon"] .tag { font: 400 11px "Share Tech Mono", monospace; letter-spacing: .3em; padding: 3px 8px; }
+[data-theme="neon"] .np { background: var(--red); color: var(--ink); font-weight: 700; clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%); }
+[data-theme="neon"] .src { color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal); }
+[data-theme="neon"] .like { color: var(--red); }
+[data-theme="neon"] .cover-wrap { width: 232px; margin-top: 12px; }
+[data-theme="neon"] .cover { padding: 5px; box-shadow: inset 0 0 0 1px rgb(94 246 255 / .45); }
+[data-theme="neon"] .art { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%); }
+[data-theme="neon"] .art::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgb(0 0 0 / .18) 0 1px, transparent 1px 3px); }
+[data-theme="neon"] .badge { position: static; margin-top: 6px; font: 400 11px "Share Tech Mono", monospace; letter-spacing: .3em; color: var(--yellow); }
+[data-theme="neon"] .badge::before { content: "▶ "; }
+[data-theme="neon"] .meta { margin-top: 6px; }
+[data-theme="neon"] .title { font: 700 23px/1.02 "Chakra Petch", sans-serif; text-transform: uppercase; color: var(--yellow); text-shadow: 2px 0 0 rgb(255 0 60 / .75), -2px 0 0 rgb(94 246 255 / .55); }
+[data-theme="neon"] .artist { font: 700 15px "Chakra Petch", sans-serif; text-transform: uppercase; letter-spacing: .06em; color: var(--teal); margin-top: 5px; }
+[data-theme="neon"] .album { font: 400 11px "Share Tech Mono", monospace; color: var(--red); margin-top: 2px; }
+[data-theme="neon"] .album::before { content: "ALBUM // "; color: rgb(94 246 255 / .55); }
+[data-theme="neon"] .bar { height: 9px; background: repeating-linear-gradient(90deg, rgb(255 255 255 / .1) 0 2px, transparent 2px 4px); box-shadow: inset 0 0 0 1px rgb(94 246 255 / .3); }
+[data-theme="neon"] #fill { background: repeating-linear-gradient(90deg, var(--yellow) 0 2px, transparent 2px 4px); }
+[data-theme="neon"] #volfill { background: repeating-linear-gradient(90deg, var(--red) 0 2px, transparent 2px 4px); }
+[data-theme="neon"] .t { font: 400 12px "Share Tech Mono", monospace; color: var(--teal); }
+[data-theme="neon"] .ctrl { gap: 8px; }
+[data-theme="neon"] .ctrl button { color: var(--teal); background: rgb(94 246 255 / .06); box-shadow: inset 0 0 0 1px rgb(94 246 255 / .35); }
+[data-theme="neon"] .ctrl .play { background: var(--yellow); color: var(--ink); box-shadow: none; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)); }
+
+/* ============================================================
+   STUDIO · MINIMAL: a calm white card.
+   ============================================================ */
+[data-theme="min"] .dev {
+  --ink: #16171a; --muted: #6e7178; --line: #e3e3df; --accent: #3a5cff; --accent-soft: #eef1ff;
+  color: var(--ink); font: 500 13px "Inter", -apple-system, sans-serif;
+  background: #fff; border-radius: 18px;
+  box-shadow: 0 0 0 1px rgb(20 20 30 / .06), 0 2px 6px rgb(20 20 30 / .06), 0 18px 40px rgb(20 20 30 / .16);
+}
+[data-theme="min"] .np { font-size: 12px; color: var(--muted); font-weight: 500; }
+[data-theme="min"] .src { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 99px; }
+[data-theme="min"] .like { color: var(--muted); width: 22px; height: 22px; }
+[data-theme="min"] .liked .like, [data-theme="min"].liked .like { color: var(--accent); }
+[data-theme="min"] .cover-wrap { width: 256px; margin-top: 10px; }
+[data-theme="min"] .art { border-radius: 12px; background: #e6e6e2; box-shadow: 0 8px 24px rgb(20 20 30 / .14); }
+[data-theme="min"] .badge { display: none; }
+[data-theme="min"] .meta { margin-top: 16px; }
+[data-theme="min"] .title { font-size: 18px; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; }
+[data-theme="min"] .artist { font-size: 14px; color: var(--accent); margin-top: 3px; font-weight: 500; }
+[data-theme="min"] .album { display: none; }
+[data-theme="min"] .bar { height: 4px; border-radius: 4px; background: var(--line); }
+[data-theme="min"] #fill { background: var(--ink); border-radius: 4px; }
+[data-theme="min"] #volfill { background: var(--accent); border-radius: 4px; }
+[data-theme="min"] .t { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+[data-theme="min"] .ctrl { gap: 18px; margin-top: 10px; }
+[data-theme="min"] .ctrl button { width: 36px; height: 36px; padding: 8px; color: var(--ink); }
+[data-theme="min"] .ctrl .play { width: 52px; height: 52px; padding: 15px; border-radius: 50%; background: var(--ink); color: #fff; }
+[data-theme="min"] .vol { margin-top: 10px; }
+
+/* ============================================================
+   OGMI.OS · SIGNAL (the hidden one): a terminal readout in lime on black.
+   ============================================================ */
+[data-theme="rogue"] .dev {
+  --lime: #d2ff1f; --pink: #ff2d6f; --bone: #e6e8df; --dim: #7d8073;
+  color: var(--bone); font: 700 11px "JetBrains Mono", monospace;
+  background: #000; box-shadow: 0 0 0 1px rgb(210 255 31 / .35), 0 16px 34px rgb(0 0 0 / .6);
+}
+[data-theme="rogue"] .deco { background: linear-gradient(90deg, rgb(210 255 31 / .07) 1px, transparent 1px) 0 0 / 23px 23px, linear-gradient(rgb(210 255 31 / .07) 1px, transparent 1px) 0 0 / 23px 23px; }
+[data-theme="rogue"] .np { color: var(--lime); letter-spacing: .12em; }
+[data-theme="rogue"] .np::before { content: "● "; color: var(--pink); }
+.playing[data-theme="rogue"] .np::before { animation: rogue-blink 1s steps(2, end) infinite; }
+@keyframes rogue-blink { 50% { opacity: 0; } }
+[data-theme="rogue"] .src { color: var(--dim); }
+[data-theme="rogue"] .src::before { content: "// "; }
+[data-theme="rogue"] .like { color: var(--pink); }
+[data-theme="rogue"] .cover-wrap { width: 228px; }
+[data-theme="rogue"] .cover { padding: 6px; box-shadow: inset 0 0 0 1px rgb(210 255 31 / .4); }
+[data-theme="rogue"] .cover::before, [data-theme="rogue"] .cover::after { content: ""; position: absolute; width: 10px; height: 10px; border: 2px solid var(--lime); z-index: 2; }
+[data-theme="rogue"] .cover::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; }
+[data-theme="rogue"] .cover::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+[data-theme="rogue"] .art { filter: contrast(1.1) saturate(.85); }
+[data-theme="rogue"] .badge { right: 12px; bottom: 12px; background: var(--lime); color: #000; padding: 2px 6px; letter-spacing: .12em; }
+[data-theme="rogue"] .title { font: 900 20px/1.08 "Unbounded", sans-serif; text-transform: uppercase; color: var(--lime); }
+[data-theme="rogue"] .artist { font: 500 14px "Space Grotesk", sans-serif; color: var(--bone); margin-top: 5px; }
+[data-theme="rogue"] .album { color: var(--dim); margin-top: 2px; }
+[data-theme="rogue"] .album::before { content: "> "; color: var(--lime); }
+[data-theme="rogue"] .bar { height: 10px; background: repeating-linear-gradient(90deg, rgb(230 232 223 / .18) 0 6px, transparent 6px 8px); }
+[data-theme="rogue"] #fill { background: repeating-linear-gradient(90deg, var(--lime) 0 6px, transparent 6px 8px); }
+[data-theme="rogue"] #volfill { background: repeating-linear-gradient(90deg, var(--pink) 0 6px, transparent 6px 8px); }
+[data-theme="rogue"] .t { color: var(--dim); }
+[data-theme="rogue"] .ctrl { gap: 6px; }
+[data-theme="rogue"] .ctrl button { color: var(--lime); box-shadow: inset 0 0 0 1px rgb(210 255 31 / .4); width: 52px; }
+[data-theme="rogue"] .ctrl .play { background: var(--lime); color: #000; width: 72px; }
+
+/* ============================================================
+   MP3 mode: a 2000s pocket player. The shell takes the theme's colour; the screen is a small colour
+   display with a pixel font, the way those players drew their menus.
+   ============================================================ */
+.mp3 { position: relative; width: 176px; padding-top: 6px; font-family: "Silkscreen", monospace; }
+.mp3 {
+  --shell: #2456e6; --shell-hi: #7aa0ff; --shell-lo: #10308f; --print: rgb(255 255 255 / .85); --trim: #c9d3e6;
+  --scr: #0b1630; --scr-hi: #17305e; --fg: #eaf4ff; --dim: #8fb0d8; --acc: #3fe0ff;
+  --key: #e9eef7; --key-ink: #1d2433; --led: #3cff7a;
+}
+[data-theme="heist"] .mp3 { --shell: #d4001a; --shell-hi: #ff6a76; --shell-lo: #6e000e; --trim: #2a2a2a; --scr: #140606; --scr-hi: #3a0b10; --fg: #fbfbf7; --dim: #c8a0a4; --acc: #ff2a3c; --key: #161616; --key-ink: #f5f5f0; --led: #ff2a2a; }
+[data-theme="neon"] .mp3 { --shell: #1a1d26; --shell-hi: #454b5c; --shell-lo: #07080b; --print: #fcee0a; --trim: #fcee0a; --scr: #050608; --scr-hi: #121722; --fg: #fcee0a; --dim: #5ef6ff; --acc: #ff003c; --key: #262a35; --key-ink: #fcee0a; --led: #5ef6ff; }
+[data-theme="min"] .mp3 { --shell: #f1f1ed; --shell-hi: #ffffff; --shell-lo: #c4c4be; --print: #6e7178; --trim: #d6d6d0; --scr: #f6f7f9; --scr-hi: #ffffff; --fg: #16171a; --dim: #6e7178; --acc: #3a5cff; --key: #ffffff; --key-ink: #16171a; --led: #3a5cff; }
+[data-theme="rogue"] .mp3 { --shell: #0c0d09; --shell-hi: #30342a; --shell-lo: #000; --print: #d2ff1f; --trim: #d2ff1f; --scr: #000; --scr-hi: #0d1008; --fg: #d2ff1f; --dim: #8b9a52; --acc: #ff2d6f; --key: #1a1c15; --key-ink: #d2ff1f; --led: #ff2d6f; }
+
+/* The case: a rounded slab with a soft shine, a headphone jack and hold switch on the top edge, and an
+   eyelet for a wrist strap. */
+.mp3 .body { position: relative; border-radius: 24px; padding: 16px 14px 20px;
+  background:
+    linear-gradient(160deg, rgb(255 255 255 / .38), transparent 32%),
+    linear-gradient(90deg, var(--shell-lo), var(--shell) 14%, var(--shell) 86%, var(--shell-lo));
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / .18), inset 0 2px 1px rgb(255 255 255 / .35), inset 0 -4px 8px rgb(0 0 0 / .28),
+    0 16px 28px rgb(0 0 0 / .45), 0 2px 4px rgb(0 0 0 / .3);
+}
+.edge { position: absolute; left: 0; right: 0; top: -5px; height: 6px; pointer-events: none; }
+.edge .jack { position: absolute; left: 30px; top: 1px; width: 12px; height: 5px; border-radius: 3px 3px 0 0; background: #15181d; box-shadow: inset 0 1px 1px rgb(255 255 255 / .2); }
+.edge .hold { position: absolute; right: 28px; top: 0; width: 26px; height: 6px; border-radius: 3px 3px 0 0; background: var(--shell-lo); }
+.edge .hold b { position: absolute; left: 3px; top: 1px; width: 10px; height: 4px; border-radius: 2px; background: var(--trim); }
+.eyelet { position: absolute; right: 14px; bottom: 9px; width: 9px; height: 9px; border-radius: 50%; background: rgb(0 0 0 / .5); box-shadow: inset 0 1px 2px rgb(0 0 0 / .6), 0 1px 0 rgb(255 255 255 / .25); }
+
+/* The screen sits behind black glass with a thin bezel. */
+.bezel { padding: 6px; border-radius: 10px; background: #0d0f13; box-shadow: 0 0 0 1px rgb(255 255 255 / .12), inset 0 1px 2px rgb(255 255 255 / .1); position: relative; }
+.bezel::after { content: ""; position: absolute; inset: 6px; border-radius: 4px; pointer-events: none;
+  background: linear-gradient(155deg, rgb(255 255 255 / .16), transparent 38%); }
+.lcd { position: relative; height: 122px; padding: 0 0 5px; border-radius: 4px; color: var(--fg); overflow: hidden;
+  background: linear-gradient(180deg, var(--scr-hi), var(--scr) 70%);
+  font-size: 8px; line-height: 8px; -webkit-font-smoothing: none;
+}
+.lcd .row { display: flex; align-items: center; justify-content: space-between; padding: 0 6px; }
+.lcd .status { height: 13px; background: var(--acc); color: var(--scr); }
+[data-theme="neon"] .lcd .status, [data-theme="rogue"] .lcd .status { color: #000; }
+.lcd .right { display: flex; align-items: center; gap: 4px; }
+.lcd .heart { opacity: .25; }
+.liked .lcd .heart { opacity: 1; }
+.batt { display: flex; gap: 1px; padding: 1px; border: 1px solid currentColor; position: relative; height: 8px; }
+.batt::after { content: ""; position: absolute; right: -3px; top: 2px; width: 2px; height: 2px; background: currentColor; }
+.batt i { width: 3px; background: currentColor; }
+.lcd .mid { align-items: flex-start; justify-content: flex-start; gap: 7px; margin-top: 6px; height: 56px; }
+#dither { width: 56px; height: 56px; image-rendering: pixelated; flex: none; border-radius: 2px; box-shadow: 0 0 0 1px rgb(255 255 255 / .15), 0 2px 4px rgb(0 0 0 / .4); background: var(--scr-hi); }
+.lcd .side { flex: 1; min-width: 0; height: 56px; display: flex; flex-direction: column; justify-content: space-between; }
+.lcd-artist { white-space: normal; max-height: 24px; overflow: hidden; text-transform: uppercase; color: var(--dim); line-height: 8px; }
+.eq { display: flex; align-items: flex-end; gap: 2px; height: 22px; }
+.eq i { width: 5px; height: 3px; background: repeating-linear-gradient(0deg, var(--acc) 0 2px, transparent 2px 3px); }
+.marquee { position: relative; height: 16px; margin: 6px 6px 0; overflow: hidden; white-space: nowrap; font-size: 16px; line-height: 16px; }
+.marquee span { display: inline-block; text-transform: uppercase; }
+.marquee span.run { animation: lcd-scroll var(--dur, 10s) steps(160, end) infinite; }
+.marquee span.run::after { content: attr(data-text); padding-left: 24px; }
+@keyframes lcd-scroll { 0%, 8% { transform: translateX(0); } 100% { transform: translateX(var(--dist)); } }
+.lcd .pbar { margin-top: 6px; }
+.pix { position: relative; width: 100%; height: 6px; border-radius: 3px; background: rgb(127 127 127 / .28); overflow: hidden; }
+.pix i { display: block; height: 100%; width: 0; background: var(--acc); }
+.lcd .times { margin-top: 5px; color: var(--dim); }
+.empty .lcd .eq { opacity: .3; }
+
+.brand { position: relative; display: flex; justify-content: center; align-items: baseline; gap: 6px; color: var(--print); margin: 12px 0 4px; font-size: 8px; letter-spacing: .06em; }
+.brand b { font-weight: 400; font-size: 8px; letter-spacing: .3em; }
+.brand span { opacity: .7; }
+.led { position: absolute; right: 4px; top: 1px; width: 5px; height: 5px; border-radius: 50%; background: rgb(0 0 0 / .35); }
+.playing .led { background: var(--led); box-shadow: 0 0 5px var(--led); }
+.playing.blink .led { opacity: .35; }
+
+/* The round five-way pad: volume up/down, previous/next, and play in the middle. */
+.pad { position: relative; width: 116px; height: 116px; margin: 8px auto 0; border-radius: 50%; background: var(--key);
+  background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--key) 100%, #fff 18%), var(--key) 62%, color-mix(in srgb, var(--key) 82%, #000 18%));
+  box-shadow: 0 0 0 3px var(--trim), 0 0 0 4px rgb(0 0 0 / .25), 0 3px 4px rgb(0 0 0 / .3), inset 0 1px 0 rgb(255 255 255 / .55); }
+.pad button { position: absolute; width: 32px; height: 32px; padding: 9px; color: var(--key-ink); border-radius: 50%; }
+.pad .vplus svg path, .pad .vminus svg path { fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: square; }
+.pad .vplus { top: 4px; left: 42px; } .pad .vminus { bottom: 4px; left: 42px; }
+.pad .prev { left: 4px; top: 42px; } .pad .next { right: 4px; top: 42px; }
+.pad .mid { left: 32px; top: 32px; width: 52px; height: 52px; padding: 15px; color: var(--print);
+  background: radial-gradient(circle at 50% 30%, var(--shell-hi), var(--shell) 72%);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / .25), 0 2px 0 rgb(0 0 0 / .3), inset 0 1px 0 rgb(255 255 255 / .35); }
+[data-theme="min"] .pad .mid { color: #16171a; }
+.pad button:active { transform: translateY(1px); filter: brightness(.92); }
+.keys { display: flex; justify-content: space-between; margin: 14px 10px 0; }
+.keys button { height: 18px; min-width: 42px; padding: 0 9px; border-radius: 9px; font-size: 8px; color: var(--key-ink); background: var(--key);
+  box-shadow: 0 2px 0 rgb(0 0 0 / .3), inset 0 1px 0 rgb(255 255 255 / .5); }
+.keys button:active { transform: translateY(1px); box-shadow: 0 1px 0 rgb(0 0 0 / .3); }
+.liked .keys #slike { color: #ff2d55; }

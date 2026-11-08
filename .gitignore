@@ -1,0 +1,25 @@
+# Swift Package Manager / Xcode
+.build/
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+DerivedData/
+
+# App bundles and release zips made by build.sh / release.sh
+build/
+*.zip
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+
+# Never commit keys or logins (these normally live outside the repo anyway)
+secrets.json
+credentials.json
+*.p12
+*.pem
+.env
