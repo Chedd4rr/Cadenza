@@ -2,10 +2,11 @@ import AppKit
 import CryptoKit
 import Foundation
 
-/// Last.fm scrobbling. You add your own API key and shared secret (free: last.fm/api/account/create),
-/// then log in once in the browser; Cadenza keeps the session key.
-/// Rules (Last.fm's own): a song counts once it has played for half its length or 4 minutes,
-/// whichever comes first, and only songs longer than 30 seconds count.
+/// Last.fm, for reading your listening history: Stats, play counts, the DJ, Friends and autoplay's
+/// "similar songs". Cadenza doesn't scrobble itself: link Spotify to Last.fm (Last.fm settings →
+/// Applications → Spotify scrobbling) and Spotify scrobbles everything, including what Cadenza plays.
+/// You add your own API key and shared secret (free: last.fm/api/account/create), then log in once in the
+/// browser so Cadenza knows your username.
 final class LastFM {
     private let d = UserDefaults.standard
     private let endpoint = URL(string: "https://ws.audioscrobbler.com/2.0/")!
@@ -14,93 +15,12 @@ final class LastFM {
     var secret: String { Settings.shared.lastfmSecret }
     var sessionKey: String { Settings.shared.lastfmSession }
     var user: String { d.string(forKey: "lastfmUser") ?? "" }
-    var enabled: Bool { d.bool(forKey: "lastfm") }
     var onChange: (() -> Void)?
     private(set) var lastError = ""
-    private(set) var scrobbledCount = 0
-
-    // The song playing now
-    private var key = ""
-    private var title = "", artist = "", album = ""
-    private var duration = 0.0          // ms
-    private var startedAt = 0           // unix seconds
-    private var played = 0.0            // seconds actually listened
-    private var playing = false
-    private var lastTick = Date()
-    private var counted = false
-    private var timer: Timer?
     private var loginToken = ""
 
-    /// The 5-second check only runs while a song is playing.
-    private func keepTime(_ on: Bool) {
-        if on, timer == nil {
-            lastTick = Date()
-            timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.tick() }
-        } else if !on {
-            timer?.invalidate(); timer = nil
-        }
-    }
-
     func status() -> [String: Any] {
-        ["enabled": enabled, "user": user, "hasKeys": !apiKey.isEmpty && !secret.isEmpty,
-         "loggedIn": !sessionKey.isEmpty, "error": lastError, "scrobbled": scrobbledCount]
-    }
-
-    /// Called with each now-playing update from the UI.
-    func update(_ np: [String: Any]) {
-        tick()
-        defer { keepTime(playing && enabled) }
-        let t = (np["title"] as? String) ?? "", a = (np["artist"] as? String) ?? ""
-        guard !t.isEmpty else { playing = false; keepTime(false); return }
-        let isPlaying = (np["playing"] as? Bool) ?? false
-        let pos = (np["position"] as? Double) ?? Double((np["position"] as? Int) ?? 0)
-        let k = ((np["uri"] as? String) ?? "") + "|" + t + "|" + a
-        let replay = k == key && counted && pos < 5000 && played > 30      // same song started over (repeat one)
-        if k != key || replay {
-            key = k; title = t; artist = a
-            album = (np["album"] as? String) ?? ""
-            duration = (np["duration"] as? Double) ?? Double((np["duration"] as? Int) ?? 0)
-            startedAt = Int(Date().timeIntervalSince1970 - pos / 1000)
-            played = 0; counted = false
-            playing = isPlaying
-            if isPlaying { nowPlaying() }
-            return
-        }
-        if isPlaying && !playing { nowPlaying() }
-        playing = isPlaying
-    }
-
-    private func tick() {
-        let now = Date()
-        if playing { played += min(10, now.timeIntervalSince(lastTick)) }  // a long gap means the Mac slept
-        lastTick = now
-        guard playing, !counted, !key.isEmpty, duration > 30000 else { return }
-        if played * 1000 >= min(duration / 2, 240000) {
-            counted = true
-            scrobble()
-        }
-    }
-
-    private var ready: Bool { enabled && !apiKey.isEmpty && !secret.isEmpty && !sessionKey.isEmpty }
-
-    private func nowPlaying() {
-        guard ready else { return }
-        var p = ["artist": artist, "track": title, "sk": sessionKey]
-        if !album.isEmpty { p["album"] = album }
-        if duration > 0 { p["duration"] = String(Int(duration / 1000)) }
-        call("track.updateNowPlaying", p) { _ in }
-    }
-
-    private func scrobble() {
-        guard ready else { return }
-        var p = ["artist": artist, "track": title, "timestamp": String(startedAt), "sk": sessionKey]
-        if !album.isEmpty { p["album"] = album }
-        if duration > 0 { p["duration"] = String(Int(duration / 1000)) }
-        call("track.scrobble", p) { [weak self] json in
-            guard let self else { return }
-            if json?["scrobbles"] != nil { self.scrobbledCount += 1; self.lastError = "" }
-            self.onChange?()
-        }
+        ["user": user, "hasKeys": !apiKey.isEmpty && !secret.isEmpty, "loggedIn": !sessionKey.isEmpty, "error": lastError]
     }
 
     // MARK: - Login (browser)
@@ -126,7 +46,6 @@ final class LastFM {
                 if let s = json?["session"] as? [String: Any], let sk = s["key"] as? String {
                     Settings.shared.lastfmSession = sk
                     self.d.set((s["name"] as? String) ?? "", forKey: "lastfmUser")
-                    self.d.set(true, forKey: "lastfm")
                     self.lastError = ""
                     self.onChange?()
                     done(true, self.user)

@@ -18,7 +18,7 @@ final class Settings {
     static let keys = ["theme", "djVoice", "notifications", "menuBar", "miniStyle", "aiTags", "clientId", "manageLibrespot", "librespotPath", "deviceName", "bitrate",
                        "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin",
                        "sfx", "sfxVolume", "normalize", "eqPerDevice", "autoplay", "trueShuffle", "crossfade", "geniusToken",
-                       "discord", "discordAppId", "lastfm", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate"]
+                       "discord", "discordAppId", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate"]
 
     init() {
         d.register(defaults: [
@@ -46,7 +46,6 @@ final class Settings {
             "crossfade": 6,
             "discord": false,
             "discordAppId": "",
-            "lastfm": false,
             "lastfmKey": "",
             "updateRepo": AppInfo.defaultRepo,
             "autoUpdate": true,
@@ -128,7 +127,6 @@ final class Settings {
             "geniusToken": geniusToken.isEmpty ? "" : "set",                                   // never sent back to the page
             "discord": d.bool(forKey: "discord"),
             "discordAppId": d.string(forKey: "discordAppId") ?? "",
-            "lastfm": d.bool(forKey: "lastfm"),
             "lastfmKey": d.string(forKey: "lastfmKey") ?? "",
             "lastfmSecret": Secrets.get("lastfmSecret").isEmpty ? "" : "set",                // never sent back to the page
             "updateRepo": d.string(forKey: "updateRepo") ?? "",

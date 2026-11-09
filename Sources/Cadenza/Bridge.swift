@@ -124,7 +124,6 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             app.floating.update(args)
             app.notifier.update(args)
             app.discord.update(args)
-            app.lastfm.update(args)
             reply(true)
 
         case "discord.status":

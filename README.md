@@ -59,7 +59,7 @@ which it starts and manages for you.
 - Playlist tools: remove duplicates, sort, copy, save the queue as a playlist, and play history.
 - A menu-bar mini player drawn in your theme's style. Also media keys, Control Center and song
   notifications.
-- Discord status, Last.fm scrobbling and automatic updates from GitHub releases.
+- Discord status, Last.fm stats and automatic updates from GitHub releases.
 - AI playlist tags (genre, mood, tempo), made on your Mac with Apple Intelligence (macOS 26+).
 
 ## What you need
@@ -178,10 +178,12 @@ application's name, so call it Cadenza. Copy its Application ID into System → 
 Discord status. The Discord app has to be running.
 
 For Last.fm, create an API account at [last.fm/api/account/create](https://www.last.fm/api/account/create),
-put the API key and shared secret in System → Connections, then choose Log in. Besides scrobbling,
-Cadenza uses your Last.fm history for Stats, play counts, the DJ and Friends. It only reads what
-you've scrobbled, so if you've listened elsewhere, connect Spotify to Last.fm in Last.fm's settings
-(Applications → Spotify scrobbling) so everything ends up there.
+put the API key and shared secret in System → Connections, then choose Log in. Cadenza reads your
+Last.fm history for Stats, play counts, the DJ and Friends.
+
+Cadenza doesn't scrobble by itself. Link Spotify to Last.fm instead (Last.fm settings → Applications →
+Spotify scrobbling): Spotify then scrobbles everything you play, on your phone, in the Spotify app and in
+Cadenza too, since Spotify records what librespot plays like any other device.
 
 ### Your whole Spotify history
 
@@ -203,17 +205,15 @@ Stats then puts everything together, each play counted once:
    phone or the Spotify app show up too. Cadenza saves these and only asks Last.fm for new ones, at
    most every 10 minutes. The first time it fetches everything since the import ends, or your whole
    Last.fm history if you haven't imported anything, which can take a minute or two;
-3. then anything Cadenza played after it ends that Last.fm doesn't have. Cadenza scrobbles its own
-   plays, so a Cadenza play counts as the same play when Last.fm has the same song within 10 minutes.
+3. then anything Cadenza played after it ends that Last.fm doesn't have (say Last.fm was down, or
+   Spotify scrobbling isn't linked). Spotify scrobbles Cadenza's plays, so a Cadenza play counts as the
+   same play when Last.fm has the same song within 10 minutes.
 
 Press **S** on the Stats page to switch between that (ALL), Last.fm's own charts and Cadenza's own log.
 Last.fm doesn't say how long you listened, so a scrobble counts for that song's usual length from your
 other plays (or 3.5 minutes) in "hours listened".
-
-If you link Spotify to Last.fm (Last.fm settings → Applications → Spotify scrobbling), you can turn off
-Cadenza's own scrobbling (System → Connections → Last.fm scrobbling) so Last.fm doesn't get every
-Cadenza play twice. Stats keeps reading Last.fm while you stay logged in. Stats
-copes either way: the same song scrobbled twice within 90 seconds counts once.
+The same song scrobbled twice within 90 seconds (an older Cadenza that still scrobbled, plus Spotify)
+counts once.
 
 - No play is counted twice. A play is matched by the minute it ended and the song's name and artist,
   so importing the same files again, or a newer download that overlaps an older one, only adds what's

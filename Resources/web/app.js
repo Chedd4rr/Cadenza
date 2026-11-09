@@ -2895,8 +2895,8 @@ views.stats = {
   /** Everything in one list, oldest first, each play counted once:
    *  1. your imported Spotify history;
    *  2. then Last.fm scrobbles made after it ends;
-   *  3. then Cadenza's own plays after it ends that Last.fm doesn't already have. Cadenza scrobbles what
-   *     it plays, so most are there: a play counts as the same if it's the same song within 10 minutes.
+   *  3. then Cadenza's own plays after it ends that Last.fm doesn't already have. Spotify scrobbles what
+   *     Cadenza plays, so most are there: a play counts as the same if it's the same song within 10 minutes.
    *  Last.fm doesn't say how long you listened, so a scrobble counts for that song's usual length from
    *  your other plays, or 3.5 minutes. */
   combined() {
@@ -2905,8 +2905,8 @@ views.stats = {
     const usual = new Map();
     for (const e of this.spot) if (e.ms) usual.set(keyOf(e), e.ms);
     for (const e of own) if (e.dur || e.ms) usual.set(keyOf(e), e.dur || e.ms);
-    // If both Cadenza and Spotify's own Last.fm link scrobbled the same play, Last.fm has it twice, a
-    // moment apart: the same song again within 90 seconds is that, not a real second play.
+    // Older versions of Cadenza scrobbled too, so with Spotify's own Last.fm link some plays are on Last.fm
+    // twice, a moment apart: the same song again within 90 seconds is that, not a real second play.
     const near = new Map(), scrobs = [];
     for (const [uts, name, artists, album] of ((LFM.ready() && this.scrob && this.scrob.plays) || [])) {
       if (uts * 1000 <= end) continue;
@@ -5670,7 +5670,7 @@ const ENGINE_TEXT = { running: "RUNNING", starting: "STARTING…", login: "WAITI
 const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", "update"];
 const SYS_GROUPS = {
   sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "djVoiceId", "sfx", "sfxVolume"] },
-  connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfm", "lastfmAccount", "lastfmKey", "lastfmSecret", "geniusToken"] },
+  connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfmAccount", "lastfmKey", "lastfmSecret", "geniusToken"] },
   prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "aiTags", "retag", "updateRepo", "autoUpdate"] },
   engine: { label: "Engine settings", keys: ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId", "activity"] },
 };
@@ -5757,8 +5757,7 @@ views.system = {
       { key: "stage", label: "Stage mode", type: "action", value: "Full screen: big cover, synced lyrics and the visualizer", go: "OPEN  F" },
       { key: "discord", label: "Discord status", type: "toggle", on: !!s.discord, value: Links.discordText() },
       { key: "discordAppId", label: "Discord app ID", type: "text", value: s.discordAppId || "Not set (discord.com/developers → New Application)", raw: s.discordAppId || "", go: "EDIT" },
-      { key: "lastfm", label: "Last.fm scrobbling", type: "toggle", on: !!s.lastfm, value: Links.lastfmText() },
-      { key: "lastfmAccount", label: "Last.fm account", type: "action", value: Links.lastfm && Links.lastfm.loggedIn ? Links.lastfm.user : "Not logged in", go: Links.lastfm && Links.lastfm.loggedIn ? "LOG OUT" : "LOG IN" },
+      { key: "lastfmAccount", label: "Last.fm account", type: "action", value: Links.lastfmText(), go: Links.lastfm && Links.lastfm.loggedIn ? "LOG OUT" : "LOG IN" },
       { key: "lastfmKey", label: "Last.fm API key", type: "text", value: s.lastfmKey || "Not set (last.fm/api/account/create)", raw: s.lastfmKey || "", go: "EDIT" },
       { key: "lastfmSecret", label: "Last.fm secret", type: "text", value: s.lastfmSecret ? "Saved (hidden)" : "Not set", raw: "", go: "EDIT" },
       { key: "geniusToken", label: "Genius token", type: "text", value: s.geniusToken ? "Saved (hidden) · lets Search find songs from a lyric" : "Not set (genius.com/api-clients → Generate Access Token) · for Search → Lyrics", raw: "", go: "EDIT" },
@@ -5872,7 +5871,6 @@ views.system = {
     if (o.key === "eqEngine") {
       return native("eq.engine", { on: !o.on }).catch(() => {}).then(() => EQ.load()).then(() => { toast(o.on ? "SOUND ENGINE OFF: EQ DISABLED" : "SOUND ENGINE ON"); this.refresh(false); });
     }
-    if (o.key === "lastfm" && !o.on && !(Links.lastfm && Links.lastfm.loggedIn)) return this.set("lastfm", true).then(() => Links.lastfmLogin());
     if (o.type === "toggle") return this.set(o.key, !o.on).then(() => (o.key === "discord" ? setTimeout(() => { sendNowPlaying(true); this.refresh(false); }, 1500) : null));
     if (o.key === "commands") return go("commands");
     if (o.key === "stage") return Stage.open();
@@ -6760,8 +6758,8 @@ const Links = {
   lastfmText() {
     const l = this.lastfm;
     if (!l || !l.hasKeys) return "Add your Last.fm API key and secret below first";
-    if (!l.loggedIn) return "Not logged in";
-    return "Scrobbling as " + l.user + (l.scrobbled ? " · " + l.scrobbled + " this session" : "") + (l.error ? " · " + l.error : "");
+    if (!l.loggedIn) return "Not logged in · log in so Stats, play counts, the DJ and Friends can read your scrobbles";
+    return l.user + " · scrobbles come from Spotify (link it in Last.fm's settings)" + (l.error ? " · " + l.error : "");
   },
   updateText() {
     const u = this.update;
@@ -6775,7 +6773,7 @@ const Links = {
     toast("APPROVE CADENZA ON LAST.FM IN YOUR BROWSER");
     let r = null;
     try { r = await native("lastfm.login"); } catch (e) { r = { ok: false, message: "Not available here" }; }
-    if (r && r.ok) toast("LAST.FM: SCROBBLING AS " + upper(r.message || ""));
+    if (r && r.ok) toast("LAST.FM: LOGGED IN AS " + upper(r.message || ""));
     else toast("LAST.FM: " + upper((r && r.message) || "LOGIN FAILED"), true);
     if (current() && current().name === "system") views.system.refresh(false);
   },
@@ -7056,7 +7054,7 @@ const Demo = (() => {
         case "genius.search": return Promise.resolve({ hits: [{ title: "Midnight Tide (Full Moon Mix)", artist: "Kairo Blue" }, { title: "Undertow", artist: "Kairo Blue" }], error: null });
         case "diagnostics": return Promise.resolve("Cadenza 1.2 (demo)\nmacOS (browser)");
         case "discord.status": return Promise.resolve({ enabled: !!settings.discord, status: settings.discordAppId ? "connected" : "needs an application ID", hasId: !!settings.discordAppId });
-        case "lastfm.status": return Promise.resolve({ enabled: !!settings.lastfm, user: "chedd4rr", hasKeys: true, loggedIn: !!settings.lastfm, error: "", scrobbled: 3 });
+        case "lastfm.status": return Promise.resolve({ user: "chedd4rr", hasKeys: true, loggedIn: true, error: "" });
         case "lastfm.get": return new Promise((res) => setTimeout(() => res({ status: 200, body: demoLastfm(args.method, args.params || {}) }), 80));
         case "update.status": return Promise.resolve({ repo: settings.updateRepo || "", current: "1.0", state: "idle", message: "", auto: true });
         case "update.check": return Promise.resolve({ repo: "Chedd4rr/Cadenza", current: "1.0", state: "available", message: "Version 1.1 is ready", auto: true, found: { version: "1.1", notes: "## What's new\n- Stage mode\n- Discord status", page: "", asset: "x" } });
