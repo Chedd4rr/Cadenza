@@ -287,8 +287,10 @@ CHROMA · COVER is a psychedelic comic page printed like a risograph poster, in 
 cover colours. The four strongest colours on the cover become four inks: an abstract poster of
 overprinted shapes, halftone screens and coloured smoke fills the page, with misregistered second
 passes and paper grain, and every song gets its own arrangement that the shapes glide into. On top sit
-ink-outlined panels with echo outlines behind whatever is selected, typewriter caption boxes,
-speech-balloon toasts and a comic burst when you confirm something. When the song changes, every colour fades over to
+ink-outlined panels with echo outlines behind whatever is selected, typewriter caption boxes and
+speech-balloon toasts. Manga touches round it out: speed lines converging on the now-playing cover, a
+screentone strip, a brush stroke among the shapes, a volume-style spine with the artist and album beside
+the cover, and a quick anime-style impact frame when a new song starts on Home. When the song changes, every colour fades over to
 the new cover's. (The menu-bar player keeps the blue look.)
 With System → Preferences → Album covers set to "In the theme's colours", every cover is shown in
 shades of the theme's own dark, accent and light colours; your covers aren't changed, only how

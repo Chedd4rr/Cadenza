@@ -131,8 +131,46 @@
     setTimeout(() => { el.textContent = w; el.dataset.w = w; el.style.opacity = "1"; }, 350);
   }
 
+  // ----- Long song titles -----
+  // This theme's lettering is wide, so a long title is shrunk until it fits in three lines instead of
+  // being cut off (from 4.8vh down to 2.4vh at most). Re-checked whenever the title changes.
+  let titleWatch = null;
+  function fitTitle() {
+    const el = document.getElementById("np-title");
+    if (!el) return;
+    el.style.fontSize = "";
+    let size = 4.8;
+    const tooBig = () => el.scrollHeight > el.clientHeight + 2 || el.scrollWidth > el.clientWidth + 2;
+    while (size > 2.4 && tooBig()) { size -= 0.3; el.style.fontSize = size.toFixed(1) + "vh"; }
+  }
+  function watchTitle(on) {
+    if (titleWatch) { titleWatch.disconnect(); titleWatch = null; }
+    const el = document.getElementById("np-title");
+    if (!el) return;
+    if (!on) { el.style.fontSize = ""; lastTitle = null; const w = document.getElementById("np-artwrap"); if (w) delete w.dataset.spine; return; }
+    lastTitle = el.textContent;
+    spine();
+    titleWatch = new MutationObserver(() => requestAnimationFrame(() => {
+      fitTitle();
+      // A different song (not the first one shown): flash an impact frame, and put its artist on the spine.
+      const t = el.textContent;
+      if (lastTitle !== null && t && t !== lastTitle) impact();
+      lastTitle = t;
+      spine();
+    }));
+    titleWatch.observe(el, { childList: true, characterData: true, subtree: true });
+    requestAnimationFrame(fitTitle);
+  }
+
+  /** The spine beside the now-playing cover, like a manga volume's: the artist, and the album. */
+  function spine() {
+    const w = document.getElementById("np-artwrap");
+    const n = window.cadenzaNow && window.cadenzaNow();
+    if (w) w.dataset.spine = n ? [n.artist, n.album].filter(Boolean).join("  ·  ").toUpperCase() : "";
+  }
+
   // ----- The poster -----
-  const SHAPES = ["disc", "half", "arch", "bar", "wedge", "screen", "ring", "disc", "half"];
+  const SHAPES = ["disc", "half", "arch", "bar", "wedge", "screen", "ring", "brush", "half"];
   /** Lay the shapes out for a song: where each sits, how big, which way it turns and which inks it uses.
    *  Seeded by the song, so a song always gets the same poster. */
   function compose(seedText) {
@@ -151,8 +189,6 @@
       el.style.setProperty("--k", `var(--c${k + 1})`);
       el.style.setProperty("--k2", `var(--c${k2 + 1})`);
       el.style.transform = `translate(${x.toFixed(1)}vw, ${y.toFixed(1)}vh) rotate(${rot}deg) scale(${sc.toFixed(2)})`;
-      el.style.animationDuration = 20 + Math.round(r() * 16) + "s";
-      el.style.animationDelay = -Math.round(r() * 20) + "s";
     });
   }
 
@@ -204,23 +240,58 @@
     }
     return svg;
   }
-  // A jagged comic burst, for confirms.
-  const burst = "data:image/svg+xml," + encodeURIComponent((() => {
-    let d = "";
-    for (let i = 0; i < 28; i++) {
-      const a = (i / 28) * Math.PI * 2, rr = i % 2 ? 30 : 48 + (i % 4 === 0 ? 2 : 0);
-      d += (i ? "L" : "M") + (50 + Math.cos(a) * rr).toFixed(1) + " " + (50 + Math.sin(a) * rr).toFixed(1);
+  // Manga speed lines: thin wedges shooting out from a point, the way manga and anime frame a big moment.
+  // Drawn once as a picture (cheap to show), in the given colour.
+  function speedLines(color, cx, cy, count, inner) {
+    let seed = 11, d = "";
+    const r = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + (r() - 0.5) * 0.05, w = 0.004 + r() * 0.012, r0 = inner * (0.75 + r() * 0.6), r1 = 1600;
+      const p = (ang, rad) => (cx + Math.cos(ang) * rad).toFixed(1) + " " + (cy + Math.sin(ang) * rad).toFixed(1);
+      d += `M${p(a, r0)}L${p(a - w, r1)}L${p(a + w, r1)}Z`;
     }
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="${d}Z" fill="#fff" stroke="#000" stroke-width="3" stroke-linejoin="round"/></svg>`;
+    return "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice"><path d="${d}" fill="${color}"/></svg>`);
+  }
+  // A rough brush stroke (used as a mask, so it can be printed in any of the inks).
+  const brush = "data:image/svg+xml," + encodeURIComponent((() => {
+    let seed = 5;
+    const r = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+    let top = "M10 60", bottom = "";
+    const pts = [];
+    for (let x = 10; x <= 590; x += 20) pts.push([x, 50 + Math.sin(x / 90) * 22 + (r() - 0.5) * 6, 22 + Math.sin(x / 40) * 6 + r() * 10 - (x > 480 ? (x - 480) / 6 : 0)]);
+    pts.forEach(([x, y, t]) => { top += ` L${x} ${(y - t).toFixed(1)}`; });
+    pts.reverse().forEach(([x, y, t]) => { bottom += ` L${x} ${(y + t * 0.8).toFixed(1)}`; });
+    let dry = "";
+    for (let k = 0; k < 9; k++) { const y = 40 + r() * 40, x0 = 380 + r() * 120; dry += `<rect x="${x0.toFixed(0)}" y="${y.toFixed(0)}" width="${(120 + r() * 90).toFixed(0)}" height="${(1 + r() * 3).toFixed(1)}" rx="1"/>`; }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120"><path d="${top}${bottom} Z"/>${dry}</svg>`;
   })());
-  const WORDS = ["ZAP!", "POP!", "BLIP!", "ZING!", "WHOOM!", "KZT!", "VRMM!", "BWAM!"];
+
+  // ----- Song changes: an impact frame -----
+  // When a new song starts on Home, the screen flashes like an anime impact frame for a quarter of a
+  // second: speed lines in ink on paper, then inverted, then gone. Not while hidden or with reduced motion.
+  let lastTitle = null;
+  function impact() {
+    const el = document.querySelector("#sweep .cc-impact");
+    if (!el || document.body.dataset.view !== "home" || document.hidden || document.body.classList.contains("paused") || document.body.classList.contains("reduce")) return;
+    el.animate([
+      { opacity: 0, filter: "none", scale: "1.08" }, { opacity: 1, filter: "none", scale: "1.04", offset: 0.08 },
+      { opacity: 1, filter: "invert(1)", scale: "1.02", offset: 0.4 }, { opacity: 1, filter: "none", scale: "1", offset: 0.7 }, { opacity: 0, filter: "none", scale: "1" },
+    ], { duration: 300, easing: "steps(6, end)" });
+  }
 
   registerTheme({
     id: "chroma",
 
     background(bg, { h }) {
       bg.append(h("div", "cc-paper"), h("div", "cc-tint"));
-      SHAPES.forEach((s) => bg.append(h("div", "rs " + s)));
+      SHAPES.forEach((s) => {
+        const el = h("div", "rs " + s);
+        if (s === "brush") el.style.setProperty("--brush", `url("${brush}")`);
+        bg.append(el);
+      });
+      // speed lines converging on the now-playing cover, and a strip of screentone behind the menu
+      const sp = h("img", "cc-speed"); sp.alt = ""; sp.src = speedLines("#000", 760, 380, 150, 230);
+      bg.append(sp, h("div", "cc-tone"));
       const w = h("div", "cc-word", "Chroma"); w.dataset.w = "Chroma";
       bg.append(smoke("s1", 3), w, h("div", "cc-dots"));
       const grain = h("div", "cc-grain");
@@ -234,6 +305,8 @@
       note(DEFAULT);
       const n = window.cadenzaNow && window.cadenzaNow();
       compose(n && n.uri);
+      watchTitle(true);
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => requestAnimationFrame(fitTitle));   // once the wide font is in
     },
 
     /** Called with the playing song's cover whenever it changes (null when nothing plays). */
@@ -251,6 +324,7 @@
 
     leave() {
       token++;
+      watchTitle(false);
       cancelAnimationFrame(fading);
       shown = null;
       VARS.forEach((v) => root.style.removeProperty(v));
@@ -260,9 +334,9 @@
 
     overlay(sweep, { h }) {
       for (let i = 1; i <= 4; i++) sweep.append(h("div", "th cc-band b" + i));
-      const pow = h("div", "th cc-pow"), im = h("img"); im.alt = ""; im.src = burst;
-      pow.append(im, h("b"));
-      sweep.append(pow);
+      const imp = h("div", "th cc-impact"), lines = h("img"); lines.alt = ""; lines.src = speedLines("#fff", 500, 500, 220, 170);
+      imp.append(lines);
+      sweep.append(imp);
     },
 
     // Page change: the four colour bands blow across the screen one after another, like smoke.
@@ -272,17 +346,8 @@
         { duration: 520, delay: i * 45, easing: "cubic-bezier(.6,0,.35,1)", fill: "none" }));
     },
 
-    // Confirm: a comic burst with a sound word pops where you pressed.
-    onConfirm(el, { play }) {
-      const pow = document.querySelector("#sweep .cc-pow");
-      if (!pow || !el || !el.getBoundingClientRect) return;
-      const r = el.getBoundingClientRect();
-      pow.style.left = r.left + Math.min(r.width, innerWidth * 0.14) + "px";
-      pow.style.top = r.top + r.height / 2 + "px";
-      pow.querySelector("b").textContent = WORDS[Math.floor(Math.random() * WORDS.length)];
-      play(pow, [{ scale: "0", rotate: "-20deg", opacity: 1 }, { scale: "1.1", rotate: "4deg", opacity: 1, offset: 0.35 }, { scale: "1", rotate: "0deg", opacity: 1, offset: 0.7 }, { scale: "1.05", opacity: 0 }],
-        { duration: 520, easing: "cubic-bezier(.2,1.4,.4,1)", fill: "none" });
-    },
+    // Confirm: just the small press-in from motion.confirm (no burst).
+    onConfirm() {},
 
     motion: {
       in: (dir) => [{ transform: `translate3d(${dir * 6}vw,0,0)`, opacity: 0 }, { transform: "none", opacity: 1 }],

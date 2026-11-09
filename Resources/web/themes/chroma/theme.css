@@ -48,9 +48,11 @@ html, body { background: var(--paper); color: var(--ink); font-style: normal; fo
    with the shapes gliding to their new places. */
 #bg .cc-paper { position: absolute; inset: 0; background: var(--paper); }
 #bg .cc-tint { position: absolute; inset: 0; background: radial-gradient(120% 90% at 100% 0%, rgb(var(--c3-rgb) / .28), transparent 60%), radial-gradient(90% 80% at 0% 100%, rgb(var(--c4-rgb) / .22), transparent 65%); }
-#bg .rs { position: absolute; left: 0; top: 0; mix-blend-mode: multiply; will-change: transform;
-  transition: transform 1.6s cubic-bezier(.6,0,.2,1), opacity .8s; animation: rsdrift 26s ease-in-out infinite alternate; }
-@keyframes rsdrift { from { translate: 0 0; rotate: 0deg; } to { translate: 2.5vw 2vh; rotate: 4deg; } }
+/* The poster holds still between songs. Blended (multiplied) layers are costly to redraw, so nothing here
+   moves on its own: drifting shapes kept the whole page repainting every frame and the CPU busy. The
+   shapes only move when the song changes, gliding into the new arrangement. */
+#bg .rs { position: absolute; left: 0; top: 0; mix-blend-mode: multiply;
+  transition: transform 1.6s cubic-bezier(.6,0,.2,1), opacity .8s; }
 #bg .rs::after { content: ""; position: absolute; inset: 0; border-radius: inherit; mix-blend-mode: multiply; translate: .9vh -.6vh; }
 /* the shapes: each gets an ink (--k, the misregistered pass --k2) from theme.js */
 #bg .rs.disc { width: 46vh; height: 46vh; border-radius: 50%; background: var(--k); }
@@ -69,10 +71,9 @@ html, body { background: var(--paper); color: var(--ink); font-style: normal; fo
 #bg .rs.ring { width: 30vh; height: 30vh; border-radius: 50%; border: 2.2vh solid var(--k); }
 #bg .rs.ring::after { inset: 3vh; border: 2.2vh solid var(--k2); translate: 0 0; }
 /* the coloured smoke: four bands, one per ink, overprinting each other */
-#bg .cc-smoke { position: absolute; left: -10vw; width: 130vw; overflow: visible; mix-blend-mode: multiply; will-change: transform; }
+#bg .cc-smoke { position: absolute; left: -10vw; width: 130vw; overflow: visible; mix-blend-mode: multiply; }
 #bg .cc-smoke path { fill: none; stroke-linecap: round; stroke-linejoin: round; mix-blend-mode: multiply; }
-#bg .cc-smoke.s1 { bottom: -16vh; height: 70vh; opacity: .9; animation: ccdrift 34s ease-in-out infinite alternate; }
-@keyframes ccdrift { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-8vw, -3vh, 0); } }
+#bg .cc-smoke.s1 { bottom: -16vh; height: 70vh; opacity: .9; }
 /* a huge word from the song title, printed in solid ink and cut off by the page edge */
 #bg .cc-word { position: absolute; left: -2vw; bottom: -6vh; font: 400 38vh/.8 var(--display); text-transform: uppercase; color: rgb(var(--c4-rgb) / .55);
   mix-blend-mode: multiply; white-space: nowrap; letter-spacing: -.03em; transition: opacity .6s; }
@@ -80,6 +81,17 @@ html, body { background: var(--paper); color: var(--ink); font-style: normal; fo
 /* paper grain and speckle over everything, multiplied in like real ink on paper */
 #bg .cc-grain { position: absolute; inset: 0; mix-blend-mode: multiply; opacity: .55; background-size: 300px 300px; }
 #bg .cc-dots { position: absolute; inset: 0; opacity: .35; background-image: radial-gradient(rgb(var(--ink-rgb) / .16) 20%, transparent 23%); background-size: 1.1vh 1.1vh; }
+/* manga touches: speed lines converging on the now-playing cover, a screentone strip behind the menu,
+   and a rough brush stroke among the poster's shapes. All still pictures, so they cost nothing to show. */
+#bg .cc-speed { position: absolute; right: -14vw; top: -26vh; width: 100vw; height: 150vh; object-fit: cover; opacity: .13; mix-blend-mode: multiply; }
+#bg .cc-tone { position: absolute; left: 0; top: 14vh; width: 46vw; height: 70vh; mix-blend-mode: multiply; opacity: .5;
+  background-image: radial-gradient(var(--ink) 26%, transparent 29%); background-size: 1.4vh 1.4vh;
+  -webkit-mask-image: linear-gradient(100deg, #000 0%, rgba(0,0,0,.5) 35%, transparent 70%); mask-image: linear-gradient(100deg, #000 0%, rgba(0,0,0,.5) 35%, transparent 70%); }
+#bg .rs.brush { width: 110vh; height: 22vh; background: var(--k); -webkit-mask: var(--brush) center / 100% 100% no-repeat; mask: var(--brush) center / 100% 100% no-repeat; }
+#bg .rs.brush::after { display: none; }
+body:not([data-view="home"]) #bg .cc-speed, body:not([data-view="home"]) #bg .cc-tone { opacity: 0; }
+#bg .cc-speed, #bg .cc-tone { transition: opacity .4s; }
+
 /* a strip of the four inks down the left edge, like a printer's colour bar */
 #bg .cc-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 1vw; display: flex; flex-direction: column; border-right: var(--line); }
 #bg .cc-bar i { flex: 1; }
@@ -186,13 +198,20 @@ body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke
 
 /* ============ Now playing: the cover as a panel with stacked echo frames ============ */
 #now { z-index: 6; }
+/* On Home the song title sits above the info card beside it, so a long title is never hidden behind it
+   (only the panel's own pieces take clicks, so the card stays clickable). */
+body[data-view="home"] #now { z-index: 11; pointer-events: none; }
+body[data-view="home"] #now > * { pointer-events: auto; }
 .np-tag { transform: none; }
 .np-tag span { font: 400 1.7vh/1 var(--mono); letter-spacing: .1em; border: .3vh solid var(--ink); }
 .np-tag .k { background: var(--paper); color: var(--ink); }
 .np-tag .v { background: var(--c3); color: var(--ink); }
 .np-like { transform: none; color: var(--ink); }
 .art-wrap { width: 18vw; margin-right: 5vw; }
-.art-wrap::before { display: none; }
+/* the spine, like a manga volume's: the artist and album running down an ink strip beside the cover */
+.art-wrap::before { content: attr(data-spine); display: block; position: absolute; left: -5vh; top: 0; bottom: 0; width: 4.4vh; inset: 0 auto 0 -5vh; transform: none;
+  background: var(--ink); color: var(--paper); writing-mode: vertical-rl; font: 400 1.7vh/4.4vh var(--mono); letter-spacing: .18em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1.2vh 0; border: .3vh solid var(--ink); }
 .polaroid { background: none; padding: 0; transform: none; border: .5vh solid var(--ink);
   box-shadow: 1.2vh 1.2vh 0 -.15vh var(--c1), 1.2vh 1.2vh 0 .2vh var(--ink), 2.4vh 2.4vh 0 -.15vh var(--c2), 2.4vh 2.4vh 0 .2vh var(--ink),
               3.6vh 3.6vh 0 -.15vh var(--c3), 3.6vh 3.6vh 0 .2vh var(--ink), 4.8vh 4.8vh 0 -.15vh var(--c4), 4.8vh 4.8vh 0 .2vh var(--ink); }
@@ -200,8 +219,8 @@ body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke
 .polaroid .photo::after { display: none; }
 .polaroid .pcap, .polaroid .tape { display: none; }
 .art-wrap .state { transform: rotate(-3deg); left: -2vw; bottom: auto; top: -2vh; background: var(--paper); color: var(--ink); border: var(--line); font: 400 1.8vh/1 var(--mono); letter-spacing: .08em; box-shadow: .4vh .4vh 0 var(--ink); }
-.np-text { transform: none; margin-top: 7vh; width: 31vw; }   /* clear of the info card beside it */
-.np-title { font: 400 4.8vh/1.02 var(--display); text-transform: uppercase; color: var(--ink); text-shadow: -.4vh .3vh 0 rgb(var(--c1-rgb) / .9), .4vh -.25vh 0 rgb(var(--c2-rgb) / .8), .8vh .6vh 0 rgb(var(--c4-rgb) / .6); letter-spacing: -.01em; }
+.np-text { transform: none; margin-top: 7vh; width: 27vw; }   /* clear of the info card beside it (and its echoes) */
+.np-title { overflow-wrap: anywhere; -webkit-line-clamp: 3; font: 400 4.8vh/1.02 var(--display); text-transform: uppercase; color: var(--ink); text-shadow: -.4vh .3vh 0 rgb(var(--c1-rgb) / .9), .4vh -.25vh 0 rgb(var(--c2-rgb) / .8), .8vh .6vh 0 rgb(var(--c4-rgb) / .6); letter-spacing: -.01em; }
 .np-artist { display: inline-block; font: 400 2.4vh/1.2 var(--mono); color: var(--ink); background: var(--c3); border: .3vh solid var(--ink); padding: .3vh .7vw; margin-top: 1.6vh; letter-spacing: .04em; }
 .np-album { font: 500 1.9vh/1.4 var(--text); color: var(--ink); opacity: .7; margin-top: .6vh; }
 .bar { height: 1.2vh; background: var(--paper); outline: 0; border: .3vh solid var(--ink); }
@@ -234,7 +253,7 @@ body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke
 #sweep .cc-band { translate: -200vw 0; left: -20vw; width: 140vw; height: 30vh; border-top: .5vh solid var(--ink); border-bottom: .5vh solid var(--ink); }
 #sweep .cc-band.b1 { top: -4vh; background: var(--c1); } #sweep .cc-band.b2 { top: 22vh; background: var(--c2); }
 #sweep .cc-band.b3 { top: 48vh; background: var(--c3); } #sweep .cc-band.b4 { top: 74vh; background: var(--c4); }
-/* confirm: a comic burst with a sound word in it */
-#sweep .cc-pow { width: 20vh; height: 20vh; margin: -10vh 0 0 -10vh; display: grid; place-items: center; scale: 0; }
-#sweep .cc-pow img { position: absolute; inset: 0; width: 100%; height: 100%; }
-#sweep .cc-pow b { position: relative; font: 400 3.4vh/1 var(--display); color: var(--ink); text-transform: uppercase; rotate: -8deg; }
+/* song change on Home: an impact frame. Ink black with white speed lines, flashed inverted once. */
+#sweep .cc-impact { inset: 0; background: var(--ink); opacity: 0; overflow: hidden; pointer-events: none; }
+#sweep .cc-impact img { position: absolute; inset: -5%; width: 110%; height: 110%; object-fit: cover; }
+#sweep .cc-impact::after { content: ""; position: absolute; inset: 0; background: rgb(var(--c1-rgb) / .35); mix-blend-mode: screen; }
