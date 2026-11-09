@@ -283,12 +283,13 @@ Switch with ⌘T or System → Theme. Each theme is a folder in `Resources/web/t
 stylesheet, a script for its background and animations, and its own click sounds. The sounds are
 synthesised, so there are no audio files.
 
-CHROMA · COVER is a gallery-print look (serif headings, round pills, soft glows) coloured by the
-playing song's cover. Each time the cover changes it picks a dark colour and up to four accents from
-it and fades the whole app over to them. The background is made of the same colours: the cover
-blurred, a soft orb per colour, slowly turning record grooves, a big outlined word from the song title
-and a palette card with each colour's code. The now-playing cover becomes a record sleeve with the
-record spinning out of it. (The menu-bar player keeps the blue look.)
+CHROMA · COVER is a psychedelic comic page printed like a risograph poster, in the playing song's
+cover colours. The four strongest colours on the cover become four inks: an abstract poster of
+overprinted shapes, halftone screens and coloured smoke fills the page, with misregistered second
+passes and paper grain, and every song gets its own arrangement that the shapes glide into. On top sit
+ink-outlined panels with echo outlines behind whatever is selected, typewriter caption boxes,
+speech-balloon toasts and a comic burst when you confirm something. When the song changes, every colour fades over to
+the new cover's. (The menu-bar player keeps the blue look.)
 With System → Preferences → Album covers set to "In the theme's colours", every cover is shown in
 shades of the theme's own dark, accent and light colours; your covers aren't changed, only how
 Cadenza draws them. To make your own theme, see

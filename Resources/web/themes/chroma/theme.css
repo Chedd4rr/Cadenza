@@ -1,185 +1,240 @@
-/* CHROMA · COVER. A gallery-print look whose colours come from the album cover that's playing.
-   theme.js reads the cover and sets the colours below on the page (fading from the old ones):
-   --c1 … --c4 are the cover's own colours (strongest first), and the shared --navy, --cyan, --white
-   and friends are built from them. The values here are what it looks like before anything plays.
-   Unlike the other themes nothing is slanted: upright serif headings, round pills and soft glows. */
+/* CHROMA · COVER. A psychedelic comic-book page, coloured by the album cover that's playing.
+   Newsprint paper and black ink, flat fills in the cover's four colours (--c1 … --c4, strongest first),
+   coloured smoke drifting across the page, echo outlines stacked behind anything selected, caption boxes
+   in a typewriter face, and a solid dot inside a ring of colour as the recurring mark.
+   theme.js reads the cover and sets the colours (fading from the old ones). This is a light theme, so
+   the shared variables are turned around: --navy is the paper, --white is the ink. */
 
-@font-face { font-family: "Abril Fatface"; src: url(../heist/fonts/abril-fatface.woff2) format("woff2"); }
+@font-face { font-family: "Archivo Black"; src: url(../heist/fonts/archivo-black.woff2) format("woff2"); }
+@font-face { font-family: "Share Tech Mono"; src: url(../neon/fonts/share-tech-mono-latin-400-normal.woff2) format("woff2"); }
 @font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-500-normal.woff2) format("woff2"); font-weight: 400 500; }
-@font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-600-normal.woff2) format("woff2"); font-weight: 600; }
-@font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-700-normal.woff2) format("woff2"); font-weight: 700 900; }
+@font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-700-normal.woff2) format("woff2"); font-weight: 600 900; }
 
 :root {
-  --navy: #120e1a;   --navy-rgb: 18 14 26;
-  --deep: #1c1527;   --deep-rgb: 28 21 39;
-  --blue: #5b3fc4;
-  --cyan: #b48cff;   --cyan-rgb: 180 140 255;
-  --ice: #e2d6ff;    --ice-rgb: 226 214 255;
-  --white: #f8f5ff;  --white-rgb: 248 245 255;
-  --c1: #b48cff; --c1-rgb: 180 140 255;
-  --c2: #ff8fb8; --c2-rgb: 255 143 184;
-  --c3: #6fd6ff; --c3-rgb: 111 214 255;
-  --c4: #ffd27a; --c4-rgb: 255 210 122;
-  --placeholder: #3a2d55;
-  --drawer-bg: linear-gradient(180deg, #4a3a6e, #120e1a);
-  --liked-bg: linear-gradient(135deg, #b48cff, #ff8fb8);
+  --paper: #f2ead9; --paper-rgb: 242 234 217;
+  --ink: #17141c;   --ink-rgb: 23 20 28;
+  --c1: #e8402a; --c1-rgb: 232 64 42;
+  --c2: #2f9a5b; --c2-rgb: 47 154 91;
+  --c3: #f2b705; --c3-rgb: 242 183 5;
+  --c4: #3b6fd8; --c4-rgb: 59 111 216;
+  /* the shared palette, turned around for paper */
+  --navy: var(--paper);  --navy-rgb: var(--paper-rgb);
+  --deep: var(--paper);  --deep-rgb: var(--paper-rgb);
+  --white: var(--ink);   --white-rgb: var(--ink-rgb);
+  --ice: #57525e;        --ice-rgb: 87 82 94;
+  --cyan: var(--c1);     --cyan-rgb: var(--c1-rgb);
+  --blue: var(--c1);
+  --panel: var(--paper);
+  --placeholder: #d9cbb0;
+  --drawer-bg: var(--c3);
+  --liked-bg: linear-gradient(135deg, var(--c1) 0 50%, var(--c2) 50%);
+  --tone-dark: var(--ink-rgb); --tone-mid: var(--c1-rgb); --tone-light: var(--paper-rgb);
   --skew: 0deg;
-  --display: "Abril Fatface", "Didot", "Bodoni 72", Georgia, serif;
+  --display: "Archivo Black", "Arial Black", Impact, sans-serif;
   --text: "Inter", -apple-system, "Helvetica Neue", sans-serif;
-  --snap: cubic-bezier(.3,1.25,.5,1);
-  --glow: 0 2vh 5vh rgb(var(--c1-rgb) / .35);
+  --mono: "Share Tech Mono", ui-monospace, Menlo, monospace;
+  --line: .35vh solid var(--ink);
+  /* echo outlines: the same shape repeated behind, in each of the cover's colours */
+  --echo: .7vh .7vh 0 var(--c2), 1.4vh 1.4vh 0 var(--c3), 2.1vh 2.1vh 0 var(--c4);
+  --echo-sm: .45vh .45vh 0 var(--c2), .9vh .9vh 0 var(--c3);
+  --snap: cubic-bezier(.3,1.5,.4,1);
 }
-html, body { background: var(--navy); font-style: normal; font-weight: 500; }
+html, body { background: var(--paper); color: var(--ink); font-style: normal; font-weight: 500; }
 
-/* ============ Background ============ */
-#bg .ch-base { position: absolute; inset: 0; background: var(--navy); }
-/* The cover itself, enormous and blurred. Two layers take turns so a new cover fades in over the old. */
-#bg .ch-art { position: absolute; inset: -14%; background: center / cover no-repeat; filter: blur(80px) saturate(1.5); opacity: 0; transition: opacity 1.6s ease; }
-#bg .ch-art.on { opacity: .5; }
-/* Colour fields: one soft orb per cover colour, drifting slowly. Plain gradients, so moving them is cheap. */
-#bg .ch-orb { position: absolute; border-radius: 50%; will-change: transform; animation: chorb 30s ease-in-out infinite alternate; }
-#bg .ch-orb.o1 { width: 62vw; height: 62vw; left: -16vw; top: -26vw; background: radial-gradient(circle, rgb(var(--c1-rgb) / .55), rgb(var(--c1-rgb) / 0) 66%); }
-#bg .ch-orb.o2 { width: 50vw; height: 50vw; right: -14vw; top: 18vh; background: radial-gradient(circle, rgb(var(--c2-rgb) / .42), rgb(var(--c2-rgb) / 0) 66%); animation-duration: 36s; animation-delay: -12s; }
-#bg .ch-orb.o3 { width: 44vw; height: 44vw; left: 22vw; bottom: -26vw; background: radial-gradient(circle, rgb(var(--c3-rgb) / .38), rgb(var(--c3-rgb) / 0) 66%); animation-duration: 27s; animation-delay: -6s; }
-#bg .ch-orb.o4 { width: 26vw; height: 26vw; left: 52vw; top: -8vw; background: radial-gradient(circle, rgb(var(--c4-rgb) / .32), rgb(var(--c4-rgb) / 0) 66%); animation-duration: 22s; animation-delay: -3s; }
-@keyframes chorb { 0% { transform: translate3d(0, 0, 0) scale(1); } 50% { transform: translate3d(5vw, 4vh, 0) scale(1.12); } 100% { transform: translate3d(-3vw, 7vh, 0) scale(.94); } }
-/* A wash that keeps text readable, darker at the bottom */
-#bg .ch-wash { position: absolute; inset: 0; background: linear-gradient(180deg, rgb(var(--navy-rgb) / .25) 0%, rgb(var(--navy-rgb) / .55) 55%, rgb(var(--navy-rgb) / .85) 100%); }
-/* Fine print-like grain over everything */
-#bg .ch-grain { position: absolute; inset: 0; opacity: .08; background-size: 240px 240px; }
-/* Concentric rings, like the grooves of a record, turning slowly while music plays */
-#bg .ch-rings { position: absolute; right: -22vh; top: 50%; width: 120vh; height: 120vh; margin-top: -60vh; opacity: .16; animation: chspin 90s linear infinite; animation-play-state: paused; }
-body.playing #bg .ch-rings { animation-play-state: running; }
-@keyframes chspin { to { transform: rotate(360deg); } }
-/* A big outlined word in the corner: the first word of the playing song */
-#bg .ch-ghost { position: absolute; left: 30vw; bottom: 2vh; font: 400 34vh/.8 var(--display); color: transparent; -webkit-text-stroke: 2px rgb(var(--c2-rgb) / .22); white-space: nowrap; max-width: 140vw; overflow: hidden; transition: opacity .8s; }
-/* The palette card: the cover's colours as paint chips, with their codes */
-#bg .ch-chips { position: absolute; left: 50%; top: 3.4vh; transform: translateX(-50%); display: flex; gap: .8vw; align-items: flex-start; }
-#bg .ch-chip { display: flex; flex-direction: column; align-items: center; gap: .6vh; }
-#bg .ch-chip i { width: 3.6vh; height: 3.6vh; border-radius: 50%; box-shadow: 0 0 0 .25vh rgb(var(--white-rgb) / .25), 0 1vh 2vh rgb(0 0 0 / .3); transition: background-color 1s; }
-#bg .ch-chip b { font: 600 1.25vh/1 var(--text); letter-spacing: .08em; color: rgb(var(--ice-rgb) / .7); text-transform: uppercase; }
-body:not([data-view="home"]) #bg .ch-chips { opacity: 0; }
-#bg .ch-chips { transition: opacity .3s; }
+/* ============ The page: a riso-printed abstract poster ============ */
+/* Everything on the page is printed in the cover's four inks. Ink layers multiply where they overlap,
+   like a risograph, so overlaps make new colours; each shape has a second, slightly misregistered pass in
+   another ink; and the whole sheet has paper grain. The composition is rearranged for every song (theme.js),
+   with the shapes gliding to their new places. */
+#bg .cc-paper { position: absolute; inset: 0; background: var(--paper); }
+#bg .cc-tint { position: absolute; inset: 0; background: radial-gradient(120% 90% at 100% 0%, rgb(var(--c3-rgb) / .28), transparent 60%), radial-gradient(90% 80% at 0% 100%, rgb(var(--c4-rgb) / .22), transparent 65%); }
+#bg .rs { position: absolute; left: 0; top: 0; mix-blend-mode: multiply; will-change: transform;
+  transition: transform 1.6s cubic-bezier(.6,0,.2,1), opacity .8s; animation: rsdrift 26s ease-in-out infinite alternate; }
+@keyframes rsdrift { from { translate: 0 0; rotate: 0deg; } to { translate: 2.5vw 2vh; rotate: 4deg; } }
+#bg .rs::after { content: ""; position: absolute; inset: 0; border-radius: inherit; mix-blend-mode: multiply; translate: .9vh -.6vh; }
+/* the shapes: each gets an ink (--k, the misregistered pass --k2) from theme.js */
+#bg .rs.disc { width: 46vh; height: 46vh; border-radius: 50%; background: var(--k); }
+#bg .rs.disc::after { border: .6vh solid var(--k2); }
+#bg .rs.half { width: 56vh; height: 28vh; border-radius: 28vh 28vh 0 0; background: var(--k); }
+#bg .rs.half::after { background: repeating-linear-gradient(0deg, var(--k2) 0 .5vh, transparent .5vh 1.4vh); opacity: .7; }
+#bg .rs.arch { width: 50vh; height: 50vh; border-radius: 50%; border: 7vh solid var(--k); clip-path: inset(0 0 50% 0); }
+#bg .rs.arch::after { inset: -7vh; border: .5vh solid var(--k2); }
+#bg .rs.bar { width: 90vh; height: 11vh; border-radius: 99px; background: var(--k); }
+#bg .rs.bar::after { background: radial-gradient(var(--k2) 30%, transparent 33%); background-size: 1.6vh 1.6vh; opacity: .8; }
+#bg .rs.wedge { width: 40vh; height: 40vh; border-radius: 100% 0 0 0; background: var(--k); }
+#bg .rs.wedge::after { border-top: .6vh solid var(--k2); border-left: .6vh solid var(--k2); }
+/* a halftone dot screen: big printed dots in one ink */
+#bg .rs.screen { width: 52vh; height: 52vh; border-radius: 50%; background: radial-gradient(var(--k) 38%, transparent 41%); background-size: 2.4vh 2.4vh; }
+#bg .rs.screen::after { display: none; }
+#bg .rs.ring { width: 30vh; height: 30vh; border-radius: 50%; border: 2.2vh solid var(--k); }
+#bg .rs.ring::after { inset: 3vh; border: 2.2vh solid var(--k2); translate: 0 0; }
+/* the coloured smoke: four bands, one per ink, overprinting each other */
+#bg .cc-smoke { position: absolute; left: -10vw; width: 130vw; overflow: visible; mix-blend-mode: multiply; will-change: transform; }
+#bg .cc-smoke path { fill: none; stroke-linecap: round; stroke-linejoin: round; mix-blend-mode: multiply; }
+#bg .cc-smoke.s1 { bottom: -16vh; height: 70vh; opacity: .9; animation: ccdrift 34s ease-in-out infinite alternate; }
+@keyframes ccdrift { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-8vw, -3vh, 0); } }
+/* a huge word from the song title, printed in solid ink and cut off by the page edge */
+#bg .cc-word { position: absolute; left: -2vw; bottom: -6vh; font: 400 38vh/.8 var(--display); text-transform: uppercase; color: rgb(var(--c4-rgb) / .55);
+  mix-blend-mode: multiply; white-space: nowrap; letter-spacing: -.03em; transition: opacity .6s; }
+#bg .cc-word::after { content: attr(data-w); position: absolute; left: 1.2vh; top: -.8vh; color: rgb(var(--c1-rgb) / .35); mix-blend-mode: multiply; }
+/* paper grain and speckle over everything, multiplied in like real ink on paper */
+#bg .cc-grain { position: absolute; inset: 0; mix-blend-mode: multiply; opacity: .55; background-size: 300px 300px; }
+#bg .cc-dots { position: absolute; inset: 0; opacity: .35; background-image: radial-gradient(rgb(var(--ink-rgb) / .16) 20%, transparent 23%); background-size: 1.1vh 1.1vh; }
+/* a strip of the four inks down the left edge, like a printer's colour bar */
+#bg .cc-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 1vw; display: flex; flex-direction: column; border-right: var(--line); }
+#bg .cc-bar i { flex: 1; }
+#bg .cc-bar i:nth-child(1) { background: var(--c1); } #bg .cc-bar i:nth-child(2) { background: var(--c2); }
+#bg .cc-bar i:nth-child(3) { background: var(--c3); } #bg .cc-bar i:nth-child(4) { background: var(--c4); }
+/* the inks named in a caption box, like a print job's slip */
+#bg .cc-note { position: absolute; left: 36vw; top: 5vh; display: flex; gap: 1vw; align-items: center; font: 400 1.5vh/1 var(--mono); color: var(--ink); background: var(--paper); border: var(--line); padding: .8vh 1vw; letter-spacing: .06em; text-transform: uppercase; }
+#bg .cc-note b { display: inline-block; width: 1.3vh; height: 1.3vh; border: .2vh solid var(--ink); vertical-align: -.15vh; margin-right: .4vw; }
+body:not([data-view="home"]) #bg .cc-note { opacity: 0; }
+#bg .cc-note { transition: opacity .3s; }
+/* away from Home the poster steps back a little so lists stay easy to read */
+body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke { opacity: .55; }
+#bg .cc-smoke { transition: opacity .4s; }
 
-/* ============ Type and shapes: upright, rounded, no slants ============ */
-#clock .date { font-family: var(--display); font-size: 6vh; text-shadow: none; letter-spacing: -.01em; }
-#clock .dow { background: linear-gradient(90deg, var(--c1), var(--c2)); color: var(--navy); border-radius: 99px; font: 700 1.8vh/1 var(--text); letter-spacing: .12em; padding: .55vh .9vw; }
-#clock .time { font: 600 2.3vh/1.2 var(--text); color: var(--c2); letter-spacing: .04em; }
-.vh { font-family: var(--display); font-weight: 400; text-shadow: none; letter-spacing: -.01em; position: relative; }
-.vh .title::after { content: ""; display: block; height: .6vh; width: 12vh; margin-top: .6vh; border-radius: 99px; background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c4)); }
-.vh small { font: 600 1.9vh/1 var(--text); color: var(--c2); letter-spacing: .1em; text-transform: uppercase; }
-.empty { font-family: var(--display); color: rgb(var(--ice-rgb) / .22); }
-.notice { border-left: 0; border-radius: 1.2vh; background: rgb(var(--navy-rgb) / .6); box-shadow: inset .5vh 0 0 var(--c1); }
+/* ============ Type ============ */
+#clock > * { transform: none; }
+#clock .date { font: 400 6vh/1 var(--display); color: var(--ink); text-shadow: .5vh .5vh 0 var(--c1); }
+#clock .dow { background: var(--c3); color: var(--ink); border: var(--line); font: 400 1.9vh/1 var(--mono); letter-spacing: .1em; padding: .5vh .7vw; }
+#clock .time { font: 400 2.4vh/1.2 var(--mono); color: var(--ink); letter-spacing: .06em; }
+/* page titles: a caption box with echo outlines */
+.vh { font: 400 6.4vh/1 var(--display); text-transform: uppercase; color: var(--ink); text-shadow: none; }
+.vh .title { transform: none; background: var(--paper); border: var(--line); padding: .6vh 1.2vw .4vh; box-shadow: var(--echo);
+  text-shadow: -.35vh .25vh 0 rgb(var(--c1-rgb) / .8), .3vh -.2vh 0 rgb(var(--c4-rgb) / .7); }   /* a misregistered second and third pass */
+.vh small { transform: none; font: 400 1.9vh/1 var(--mono); color: var(--ink); background: var(--c3); border: var(--line); padding: .5vh .7vw; letter-spacing: .08em; margin-left: 2.4vw; }
+.empty { font-family: var(--display); color: rgb(var(--ink-rgb) / .2); transform: none; }
+.notice { transform: none; border: var(--line); border-left: 1vw solid var(--c1); background: var(--paper); color: var(--ink); font-family: var(--text); }
+.notice b { color: var(--ink); }
 
-/* Home menu: serif labels and a glowing pill that slides between them */
-.item .label { font-family: var(--display); text-transform: none; font-size: 4.4vh; color: rgb(var(--ice-rgb) / .9); text-shadow: none; letter-spacing: -.005em; }
-.item .tag { border-radius: 99px; font: 700 1.6vh/1 var(--text); letter-spacing: .1em; background: var(--c2); color: var(--navy); padding: .45vh .7vw; }
-.item.active .label { color: var(--navy); transform: translateX(1vw); }
-#hl .face, #hl .shadow { transform: none; border-radius: 99px; }
-#hl .face { background: linear-gradient(90deg, var(--c1), var(--c2) 70%, var(--c3)); box-shadow: 0 0 3.5vh rgb(var(--c1-rgb) / .55); }
-#hl .shadow { background: none; }
-#hl .cursor { border: 0; width: 1.4vh; height: 1.4vh; margin-top: -.7vh; left: -1.6vw; border-radius: 50%; background: var(--c3); filter: none; box-shadow: 0 0 1.6vh var(--c3); }
-#hint { border-left: 0; border-radius: 99px; background: rgb(var(--navy-rgb) / .55); font: 500 2.2vh/1 var(--text); letter-spacing: .01em; padding: 1vh 1.4vw; box-shadow: inset .4vh 0 0 var(--c3); }
+/* ============ Home menu: ink lettering; the chosen one pops in flat colour with echoes ============ */
+.item .in { transform: none; }
+.item .label { font: 400 4.3vh/1 var(--display); text-transform: uppercase; color: var(--ink); text-shadow: none; letter-spacing: -.01em; }
+.item .label { text-shadow: -.25vh .2vh 0 rgb(var(--c1-rgb) / .45); }
+.item.active .label { color: var(--ink); transform: translateX(1.2vw); text-shadow: -.3vh .25vh 0 var(--paper), .35vh -.2vh 0 rgb(var(--c4-rgb) / .9); }
+.item .tag { background: var(--c3); color: var(--ink); border: .25vh solid var(--ink); font: 400 1.7vh/1 var(--mono); letter-spacing: .06em; }
+.item .tag.off, .item.active .tag.off { background: var(--paper); color: var(--ink); }
+#hl .face, #hl .shadow { transform: none; }
+#hl .face { background: var(--c1); border: var(--line); box-shadow: var(--echo); }
+#hl .shadow { display: none; }
+#hl .face::after { display: none; }
+/* the cursor is the mark again: a dot inside a ring */
+#hl .cursor { border: 0; width: 2.6vh; height: 2.6vh; margin-top: -1.3vh; left: -3vw; border-radius: 50%; filter: none;
+  background: radial-gradient(circle, var(--c1) 0 32%, var(--ink) 33% 40%, var(--c2) 41%); box-shadow: 0 0 0 .3vh var(--ink); }
+#hint { transform: none; border: var(--line); border-left: var(--line); background: var(--c3); color: var(--ink); font: 400 2vh/1.2 var(--mono); letter-spacing: .04em; box-shadow: .5vh .5vh 0 var(--ink); }
 
-/* Lists: rounded rows; the selected one glows in the cover's colours */
-.trk .in, .opt .in { transform: none; border-left: 0; border-radius: 1.2vh; background: rgb(var(--navy-rgb) / .5); }
-.trk .ti b { font: 600 2.3vh/1.15 var(--text); text-transform: none; letter-spacing: -.005em; }
-.trk .ti i { font-style: normal; font-weight: 500; color: var(--c2); }
-.trk .no { font-family: var(--display); color: rgb(var(--ice-rgb) / .45); }
-.trk .du { font-weight: 500; }
-.trk .thumb { transform: none; border: 0; border-radius: .7vh; box-shadow: 0 .6vh 1.4vh rgb(0 0 0 / .35); }
-.trk.active .in, .opt.active .in { background: linear-gradient(90deg, var(--c1), var(--c2)); box-shadow: var(--glow); }
-.trk.active .ti b, .trk.active .no, .trk.active .du, .opt.active .k, .opt.active .v { color: var(--navy); }
-.trk.active .ti i { color: rgb(var(--navy-rgb) / .75); }
-.opt .k { font-family: var(--text); font-weight: 600; text-transform: none; }
-
-/* Cards: straight, rounded covers that lift and glow */
-.card .in, .card:nth-child(even) .in { transform: none; }
-.card.active .in { transform: translateY(-1vh) scale(1.05); }
-.card .cover { border: 0; border-radius: 1.4vh; box-shadow: 0 1.6vh 3vh rgb(0 0 0 / .35); }
-.card.active .cover { box-shadow: 0 0 0 .4vh var(--c1), var(--glow); }
-.card .cap { transform: none; }
-.card .n { font: 600 2.2vh/1.15 var(--text); text-transform: none; }
-.card .c { font-weight: 600; color: var(--c2); }
-.card.active .cap { background: none; padding: 0; margin-left: 0; }
-.card.active .cap .n { color: var(--white); }
-.card.active .cap .c { color: var(--c3); }
-.dev .in { transform: none; border: 0; border-radius: 1.6vh; }
+/* ============ Lists: comic panels ============ */
+.trk .in, .opt .in { transform: none; background: var(--paper); border: .3vh solid var(--ink); border-left: .3vh solid var(--ink); }
+.trk .no { font-family: var(--display); color: var(--ink); opacity: .35; }
+.trk .ti b { font: 700 2.2vh/1.2 var(--text); text-transform: none; color: var(--ink); }
+.trk .ti i { font: 400 1.75vh/1.2 var(--mono); color: var(--ice); letter-spacing: .02em; }
+.trk .du { font: 400 1.9vh/1 var(--mono); color: var(--ink); }
+.trk .thumb { transform: none; border: .3vh solid var(--ink); }
+/* every row carries an ink tab, cycling through the four inks */
+.trk .in, .opt .in { box-shadow: inset 1vw 0 0 var(--tab, var(--c1)); padding-left: 1.6vw; }
+.trk:nth-child(4n+2), .opt:nth-child(4n+2) { --tab: var(--c2); } .trk:nth-child(4n+3), .opt:nth-child(4n+3) { --tab: var(--c3); } .trk:nth-child(4n), .opt:nth-child(4n) { --tab: var(--c4); }
+.trk.active .in, .opt.active .in { background: var(--tab, var(--c1)); box-shadow: var(--echo-sm); transform: translate(-.3vw, -.3vh); }
+.trk.active .ti i, .trk.active .no { color: var(--ink); opacity: .8; }
+.trk.active .thumb { border-color: var(--ink); }
+.trk .acts button { background: var(--paper); color: var(--ink); border: .25vh solid var(--ink); font: 400 1.5vh/1 var(--mono); }
+.trk .acts button:hover { background: var(--c3); }
+.opt .k { font: 700 2.2vh/1.2 var(--text); color: var(--ink); text-transform: none; }
+.opt .v { font-family: var(--mono); color: var(--ice); }
+.opt.active .v { color: var(--ink); }
+.dev .in { transform: none; background: var(--paper); border: .35vh solid var(--ink); }
 .dev .in > * { transform: none; }
-.dev .nm { font: 600 2.6vh/1.1 var(--text); text-transform: none; }
-.dev.active .in { background: linear-gradient(135deg, var(--c1), var(--c2)); transform: translateY(-1vh); box-shadow: var(--glow); }
+.dev .nm { font: 400 2.8vh/1.05 var(--display); color: var(--ink); }
+.dev .kd { font-family: var(--mono); color: var(--ink); }
+.dev svg { stroke: var(--ink); }
+.dev.active .in { background: var(--c2); box-shadow: var(--echo-sm); transform: translateY(-1vh); }
+.dev.active .nm { color: var(--ink); }
+
+/* Cards: covers in thick ink frames; the chosen one lifts with echoes */
+.card .in, .card:nth-child(even) .in { transform: none; }
+.card .cover { border: .4vh solid var(--ink); box-shadow: .8vh .8vh 0 var(--ink); }
+.card.active .in { transform: translate(-.4vw, -1vh); }
+.card.active .cover { border-color: var(--ink); box-shadow: var(--echo); }
+.card .cap { transform: none; }
+.card .n { font: 400 2.2vh/1.1 var(--display); color: var(--ink); }
+.card .c { font: 400 1.6vh/1 var(--mono); color: var(--ice); letter-spacing: .06em; }
+.card.active .cap { background: var(--c3); border: .3vh solid var(--ink); padding: .5vh .6vw; margin-left: -.6vw; }
+.card.active .cap .n, .card.active .cap .c { color: var(--ink); }
 
 /* Playlist and album pages */
-.pl-cover, .q-now .art { transform: none; border: 0; border-radius: 1.6vh; box-shadow: var(--glow); }
-.pl-meta .kind { transform: none; border-radius: 99px; background: var(--c2); }
-.pl-meta h1 { font-family: var(--display); text-transform: none; text-shadow: none; transform: none; }
-.pl-meta p { transform: none; }
-.chip, .s-tabs button { transform: none; border-radius: 99px; font: 600 1.8vh/1 var(--text); letter-spacing: .06em; }
-.chip:hover, .chip.on { transform: translateY(-.3vh); background: var(--c1); color: var(--navy); }
-.s-tabs button.on { background: linear-gradient(90deg, var(--c1), var(--c2)); color: var(--navy); box-shadow: none; translate: 0 0; }
+.pl-cover, .q-now .art { transform: none; border: .5vh solid var(--ink); box-shadow: var(--echo); }
+.pl-meta .kind { transform: none; background: var(--c2); color: var(--ink); border: var(--line); font: 400 1.8vh/1 var(--mono); }
+.pl-meta h1 { font-family: var(--display); color: var(--ink); text-shadow: .5vh .5vh 0 var(--c1); transform: none; }
+.pl-meta p { transform: none; font-family: var(--mono); color: var(--ink); }
+.chip, .s-tabs button { transform: none; background: var(--paper); color: var(--ink); border: .3vh solid var(--ink); font: 400 1.8vh/1 var(--mono); letter-spacing: .06em; }
+.chip:hover, .chip.on { transform: translate(-.2vw, -.3vh); background: var(--c3); color: var(--ink); box-shadow: .4vh .4vh 0 var(--ink); }
+.s-tabs button.on { background: var(--c1); color: var(--ink); box-shadow: .4vh .4vh 0 var(--ink); translate: 0 -.2vh; }
 
-/* ============ Now playing: a record sleeve with the vinyl sliding out ============ */
+/* ============ Home: info card and visualiser ============ */
+#intel { transform: none; background: var(--paper); border: .4vh solid var(--ink); box-shadow: var(--echo); }
+#intel::after { display: none; }
+#intel .no { font-family: var(--display); -webkit-text-stroke: .25vh var(--ink); color: transparent; }
+#intel .kick { background: var(--c2); color: var(--ink); border: var(--line); font: 400 1.7vh/1 var(--mono); letter-spacing: .1em; }
+#intel .head { font-family: var(--display); color: var(--ink); text-shadow: .45vh .45vh 0 var(--c3); }
+#intel .body .row { font-family: var(--text); color: var(--ink); opacity: .75; }
+#intel .body .row.lead { font-family: var(--mono); color: var(--ink); opacity: 1; }
+#intel .covers span { border: .3vh solid var(--ink); box-shadow: .5vh .5vh 0 var(--ink); }
+#intel .covers span:nth-child(2) { box-shadow: .5vh .5vh 0 var(--c1); }
+#intel .foot { background: var(--c1); color: var(--ink); border: var(--line); font: 400 1.7vh/1 var(--mono); box-shadow: .4vh .4vh 0 var(--ink); }
+#intel .foot b { color: var(--ink); -webkit-text-stroke: 0; }
+#viz { transform: none; background: var(--paper); border: .35vh solid var(--ink); box-shadow: .6vh .6vh 0 var(--c4); }
+
+/* ============ Now playing: the cover as a panel with stacked echo frames ============ */
+#now { z-index: 6; }
 .np-tag { transform: none; }
-.np-tag span { border-radius: 99px; font: 700 1.6vh/1 var(--text); letter-spacing: .14em; }
-.np-tag .k { background: rgb(var(--navy-rgb) / .7); color: var(--c2); }
-.np-tag .v { background: var(--c1); color: var(--navy); }
-.np-like { transform: none; }
-.art-wrap { width: 19vw; margin-right: 6vw; }
-/* the record, peeking out of the sleeve; it spins while music plays */
-.art-wrap::before { inset: 4% -30% 4% 30%; transform: none; border-radius: 50%;
-  background: radial-gradient(circle, var(--c1) 0 15%, var(--navy) 15.5% 17%, transparent 17.5%),
-              repeating-radial-gradient(circle, #0c0a10 0 .35vh, #18151e .35vh .5vh);
-  box-shadow: 0 2vh 4vh rgb(0 0 0 / .5); animation: chspin 4s linear infinite; animation-play-state: paused; }
-body.playing .art-wrap::before { animation-play-state: running; }
-.polaroid { background: none; padding: 0; transform: none; box-shadow: 0 2.6vh 5vh rgb(0 0 0 / .45), 0 0 6vh rgb(var(--c1-rgb) / .35); border-radius: .6vh; }
-.polaroid .photo { border-radius: .6vh; box-shadow: none; }
-.polaroid .photo::after { background: linear-gradient(120deg, rgb(255 255 255 / .18), rgb(255 255 255 / 0) 40%); border-radius: .6vh; }
+.np-tag span { font: 400 1.7vh/1 var(--mono); letter-spacing: .1em; border: .3vh solid var(--ink); }
+.np-tag .k { background: var(--paper); color: var(--ink); }
+.np-tag .v { background: var(--c3); color: var(--ink); }
+.np-like { transform: none; color: var(--ink); }
+.art-wrap { width: 18vw; margin-right: 5vw; }
+.art-wrap::before { display: none; }
+.polaroid { background: none; padding: 0; transform: none; border: .5vh solid var(--ink);
+  box-shadow: 1.2vh 1.2vh 0 -.15vh var(--c1), 1.2vh 1.2vh 0 .2vh var(--ink), 2.4vh 2.4vh 0 -.15vh var(--c2), 2.4vh 2.4vh 0 .2vh var(--ink),
+              3.6vh 3.6vh 0 -.15vh var(--c3), 3.6vh 3.6vh 0 .2vh var(--ink), 4.8vh 4.8vh 0 -.15vh var(--c4), 4.8vh 4.8vh 0 .2vh var(--ink); }
+.polaroid .photo { box-shadow: none; }
+.polaroid .photo::after { display: none; }
 .polaroid .pcap, .polaroid .tape { display: none; }
-.art-wrap .state { transform: none; left: -1.6vw; bottom: 1.6vw; border-radius: 99px; background: var(--white); color: var(--navy); font: 700 1.7vh/1 var(--text); letter-spacing: .12em; padding: .8vh 1vw; box-shadow: 0 1vh 2vh rgb(0 0 0 / .3); }
-.np-text { transform: none; margin-top: 3.6vh; }
-.np-title { font-family: var(--display); text-transform: none; text-shadow: none; font-size: 6.2vh; letter-spacing: -.01em; line-height: 1.02; }
-.np-artist { font: 600 2.8vh/1.2 var(--text); color: var(--c2); }
-.np-album { font: 500 2vh/1.3 var(--text); }
-.bar { height: .9vh; border-radius: 99px; outline: 0; background: rgb(var(--white-rgb) / .14); }
-.bar .fill { background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3)); border-radius: 99px; }
-.progress .t { font-weight: 600; font-size: 1.9vh; }
+.art-wrap .state { transform: rotate(-3deg); left: -2vw; bottom: auto; top: -2vh; background: var(--paper); color: var(--ink); border: var(--line); font: 400 1.8vh/1 var(--mono); letter-spacing: .08em; box-shadow: .4vh .4vh 0 var(--ink); }
+.np-text { transform: none; margin-top: 7vh; width: 31vw; }   /* clear of the info card beside it */
+.np-title { font: 400 4.8vh/1.02 var(--display); text-transform: uppercase; color: var(--ink); text-shadow: -.4vh .3vh 0 rgb(var(--c1-rgb) / .9), .4vh -.25vh 0 rgb(var(--c2-rgb) / .8), .8vh .6vh 0 rgb(var(--c4-rgb) / .6); letter-spacing: -.01em; }
+.np-artist { display: inline-block; font: 400 2.4vh/1.2 var(--mono); color: var(--ink); background: var(--c3); border: .3vh solid var(--ink); padding: .3vh .7vw; margin-top: 1.6vh; letter-spacing: .04em; }
+.np-album { font: 500 1.9vh/1.4 var(--text); color: var(--ink); opacity: .7; margin-top: .6vh; }
+.bar { height: 1.2vh; background: var(--paper); outline: 0; border: .3vh solid var(--ink); }
+.bar .fill { background: repeating-linear-gradient(90deg, var(--c1) 0 25%, var(--c2) 25% 50%, var(--c3) 50% 75%, var(--c4) 75% 100%); background-size: 4vw 100%; }
+.progress .t { font: 400 1.7vh/1 var(--mono); color: var(--ink); background: var(--paper); border: .25vh solid var(--ink); padding: .35vh .3vw; }
 .np-ctrl { transform: none; }
-.np-ctrl button { border-radius: 50%; width: 4.8vh; height: 4.8vh; background: rgb(var(--navy-rgb) / .55); border: 0; }
+.np-ctrl button { background: var(--paper); color: var(--ink); border: .3vh solid var(--ink); border-radius: 50%; width: 4.8vh; height: 4.8vh; }
 .np-ctrl button .ico { transform: none; }
-.np-ctrl button:hover { background: var(--white); color: var(--navy); box-shadow: none; }
-.np-ctrl button.on { background: var(--c2); color: var(--navy); box-shadow: none; }
-.np-ctrl button.main { width: 7vh; height: 7vh; background: linear-gradient(135deg, var(--c1), var(--c2)); color: var(--navy); box-shadow: 0 0 4vh rgb(var(--c1-rgb) / .55); border: 0; }
+.np-ctrl button:hover { background: var(--c3); color: var(--ink); box-shadow: .4vh .4vh 0 var(--ink); }
+.np-ctrl button.on { background: var(--c2); color: var(--ink); box-shadow: .4vh .4vh 0 var(--ink); }
+.np-ctrl button.main { width: 7vh; height: 7vh; background: var(--c1); color: var(--ink); border: .4vh solid var(--ink); box-shadow: var(--echo-sm); }
 
 /* ============ Small things ============ */
-.key { transform: none; border-radius: 99px; background: rgb(var(--navy-rgb) / .65); padding: .55vh .9vw .55vh .55vw; }
-.key b { border-radius: 99px; background: var(--white); color: var(--navy); font: 700 1.6vh/1 var(--text); padding: .45vh .6vw; }
-.key span { font: 600 1.6vh/1 var(--text); letter-spacing: .08em; }
-#toast { transform: translate(-50%, -16vh); border-radius: 99px; background: var(--white); color: var(--navy); box-shadow: 0 0 0 .3vh var(--c1), 0 1.6vh 4vh rgb(var(--c1-rgb) / .45); font: 700 2.1vh/1 var(--text); letter-spacing: .04em; padding: 1.4vh 2vw; transition: transform .38s cubic-bezier(.3,1.3,.5,1); }
+.key { transform: none; background: var(--paper); border: .3vh solid var(--ink); }
+.key b { background: var(--ink); color: var(--paper); font: 400 1.6vh/1 var(--mono); }
+.key span { font: 400 1.6vh/1 var(--mono); color: var(--ink); letter-spacing: .06em; }
+/* toasts are speech balloons */
+#toast { transform: translate(-50%, -16vh); background: var(--paper); color: var(--ink); border: .4vh solid var(--ink); border-radius: 3vh; box-shadow: .6vh .6vh 0 var(--c1); font: 700 2.1vh/1 var(--text); letter-spacing: .02em; padding: 1.4vh 2vw; overflow: visible; transition: transform .3s var(--snap); }
+#toast::after { content: ""; position: absolute; left: 18%; bottom: -2vh; width: 2.6vh; height: 2.6vh; background: var(--paper); border-right: .4vh solid var(--ink); border-bottom: .4vh solid var(--ink); transform: skewX(30deg) rotate(30deg); }
 #toast.show { transform: translate(-50%, 0); }
-#drawer { border-radius: 2vh 0 0 2vh; transform: translateX(110%); transition: transform .34s cubic-bezier(.3,1.2,.5,1); }
+#toast.err { background: var(--c1); color: var(--ink); box-shadow: .6vh .6vh 0 var(--ink); }
+#toast.err::after { background: var(--c1); }
+#drawer { border-left: .5vh solid var(--ink); transform: translateX(110%); transition: transform .3s var(--snap); }
 #drawer.on { transform: none; }
+#scrim { background: rgb(var(--ink-rgb) / .35); }
 
-/* ============ Transition: colour blooms in each of the cover's colours ============ */
-#sweep .th { transform: none; position: absolute; translate: 0 0; scale: 0; border-radius: 50%; }
-#sweep .ch-bloom { left: 50%; top: 50%; width: 80vmax; height: 80vmax; margin: -40vmax 0 0 -40vmax; }
-#sweep .ch-bloom.b1 { background: radial-gradient(circle, rgb(var(--c1-rgb) / .6), rgb(var(--c1-rgb) / 0) 68%); }
-#sweep .ch-bloom.b2 { background: radial-gradient(circle, rgb(var(--c2-rgb) / .5), rgb(var(--c2-rgb) / 0) 68%); }
-#sweep .ch-bloom.b3 { background: radial-gradient(circle, rgb(var(--c3-rgb) / .45), rgb(var(--c3-rgb) / 0) 68%); }
-#sweep .ch-dot { width: 18vh; height: 18vh; margin: -9vh 0 0 -9vh; background: radial-gradient(circle, rgb(var(--c2-rgb) / .7), rgb(var(--c2-rgb) / 0) 68%); }
-
-/* ============ Home: the info card and the visualiser ============ */
-#intel { transform: none; border-left: 0; border-radius: 2.4vh; box-shadow: 0 2vh 5vh rgb(0 0 0 / .3);
-  background: linear-gradient(160deg, rgb(var(--navy-rgb) / .78), rgb(var(--navy-rgb) / .45)); }
-#intel::after { left: 2.4vw; right: 2.4vw; top: 0; bottom: auto; height: .45vh; border-radius: 99px; background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c4)); }
-#intel .no { font-family: var(--display); -webkit-text-stroke: .2vh rgb(var(--c2-rgb) / .5); top: -5vh; }
-#intel .kick { border-radius: 99px; background: var(--c1); font: 700 1.6vh/1 var(--text); letter-spacing: .14em; padding: .6vh .9vw; }
-#intel .head { font-family: var(--display); text-transform: none; letter-spacing: -.01em; }
-#intel .body .row { font-weight: 500; }
-#intel .body .row.lead { font-weight: 600; color: var(--c2); }
-#intel .covers span { border: 0; border-radius: 1vh; box-shadow: 0 1vh 2vh rgb(0 0 0 / .35); }
-#intel .covers span:nth-child(2) { box-shadow: 0 0 0 .3vh var(--c1); }
-#intel .foot { border-radius: 99px; background: var(--white); color: var(--navy); box-shadow: 0 1vh 2.4vh rgb(var(--c1-rgb) / .4); font: 700 1.6vh/1 var(--text); letter-spacing: .12em; padding: .8vh 1.1vw; }
-#intel .foot b { color: var(--c1); -webkit-text-stroke: 0; }
-#viz { transform: none; border-left: 0; border-radius: 1.6vh; background: rgb(var(--navy-rgb) / .45); }
-.trk .acts button { border-radius: 99px; background: rgb(var(--navy-rgb) / .8); font: 700 1.5vh/1 var(--text); letter-spacing: .06em; padding: .5vh .7vw; }
-.trk .acts button:hover { background: var(--white); color: var(--navy); }
+/* ============ Transitions ============ */
+#sweep .th { transform: none; position: absolute; translate: 0 0; }
+/* page change: four bands of colour in ink outlines sweep across, like smoke blowing past */
+#sweep .cc-band { translate: -200vw 0; left: -20vw; width: 140vw; height: 30vh; border-top: .5vh solid var(--ink); border-bottom: .5vh solid var(--ink); }
+#sweep .cc-band.b1 { top: -4vh; background: var(--c1); } #sweep .cc-band.b2 { top: 22vh; background: var(--c2); }
+#sweep .cc-band.b3 { top: 48vh; background: var(--c3); } #sweep .cc-band.b4 { top: 74vh; background: var(--c4); }
+/* confirm: a comic burst with a sound word in it */
+#sweep .cc-pow { width: 20vh; height: 20vh; margin: -10vh 0 0 -10vh; display: grid; place-items: center; scale: 0; }
+#sweep .cc-pow img { position: absolute; inset: 0; width: 100%; height: 100%; }
+#sweep .cc-pow b { position: relative; font: 400 3.4vh/1 var(--display); color: var(--ink); text-transform: uppercase; rotate: -8deg; }

@@ -13,7 +13,7 @@ themes/
   neon/theme.css     ← NEON · CITY (rebuilds the layout too: see below)
   neon/theme.js
   min/…             ← STUDIO · MINIMAL (a desktop-app layout: bento Home, transport bar docked at the bottom)
-  chroma/…          ← CHROMA · COVER (colours taken from the playing song's cover: see onArt below; also --c1…--c4)
+  chroma/…          ← CHROMA · COVER (a light comic-page theme coloured by the playing cover: see onArt below)
   rogue/…           ← the secret one, OGMI.OS (hidden: true in themes.js): spine + workspace + AI core panel
 ```
 
