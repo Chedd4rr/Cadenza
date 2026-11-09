@@ -13,6 +13,7 @@ themes/
   neon/theme.css     ← NEON · CITY (rebuilds the layout too: see below)
   neon/theme.js
   min/…             ← STUDIO · MINIMAL (a desktop-app layout: bento Home, transport bar docked at the bottom)
+  chroma/…          ← CHROMA · COVER (colours taken from the playing song's cover: see onArt below)
   rogue/…           ← the secret one, OGMI.OS (hidden: true in themes.js): spine + workspace + AI core panel
 ```
 
@@ -47,6 +48,7 @@ Most of the look comes from these variables:
 | `--drawer-bg` | background of the add-to-playlist panel |
 | `--liked-bg` | Liked Songs cover |
 | `--skew` | slant used everywhere |
+| `--tone-dark`, `--tone-mid`, `--tone-light` | "album covers in the theme's colours": a cover's shadows, middle and highlights (rgb numbers). They default to `--navy-rgb`, `--cyan-rgb` and `--white-rgb`; set them if your theme's dark, accent and light colours live elsewhere (a light theme, say) |
 | `--display`, `--text` | heading font and body font |
 
 The `-rgb` versions are space-separated numbers (e.g. `3 12 46`), used for see-through
@@ -147,6 +149,21 @@ something else has to switch to it (the secret one is unlocked in `Palette.filte
 Click sounds live in `Sfx` in `app.js`, one set per theme id: `confirm`, `back`, `page`, `toggle`,
 `stage` and `theme` (played when you switch *to* that theme). They're synthesised with WebAudio,
 so a theme needs no sound files.
+
+### Following the album cover
+
+Two optional hooks let a theme react to the music (`chroma/theme.js` uses both):
+
+```js
+  // Called with the playing song's cover URL whenever it changes (null when nothing plays), and once
+  // when the theme is switched on. dataURL(url) gives the cover as a data: URL you can draw on a canvas
+  // to read its pixels; call recolored() after changing colour variables, so the visualiser and the
+  // themed covers pick them up.
+  async onArt(url, { dataURL, recolored }) { … },
+
+  // Called when switching away: undo anything set outside your stylesheet (inline colour variables).
+  leave() { … },
+```
 
 ### Grid homes
 

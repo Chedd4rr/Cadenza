@@ -1,0 +1,55 @@
+/* CHROMA · COVER. Its colours come from the album cover that's playing: theme.js reads the cover and
+   sets the shared colour variables (--navy, --cyan, --white and the rest) on the page. The values here
+   are what it looks like before anything plays. */
+
+:root {
+  --navy: #14101c;   --navy-rgb: 20 16 28;
+  --deep: #1d1628;   --deep-rgb: 29 22 40;
+  --blue: #6b4bd8;
+  --cyan: #b48cff;   --cyan-rgb: 180 140 255;
+  --ice: #e2d6ff;    --ice-rgb: 226 214 255;
+  --white: #f8f5ff;  --white-rgb: 248 245 255;
+  --placeholder: #3a2d55;
+  --drawer-bg: linear-gradient(180deg, #4a3a6e, #14101c);
+  --liked-bg: linear-gradient(135deg, #b48cff, #e2d6ff);
+  --skew: -6deg;
+}
+html, body { background: var(--navy); }
+
+/* ---------- Background: the cover itself, blown up and blurred, under a wash of its own colours ---------- */
+#bg .ch-base { position: absolute; inset: 0; background: var(--navy); transition: background-color 1.2s; }
+/* Two layers take turns, so a new cover fades in over the old one. Blurred once; only opacity animates. */
+#bg .ch-art { position: absolute; inset: -12%; background: center / cover no-repeat; filter: blur(70px) saturate(1.35); opacity: 0; transition: opacity 1.4s ease; transform: scale(1.1); }
+#bg .ch-art.on { opacity: .62; }
+#bg .ch-wash {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(90% 70% at 85% 0%, rgb(var(--cyan-rgb) / .28) 0%, transparent 60%),
+    radial-gradient(80% 80% at 0% 100%, rgb(var(--deep-rgb) / .9) 0%, transparent 70%),
+    linear-gradient(180deg, rgb(var(--navy-rgb) / .35) 0%, rgb(var(--navy-rgb) / .82) 100%);
+}
+/* soft blobs of the accent colour drifting about */
+#bg .ch-blob { position: absolute; border-radius: 50%; background: radial-gradient(circle, rgb(var(--cyan-rgb) / .35), rgb(var(--cyan-rgb) / 0) 70%); will-change: transform; animation: chdrift 26s ease-in-out infinite alternate; }
+#bg .ch-blob.a { width: 60vw; height: 60vw; left: -18vw; top: -24vw; }
+#bg .ch-blob.b { width: 44vw; height: 44vw; right: -10vw; bottom: -18vw; animation-duration: 32s; animation-delay: -9s; }
+#bg .ch-blob.c { width: 26vw; height: 26vw; left: 46vw; top: 38vh; animation-duration: 21s; animation-delay: -4s; opacity: .6; }
+@keyframes chdrift { to { transform: translate3d(6vw, 5vh, 0) scale(1.12); } }
+#bg .ch-grain { position: absolute; inset: 0; opacity: .07; mix-blend-mode: overlay; background-size: 220px 220px; }
+
+/* ---------- Details ---------- */
+/* panels are frosted glass tinted with the cover's dark colour */
+.trk .in, .opt .in, .dev .in { backdrop-filter: none; }
+#toast { border-radius: .6vh; }
+#hl .face { border-radius: .4vh; }
+.card .cover { border-radius: .6vh; overflow: hidden; }
+/* the cover on the now-playing panel glows in its accent colour */
+#np-photo { box-shadow: 0 0 6vh rgb(var(--cyan-rgb) / .45); transition: box-shadow 1.2s; }
+body.playing[data-view="home"] .art-wrap { animation: chbreathe 4.2s ease-in-out infinite alternate; }
+@keyframes chbreathe { from { scale: 1; } to { scale: 1.015; } }
+
+/* ---------- Transition: a bloom of colour ---------- */
+#sweep .th { transform: none; position: absolute; translate: 0 0; scale: 0; }
+#sweep .ch-bloom { left: 50%; top: 50%; width: 90vmax; height: 90vmax; margin: -45vmax 0 0 -45vmax; border-radius: 50%;
+  background: radial-gradient(circle, rgb(var(--cyan-rgb) / .55) 0%, rgb(var(--cyan-rgb) / .18) 45%, rgb(var(--cyan-rgb) / 0) 70%); }
+#drawer { transform: translateX(110%); transition: transform .34s cubic-bezier(.3,1.2,.5,1); }
+#drawer.on { transform: none; }

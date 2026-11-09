@@ -261,7 +261,7 @@ const Sfx = {
       osc.start(at); osc.stop(at + dur + 0.03);
     };
     const theme = themeId || (Theme.current ? Theme.current.id : "tide");
-    out.gain.value *= ({ min: 1.9, rogue: 1.25 })[theme] || 1;      // even out how loud each theme's set feels
+    out.gain.value *= ({ min: 1.9, rogue: 1.25, chroma: 1.5 })[theme] || 1;      // even out how loud each theme's set feels
     const SOUNDS = {
       tide: {
         confirm: () => { bubble(0, 520, 0.08, 0.7); bubble(0.045, 780, 0.07, 0.55); bubble(0.09, 1150, 0.09, 0.45, 2.1); tone({ f0: 170, f1: 380, at: 0, dur: 0.06, gain: 0.3 }); },
@@ -367,6 +367,18 @@ const Sfx = {
           tone({ f0: 784, at: 0.25, dur: 0.8, gain: 0.16, attack: 0.008 });
           tone({ f0: 1174.7, at: 0.34, dur: 0.9, gain: 0.13, attack: 0.008 });
           tone({ f0: 2349.3, at: 0.34, dur: 0.5, gain: 0.03, attack: 0.008 });
+        },
+      },
+      // Chroma: warm, glassy chimes in a major chord, like colour blooming
+      chroma: {
+        confirm: () => { tone({ f0: 1046.5, at: 0, dur: 0.12, gain: 0.18, attack: 0.003 }); tone({ f0: 1568, at: 0.03, dur: 0.14, gain: 0.1, attack: 0.003 }); },
+        back: () => { tone({ f0: 1318.5, at: 0, dur: 0.09, gain: 0.15, attack: 0.003 }); tone({ f0: 880, at: 0.05, dur: 0.12, gain: 0.14, attack: 0.003 }); },
+        page: () => { noise({ dur: 0.2, gain: 0.14, filt: { type: "bandpass", f: 1200, f1: 4200, q: 1.1 }, curve: 1.4 }); tone({ f0: 2093, at: 0.05, dur: 0.12, gain: 0.05, attack: 0.004 }); },
+        toggle: () => { tone({ f0: 1760, at: 0, dur: 0.05, gain: 0.13, attack: 0.002 }); tone({ f0: 2217.5, at: 0.04, dur: 0.06, gain: 0.1, attack: 0.002 }); },
+        stage: () => [523.3, 659.3, 784, 987.8, 1174.7].forEach((f, i) => tone({ f0: f, at: i * 0.07, dur: 0.7, gain: 0.09, attack: 0.012 })),
+        theme: () => {
+          noise({ dur: 0.7, gain: 0.07, filt: { type: "lowpass", f: 400, f1: 3600, q: 0.8 }, curve: 0.7 });
+          [392, 493.9, 587.3, 784].forEach((f, i) => tone({ f0: f, at: 0.15 + i * 0.09, dur: 1.1, gain: 0.11, attack: 0.02 }));
         },
       },
       // R0GUE (Ogmi.os): a machine talking to itself: chirping data, ring-modulated beeps, crushed static and a voice-like buzz
@@ -513,6 +525,32 @@ function revealRows(container, dir = 1) {
 /* =====================================================================
    Themes: each lives in themes/<id>/ (theme.css + theme.js), listed in themes/themes.js
    ===================================================================== */
+/** "Album covers in the theme's colours" (System → Preferences). Each cover is turned into shades of
+ *  three colours from the theme (dark, accent, light, set as --tone-dark/-mid/-light in the theme's CSS)
+ *  with one SVG filter, so the real artwork is untouched and switching back is instant. */
+const Covers = {
+  filter: null,
+  refresh() {
+    const on = !!(S.settings && S.settings.themedCovers);
+    document.body.classList.toggle("covers-themed", on);
+    if (!on) return;
+    if (!this.filter) {
+      const NS = "http://www.w3.org/2000/svg", svg = document.createElementNS(NS, "svg");
+      svg.setAttribute("width", "0"); svg.setAttribute("height", "0"); svg.setAttribute("aria-hidden", "true");
+      svg.style.position = "absolute";
+      svg.innerHTML = '<filter id="cover-tone" color-interpolation-filters="sRGB">' +
+        '<feColorMatrix type="matrix" values=".2126 .7152 .0722 0 0  .2126 .7152 .0722 0 0  .2126 .7152 .0722 0 0  0 0 0 1 0"/>' +
+        '<feComponentTransfer><feFuncR type="table"/><feFuncG type="table"/><feFuncB type="table"/></feComponentTransfer></filter>';
+      document.body.append(svg);
+      this.filter = svg;
+    }
+    const cs = getComputedStyle(document.documentElement);
+    const rgb = (name, fb) => { const v = (cs.getPropertyValue(name).trim() || fb).split(/[\s,/]+/).map(Number); return v.length >= 3 && v.every((n) => n >= 0) ? v : fb.split(" ").map(Number); };
+    const d = rgb("--tone-dark", "3 12 46"), m = rgb("--tone-mid", "63 224 255"), l = rgb("--tone-light", "244 253 255");
+    ["R", "G", "B"].forEach((ch, i) => this.filter.querySelector("feFunc" + ch).setAttribute("tableValues", [d[i], m[i], l[i]].map((v) => (v / 255).toFixed(3)).join(" ")));
+  },
+};
+
 const Theme = {
   list: (window.THEMES && window.THEMES.length) ? window.THEMES : [{ id: "tide", name: "TIDE · BLUE" }],
   defs: {}, links: {}, loading: {}, current: null,
@@ -541,6 +579,7 @@ const Theme = {
     return this.loading[id];
   },
   swap(id, def) {
+    if (this.current && this.current.leave) this.current.leave();
     for (const [k, link] of Object.entries(this.links)) link.media = k === id ? "all" : "not all";
     document.body.dataset.theme = id;
     const bg = $("bg");
@@ -551,6 +590,16 @@ const Theme = {
     sw.querySelectorAll(".th").forEach((n) => n.remove());           // previous theme's transition pieces
     if (def.overlay) def.overlay(sw, { h });
     Viz.colors = null; Viz.drewQuiet = false;                     // re-read the new theme's colours
+    Covers.refresh();
+    if (def.onArt) def.onArt(shownImage || null, this.helpers());
+  },
+  /** What a theme's onArt hook gets: a way to fetch a cover's pixels, and to say its colours changed. */
+  helpers() {
+    return {
+      // A cover as a data: URL, so a theme can read its pixels (a web image would be off limits).
+      dataURL: async (url) => { if (!bridge) return url; try { return await native("cover.dataURL", { url }); } catch (e) { return null; } },
+      recolored: () => { Viz.colors = null; Viz.drewQuiet = false; Covers.refresh(); },
+    };
   },
   /** Re-run every piece of text the theme styles itself (menu labels, headers, clock). */
   redecorate() {
@@ -725,6 +774,7 @@ function likedCover() {
 }
 function setBg(el, url) {
   el._bg = url || null;
+  el.classList.add("art-img");                                  // so "album covers in the theme's colours" can find it
   if (!url) { el.style.backgroundImage = "none"; return; }
   const css = `url("${String(url).replace(/"/g, "%22")}")`;
   if (decodedImages.has(url)) { el.style.backgroundImage = css; return; }
@@ -1244,6 +1294,7 @@ function applyNow() {
   const img = (it && it.image) || null;
   if (img !== shownImage) {
     shownImage = img;
+    if (Theme.current && Theme.current.onArt) Theme.current.onArt(img, Theme.helpers());
     if (!img) setBg($("np-photo"), null);
     else {
       const pre = new Image();
@@ -1973,7 +2024,7 @@ views.library = {
         if (url) {
           const im = new Image(); im.loading = "lazy"; im.decoding = "async"; im.alt = "";
           if (!decodedImages.has(url)) { im.className = "fade"; im.onload = () => { im.classList.add("ok"); decodedImages.add(url); }; }
-          im.src = url; cov.append(im);
+          im.classList.add("art-img"); im.src = url; cov.append(im);
         }
       }
       const cap = h("div", "cap");
@@ -5244,7 +5295,7 @@ views.artist = {
       const c = h("div", "card st");
       const inn = h("div", "in"), cov = h("div", "cover");
       const url = pickImage(a.images);
-      if (url) { const im = new Image(); im.loading = "lazy"; im.src = url; im.alt = ""; cov.append(im); }
+      if (url) { const im = new Image(); im.loading = "lazy"; im.className = "art-img"; im.src = url; im.alt = ""; cov.append(im); }
       const cap = h("div", "cap");
       cap.append(h("span", "n", a.name), h("span", "c", upper(a.album_type || "album") + "  ·  " + (a.release_date || "").slice(0, 4)));
       inn.append(cov, cap); c.append(inn);
@@ -5671,7 +5722,7 @@ const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", 
 const SYS_GROUPS = {
   sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "djVoiceId", "sfx", "sfxVolume"] },
   connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfmAccount", "lastfmKey", "lastfmSecret", "geniusToken"] },
-  prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "aiTags", "retag", "updateRepo", "autoUpdate"] },
+  prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "aiTags", "retag", "updateRepo", "autoUpdate"] },
   engine: { label: "Engine settings", keys: ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId", "activity"] },
 };
 views.system = {
@@ -5747,6 +5798,7 @@ views.system = {
       { key: "aiTags", label: "AI playlist tags", type: "toggle", on: S.settings.aiTags !== false, value: Tags.reasonText() },
       { key: "retag", label: "Re-tag playlists", type: "action", value: "Make fresh tags for every playlist", go: "RUN" },
       { key: "autoplay", label: "Autoplay", type: "toggle", on: s.autoplay !== false, value: "Keep playing similar songs after a single song, album or playlist ends" },
+      { key: "themedCovers", label: "Album covers", type: "toggle", on: !!s.themedCovers, value: s.themedCovers ? "In the theme's colours" : "Original artwork" },
       { key: "trueShuffle", label: "True shuffle", type: "toggle", on: s.trueShuffle !== false, value: "Cadenza shuffles playlists itself, with every order equally likely (Spotify's shuffle isn't)" },
       { key: "notifications", label: "Song notifications", type: "toggle", on: S.settings.notifications !== false, value: "Pop-up when the track changes (while Cadenza is in the background)" },
       { key: "menuBar", label: "Menu-bar player", type: "toggle", on: S.settings.menuBar !== false, value: "Album cover in the menu bar with a mini player" },
@@ -5846,6 +5898,7 @@ views.system = {
   async set(key, value) {
     const oldId = S.settings.clientId;
     try { const s = await native("settings.set", { key, value }); if (s) S.settings = s; } catch (e) { /* ignore */ }
+    if (key === "themedCovers") { S.settings.themedCovers = !!value; Covers.refresh(); }
     if (key === "clientId" && String(value).trim() && String(value).trim() !== oldId) {
       // A different Spotify app: the old login belongs to the old Client ID, so sign in again.
       toast("NEW CLIENT ID: LOG IN TO SPOTIFY AGAIN");
@@ -6816,7 +6869,7 @@ function applyMotion() {
 }
 
 async function boot() {
-  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed };   // demo-mode testing hook
+  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
@@ -6831,6 +6884,7 @@ async function boot() {
   const askedP = native("store.get", { key: "scopesAskedFor" }).catch(() => "");
   const urlTheme = new URLSearchParams(location.search).get("theme");
   await Theme.apply(urlTheme || S.settings.theme || Theme.list[0].id, false);
+  Covers.refresh();
   const st = await authP;
   S.loggedIn = !!(st && st.loggedIn);
   if (document.fonts && document.fonts.ready) await document.fonts.ready;

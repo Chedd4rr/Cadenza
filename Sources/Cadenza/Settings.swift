@@ -16,7 +16,7 @@ final class Settings {
 
     /// Keys the web UI is allowed to read and change.
     static let keys = ["theme", "djVoice", "notifications", "menuBar", "miniStyle", "aiTags", "clientId", "manageLibrespot", "librespotPath", "deviceName", "bitrate",
-                       "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin",
+                       "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin", "themedCovers",
                        "sfx", "sfxVolume", "normalize", "eqPerDevice", "autoplay", "trueShuffle", "crossfade", "geniusToken",
                        "discord", "discordAppId", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate"]
 
@@ -36,6 +36,7 @@ final class Settings {
             "mediaKeys": true,
             "globalHotkey": true,
             "reduceMotion": false,
+            "themedCovers": false,
             "volume": 70,
             "sfx": true,
             "sfxVolume": 55,
@@ -116,6 +117,7 @@ final class Settings {
             "mediaKeys": mediaKeys,
             "globalHotkey": globalHotkey,
             "reduceMotion": d.bool(forKey: "reduceMotion"),
+            "themedCovers": d.bool(forKey: "themedCovers"),
             "openAtLogin": openAtLogin,
             "sfx": d.bool(forKey: "sfx"),
             "sfxVolume": d.integer(forKey: "sfxVolume"),

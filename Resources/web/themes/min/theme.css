@@ -19,6 +19,7 @@
   --white: #16171a; --white-rgb: 22 23 26;
   --ice: #6e7178;   --ice-rgb: 110 113 120;
   --cyan: #3a5cff;  --cyan-rgb: 58 92 255;
+  --tone-dark: 22 23 26; --tone-mid: 58 92 255; --tone-light: 255 255 255;   /* light theme: dark text colour for shadows */
   --blue: #c9d3ff;
   --panel: #ffffff;
   --placeholder: #e6e6e2;

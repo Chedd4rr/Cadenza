@@ -34,7 +34,8 @@ const now = () => Math.min(S.duration || Infinity, S.position + (S.playing ? Dat
 function apply(info) {
   info = info || {};
   S.info = info;
-  const theme = info.theme || "tide", style = info.style === "mp3" ? "mp3" : "theme";
+  // Themes the menu-bar player has its own look for; any other (like CHROMA) uses the blue one.
+  const theme = ["tide", "heist", "neon", "min", "rogue"].includes(info.theme) ? info.theme : "tide", style = info.style === "mp3" ? "mp3" : "theme";
   const themeChanged = document.body.dataset.theme !== theme || document.body.dataset.style !== style;
   document.body.dataset.theme = theme;
   document.body.dataset.style = style;

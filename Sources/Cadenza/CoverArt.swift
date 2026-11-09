@@ -32,4 +32,17 @@ enum CoverArt {
     static func image(_ url: String, _ done: @escaping (NSImage?) -> Void) {
         data(url) { done($0.flatMap { NSImage(data: $0) }) }
     }
+
+    /// The cover as a data: URL, for a theme that reads its colours (the page can't read the pixels of
+    /// a picture from another site). Only JPEG and PNG, which is what Spotify serves.
+    static func dataURL(_ url: String, _ done: @escaping (String?) -> Void) {
+        data(url) { d in
+            guard let d, d.count > 8 else { return done(nil) }
+            let mime: String
+            if d.starts(with: [0xFF, 0xD8, 0xFF]) { mime = "image/jpeg" }
+            else if d.starts(with: [0x89, 0x50, 0x4E, 0x47]) { mime = "image/png" }
+            else { return done(nil) }
+            done("data:\(mime);base64," + d.base64EncodedString())
+        }
+    }
 }

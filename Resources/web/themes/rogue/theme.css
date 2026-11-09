@@ -26,6 +26,7 @@
   --blue: #ff2d6f;
   --cyan: #d2ff1f;   --cyan-rgb: 210 255 31;
   --ice: #e6e8df;    --ice-rgb: 230 232 223;
+  --tone-dark: 0 0 0; --tone-mid: 210 255 31; --tone-light: 230 232 223;
   --white: #d2ff1f;  --white-rgb: 210 255 31;
   --panel: #000;
   --placeholder: #12140c;

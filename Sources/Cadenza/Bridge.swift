@@ -176,6 +176,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             let history = app.history
             DispatchQueue.global(qos: .userInitiated).async { reply(history.entries(since: since)) }
 
+        case "cover.dataURL":
+            CoverArt.dataURL((args["url"] as? String) ?? "") { reply($0) }
+
         case "spotifyHistory.import":
             // You pick the files in a macOS dialog, so the page never chooses what gets read.
             app.spotifyHistory.pickAndImport(window: app.window) { result in reply(result) }

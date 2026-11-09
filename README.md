@@ -24,8 +24,10 @@ which it starts and manages for you.
 
 ## Features
 
-- Four themes, each with its own layout, animations and sounds: TIDE · BLUE, HEIST · RED,
-  NEON · CITY and STUDIO · MINIMAL. There's a fifth one hidden somewhere.
+- Five themes, each with its own layout, animations and sounds: TIDE · BLUE, HEIST · RED,
+  NEON · CITY, STUDIO · MINIMAL and CHROMA · COVER, whose colours come from the album cover that's
+  playing. There's one more hidden somewhere.
+- Album covers can stay as they are or take on the theme's colours (System → Preferences → Album covers).
 - A DJ that builds sets from what you've had on repeat, old favourites, forgotten Liked Songs and
   deep cuts by your top artists, and introduces each segment out loud. With Last.fm connected it
   also digs up songs you used to play constantly and then dropped, and what you were playing this
@@ -279,13 +281,19 @@ will do), press Generate Access Token, and paste the token into System → Conne
 
 Switch with ⌘T or System → Theme. Each theme is a folder in `Resources/web/themes/` with a
 stylesheet, a script for its background and animations, and its own click sounds. The sounds are
-synthesised, so there are no audio files. To make your own theme, see
+synthesised, so there are no audio files.
+
+CHROMA · COVER reads the playing song's cover each time it changes, picks a dark colour, an accent
+and a light colour from it, and recolours the whole app (the menu-bar player keeps the blue look).
+With System → Preferences → Album covers set to "In the theme's colours", every cover is shown in
+shades of the theme's own dark, accent and light colours; your covers aren't changed, only how
+Cadenza draws them. To make your own theme, see
 [`Resources/web/themes/README.md`](Resources/web/themes/README.md).
 
 ## Working on the UI
 
 The interface is plain HTML, CSS and JavaScript in `Resources/web/`. Open `Resources/web/index.html`
-in a browser for a demo mode with sample data, and add `?theme=heist` (or `neon`, `min`) to preview a
+in a browser for a demo mode with sample data, and add `?theme=heist` (or `neon`, `min`, `chroma`) to preview a
 theme. The menu-bar player is `Resources/web/mini/mini.html`; open it the same way (`?theme=neon`) to
 preview it. Run `./build.sh --install` after changes.
 In the app, Option-right-click → Inspect Element opens the Web Inspector.

@@ -9,6 +9,7 @@ window.THEMES = [
   { id: "heist", name: "HEIST · RED" },
   { id: "neon", name: "NEON · CITY" },
   { id: "min", name: "STUDIO · MINIMAL" },
+  { id: "chroma", name: "CHROMA · COVER" },     // colours follow the album cover that's playing
   // Never in the ⌘T cycle or the theme lists: only reachable through a secret in the ⌘K palette.
   { id: "rogue", name: "OGMI.OS · SIGNAL", hidden: true },
 ];
