@@ -654,6 +654,7 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 #v-stats { display: flex; flex-direction: column; }
 #v-stats[hidden] { display: none; }
 #st-tabs { flex: none; margin-bottom: 1.6vh; }
+.st-gap { flex: 1; }
 .st-tiles { flex: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1vw; margin-bottom: 2vh; }
 .st-tile { padding: 1.4vh 1vw 1.2vh; background: rgb(var(--white-rgb) / .06); border: 1px solid rgb(var(--cyan-rgb) / .35); }
 .st-tile b { display: block; font: 400 4.6vh/1 var(--display); color: var(--white); font-variant-numeric: tabular-nums; }

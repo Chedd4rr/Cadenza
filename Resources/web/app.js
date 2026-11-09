@@ -1743,7 +1743,7 @@ const DJ = {
    HOME
    ===================================================================== */
 // Playback controls (play/pause, next, previous, shuffle, repeat) live in the toolbar under Now Playing.
-const HOME_ITEMS = ["dj", "lyrics", "library", "search", "queue", "output", "eq", "system"];
+const HOME_ITEMS = ["dj", "lyrics", "library", "search", "queue", "stats", "eq", "system"];   // Devices lives in System
 
 /** Toolbar under Now Playing: shuffle · previous · play/pause · next · repeat. */
 const Controls = {
@@ -1791,6 +1791,7 @@ views.home = {
       case "search": return { label: "Search", hint: "Find new songs to play or add to a playlist." };
       case "queue": return { label: "Queue", hint: "See what's coming up next." };
       case "output": return { label: "Devices", hint: "Speakers, AirPods, Bluetooth, and Spotify Connect devices." };
+      case "stats": return { label: "Stats", hint: "Your top artists and songs, and when you listen. Import your Spotify history for every play." };
       case "lyrics": return { label: "Lyrics", hint: "Sing along: lyrics that follow the song." };
       case "system": return { label: "System", hint: "Account, audio engine and app settings." };
       case "eq": return { label: "EQ", tag: EQ.state && EQ.state.enabled && EQ.state.engine !== false ? (EQ.state.preset || "").toUpperCase() : "OFF", hint: "Shape the sound: ten bands, presets and a volume boost." };
@@ -1857,6 +1858,12 @@ views.home = {
         const q = (views.queue.list.items || []).slice(0, 3);
         if (q.length) q.forEach((t, k) => rows.push(`${k + 1}. ${t.name}`));
         else rows.push("See what's coming up, and play any of it now.");
+        break;
+      }
+      case "stats": {
+        const st = views.stats;
+        head = st.spotPlays ? st.spotPlays.toLocaleString() + " PLAYS" : LFM.ready() ? "LAST.FM · " + upper(LFM.user()) : "YOUR LISTENING"; go = "SEE STATS";
+        rows.push("Top artists, top songs and when you listen", st.spotPlays ? "Includes your imported Spotify history" : "Import your Spotify history from the Stats page");
         break;
       }
       case "output":
@@ -2629,7 +2636,14 @@ const PlayCounts = {
 const PERIODS = { 7: "7day", 30: "1month", 365: "12month", 0: "overall" };
 views.stats = {
   el: $("v-stats"), range: 7, entries: null, at: 0, lfm: {}, source: "cadenza", token: 0,
-  keys: () => [["← →", "WEEK / MONTH / YEAR / ALL"], ["↑↓", "SONGS"], ["⏎", "PLAY"], ["Q", "UP NEXT"], ["A", "ADD"], ["F", "FRIENDS", () => go("friends")], ["ESC", "BACK", back]],
+  // Imported Spotify history: every play as an entry, how many, and when the last one ended (ms).
+  spot: [], spotPlays: 0, spotEnd: 0, spotLoaded: false, picked: false, importing: false,
+  // Last.fm scrobbles after that (saved on this Mac, topped up from Last.fm), and when they were last topped up.
+  scrob: null, scrobAt: 0, syncing: false,
+  keys: () => [["← →", "WEEK / MONTH / YEAR / ALL"], ["↑↓", "SONGS"], ["⏎", "PLAY"], ["Q", "UP NEXT"], ["A", "ADD"],
+    ["I", "IMPORT SPOTIFY HISTORY", () => views.stats.importHistory()],
+    ...(views.stats.sources().length > 1 ? [["S", "SOURCE", () => views.stats.nextSource()]] : []),
+    ["F", "FRIENDS", () => go("friends")], ["ESC", "BACK", back]],
   list: new List($("st-songs"), {
     render: (x, i) => {
       const r = renderTrack(x.t, i, { thumb: true, noCount: true });
@@ -2640,10 +2654,120 @@ views.stats = {
   }),
   async show() {
     if (!Links.lastfm) await Links.load();
-    this.source = LFM.ready() ? "lastfm" : "cadenza";
+    await this.loadSpotify();
+    // Everything together first, then Last.fm's charts, then Cadenza's own log.
+    // A source you picked with S stays picked while it's still there.
+    const list = this.sources();
+    if (!this.picked || !list.includes(this.source)) this.source = list[0];
+    this.renderActs();
+    setKeys(this.keys());
     if (this.source === "lastfm") return this.showLastfm();
-    await this.load();
+    await Promise.all([this.load(), this.source === "all" && LFM.ready() ? this.loadScrobbles() : null]);
+    if (this.source === "all") this.syncScrobbles();             // fetches new scrobbles in the background, then draws again
     this.render();
+  },
+  /** "all" is everything together: imported Spotify history, then Last.fm, then Cadenza. "lastfm" is
+   *  Last.fm's own charts, and "cadenza" only what Cadenza played. */
+  sources() {
+    return [...(this.spotPlays || LFM.ready() ? ["all"] : []), ...(LFM.ready() ? ["lastfm"] : []), "cadenza"];
+  },
+  nextSource() {
+    const list = this.sources();
+    if (list.length < 2) return;
+    this.source = list[(list.indexOf(this.source) + 1) % list.length];
+    this.picked = true;
+    Sfx.play("page");
+    this.show();
+  },
+  /** The source and import buttons at the end of the range tabs. */
+  renderActs() {
+    const names = { all: "ALL", lastfm: "LAST.FM CHARTS", cadenza: "CADENZA" };
+    const src = $("st-source");
+    src.hidden = this.sources().length < 2;
+    src.textContent = "SOURCE: " + names[this.source];
+    $("st-import").textContent = this.importing ? "IMPORTING…" : "+ IMPORT";
+    $("st-import").title = "Import your Spotify listening history (I)";
+  },
+
+  // ----- Imported Spotify history -----
+  async loadSpotify(force) {
+    if (this.spotLoaded && !force) return;
+    let d = null;
+    try { d = await native("spotifyHistory.get"); } catch (e) { d = null; }
+    const tracks = (d && Array.isArray(d.tracks)) ? d.tracks : [], plays = (d && Array.isArray(d.plays)) ? d.plays : [];
+    // Each play is [end time in seconds, song number, ms played]. Entries use the start time, like Cadenza's own log.
+    this.spot = plays.map(([end, i, ms]) => {
+      const t = tracks[i] || [];
+      return { uri: t[0] || "", name: t[1] || "", artists: t[2] || "", album: t[3] || "", one: true, ms, at: end * 1000 - ms };
+    }).filter((e) => e.name);
+    this.spotPlays = this.spot.length;
+    this.spotEnd = plays.length ? plays[plays.length - 1][0] * 1000 : 0;
+    this.spotLoaded = true;
+  },
+  /** Pick Spotify's history files (or the .zip) and add them. Plays already there are left out. */
+  async importHistory() {
+    if (this.importing) return;
+    this.importing = true; this.renderActs();
+    toast("CHOOSE THE .ZIP SPOTIFY SENT YOU, OR THE STREAMING_HISTORY .JSON FILES");
+    let r = null;
+    try { r = await native("spotifyHistory.import"); } catch (e) { r = null; }
+    this.importing = false;
+    if (!r) { this.renderActs(); return; }                      // cancelled
+    if (!r.files) { this.renderActs(); return toast("NO SPOTIFY HISTORY IN THOSE FILES. LOOK FOR STREAMING_HISTORY_AUDIO_….JSON", true); }
+    const n = (x) => Number(x || 0).toLocaleString();
+    toast(r.added ? `ADDED ${n(r.added)} PLAYS` + (r.duplicates ? ` · ${n(r.duplicates)} WERE ALREADY THERE` : "") : `NOTHING NEW · ALL ${n(r.duplicates)} PLAYS WERE ALREADY THERE`);
+    await this.loadSpotify(true);
+    if (r.added) { this.source = "all"; this.picked = true; this.range = 0; $("st-tabs").querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.r === 0)); }
+    if (current() && current().name === "stats") this.show();
+  },
+  // ----- Last.fm scrobbles after the imported history -----
+  async loadScrobbles() {
+    if (this.scrob && this.scrob.user === LFM.user()) return;
+    let v = null;
+    try { v = await native("lastfmPlays.get"); } catch (e) { v = null; }
+    this.scrob = v && v.user === LFM.user() && Array.isArray(v.plays) ? v : { user: LFM.user(), upTo: 0, plays: [] };
+  },
+  /** Ask Last.fm for scrobbles newer than the ones saved (and newer than the imported history), at most
+   *  every 10 minutes. The first time, that's everything since the imported history ends, or your whole
+   *  Last.fm history if nothing is imported: up to a minute or two for a big one. */
+  async syncScrobbles(force) {
+    if (!LFM.ready() || this.syncing || (!force && Date.now() - this.scrobAt < 600000)) return;
+    this.syncing = true;
+    try {
+      await this.loadScrobbles();
+      const s = this.scrob;
+      const from = Math.max(s.upTo + 1, Math.floor(this.spotEnd / 1000) + 1);
+      const to = Math.floor(Date.now() / 1000);
+      const got = [];
+      for (let page = 1, pages = 1; page <= pages && page <= 2000; page++) {
+        const b = await LFM.get("user.getRecentTracks", { from, to, limit: 200, page }, 0);
+        if (!b || !b.recenttracks) { if (page === 1) return; break; }        // Last.fm unreachable: try again later
+        pages = +(b.recenttracks["@attr"] && b.recenttracks["@attr"].totalPages) || 1;
+        for (const x of LFM.arr(b.recenttracks.track)) {
+          const uts = x.date && +x.date.uts;                       // the song playing right now has no date yet
+          const artist = (x.artist && (x.artist["#text"] || x.artist.name)) || "";
+          if (uts && x.name && artist) got.push([uts, x.name, artist, (x.album && x.album["#text"]) || ""]);
+        }
+        if (pages > 3 && current() && current().name === "stats") setText("st-range", `SYNCING LAST.FM · ${Math.round((page / pages) * 100)}%`);
+      }
+      // The same scrobble twice (Last.fm's pages shift while new ones arrive): keep one.
+      const have = new Set(s.plays.map((p) => p[0] + "|" + p[1]));
+      const fresh = got.filter((p) => { const k = p[0] + "|" + p[1]; if (have.has(k)) return false; have.add(k); return true; });
+      this.scrobAt = Date.now();
+      s.plays = s.plays.concat(fresh).sort((a, b) => a[0] - b[0]);
+      s.upTo = to;
+      native("lastfmPlays.set", { value: s }).catch(() => {});
+      if (current() && current().name === "stats" && this.source === "all") this.render();
+    } finally { this.syncing = false; }
+  },
+
+  async clearHistory() {
+    let ok = false;
+    try { ok = await native("spotifyHistory.clear"); } catch (e) { ok = false; }
+    if (!ok) return;
+    toast("IMPORTED SPOTIFY HISTORY REMOVED");
+    await this.loadSpotify(true);
+    if (current() && current().name === "stats") this.show();
   },
   setRange(days) {
     this.range = days;
@@ -2760,18 +2884,55 @@ views.stats = {
     this.entries = Array.isArray(es) ? es.filter((e) => e && e.uri && e.at) : [];
     this.at = Date.now();
   },
+  /** Artist names of an entry. Imported plays have one artist (which may contain a comma). */
+  artistsOf(e) { return e.one ? (e.artists ? [e.artists] : []) : String(e.artists || "").split(", ").filter(Boolean); },
   track(e) {
-    return { uri: e.uri, name: e.name, duration_ms: e.dur || 0,
-      artists: String(e.artists || "").split(", ").filter(Boolean).map((name) => ({ name })),
+    // An imported play from the "account data" files has no song link: find it on Spotify when played.
+    return { uri: e.uri, name: e.name, duration_ms: e.dur || 0, lfm: !e.uri,
+      artists: this.artistsOf(e).map((name) => ({ name })),
       album: { name: e.album || "", images: e.image ? [{ url: e.image, width: 640 }] : [] } };
   },
+  /** Everything in one list, oldest first, each play counted once:
+   *  1. your imported Spotify history;
+   *  2. then Last.fm scrobbles made after it ends;
+   *  3. then Cadenza's own plays after it ends that Last.fm doesn't already have. Cadenza scrobbles what
+   *     it plays, so most are there: a play counts as the same if it's the same song within 10 minutes.
+   *  Last.fm doesn't say how long you listened, so a scrobble counts for that song's usual length from
+   *  your other plays, or 3.5 minutes. */
+  combined() {
+    const end = this.spotEnd, own = this.entries || [];
+    const keyOf = (e) => LFM.key(this.artistsOf(e)[0] || "", e.name);
+    const usual = new Map();
+    for (const e of this.spot) if (e.ms) usual.set(keyOf(e), e.ms);
+    for (const e of own) if (e.dur || e.ms) usual.set(keyOf(e), e.dur || e.ms);
+    // If both Cadenza and Spotify's own Last.fm link scrobbled the same play, Last.fm has it twice, a
+    // moment apart: the same song again within 90 seconds is that, not a real second play.
+    const near = new Map(), scrobs = [];
+    for (const [uts, name, artists, album] of ((LFM.ready() && this.scrob && this.scrob.plays) || [])) {
+      if (uts * 1000 <= end) continue;
+      const e = { uri: "", name, artists, album, one: true, at: uts * 1000 }, k = keyOf(e);
+      const times = near.get(k) || [];
+      if (times.some((t) => Math.abs(t - e.at) < 90000)) continue;
+      times.push(e.at); near.set(k, times);
+      e.ms = usual.get(k) || 210000;
+      scrobs.push(e);
+    }
+    const mine = own.filter((e) => e.at > end && !(near.get(keyOf(e)) || []).some((t) => Math.abs(t - e.at) < 600000));
+    return this.spot.concat(scrobs, mine).sort((a, b) => a.at - b.at);
+  },
   render() {
-    const all = this.entries || [];
+    const own = this.entries || [];
+    const spotify = this.source === "all";
+    const all = spotify ? this.combined() : own;
     const since = this.range ? Date.now() - this.range * 86400e3 : 0;
     const es = all.filter((e) => e.at >= since);
-    setText("st-range", "CADENZA ONLY · CONNECT LAST.FM FOR EVERYTHING");
+    const token = ++this.token;
+    const parts = [this.spotPlays ? "SPOTIFY HISTORY" : "", LFM.ready() ? "LAST.FM" : "", "CADENZA"].filter(Boolean).join(" + ");
+    setText("st-range", spotify ? parts + " · SINCE " + new Date(all[0] ? all[0].at : Date.now()).getFullYear()
+      : "CADENZA ONLY · IMPORT YOUR SPOTIFY HISTORY OR CONNECT LAST.FM FOR EVERYTHING");
     if (!es.length) {
-      this.showEmpty(all.length ? "NOTHING PLAYED IN THIS STRETCH YET" : "PLAY SOME MUSIC, OR CONNECT LAST.FM IN SYSTEM → CONNECTIONS TO SEE YOUR WHOLE HISTORY.");
+      this.showEmpty(all.length ? "NOTHING PLAYED IN THIS STRETCH YET" : this.syncing ? "LOADING YOUR LAST.FM HISTORY…"
+        : "PLAY SOME MUSIC, IMPORT YOUR SPOTIFY HISTORY (I), OR CONNECT LAST.FM IN SYSTEM → CONNECTIONS.");
       this.list.set([]);
       return;
     }
@@ -2779,8 +2940,11 @@ views.stats = {
     const minutes = Math.round(es.reduce((a, e) => a + (e.ms || 0), 0) / 60000);
     const artistCount = {}, songCount = {}, hours = Array(24).fill(0);
     for (const e of es) {
-      for (const a of String(e.artists || "").split(", ").filter(Boolean)) artistCount[a] = (artistCount[a] || 0) + 1;
-      const s = songCount[e.uri] || (songCount[e.uri] = { t: this.track(e), n: 0, last: 0 });
+      for (const a of this.artistsOf(e)) artistCount[a] = (artistCount[a] || 0) + 1;
+      // The same song from different sources (with or without a Spotify link) counts as one.
+      const key = spotify ? LFM.key(this.artistsOf(e)[0] || "", e.name) : e.uri || "n:" + (e.name + "|" + e.artists).toLowerCase();
+      const s = songCount[key] || (songCount[key] = { t: this.track(e), n: 0, last: 0 });
+      if (!s.t.uri && e.uri) s.t = this.track(e);                  // prefer a version that links to Spotify
       s.n++; s.last = Math.max(s.last, e.at);
       hours[new Date(e.at).getHours()] += (e.ms || 0);
     }
@@ -2790,13 +2954,15 @@ views.stats = {
     let streak = 0, cur = new Date();
     if (!days.has(day(cur))) cur.setDate(cur.getDate() - 1);
     while (days.has(day(cur))) { streak++; cur.setDate(cur.getDate() - 1); }
-    this.tiles([[minutes >= 600 ? Math.round(minutes / 60) + "H" : minutes, minutes >= 600 ? "HOURS LISTENED" : "MINUTES LISTENED"], [es.length, "PLAYS"],
-      [Object.keys(artistCount).length, "ARTISTS"], [streak, streak === 1 ? "DAY STREAK" : "DAYS IN A ROW"]]);
+    this.tiles([[minutes >= 600 ? Math.round(minutes / 60) + "H" : minutes, minutes >= 600 ? "HOURS LISTENED" : "MINUTES LISTENED"], [es.length.toLocaleString(), "PLAYS"],
+      [Object.keys(artistCount).length.toLocaleString(), "ARTISTS"], [streak, streak === 1 ? "DAY STREAK" : "DAYS IN A ROW"]]);
     this.artistBars($("st-artists"), Object.entries(artistCount).sort((a, b) => b[1] - a[1]).slice(0, 6));
     this.hourBars(hours);
-    this.list.set(Object.values(songCount).sort((a, b) => b.n - a.n || b.last - a.last).slice(0, 50));
+    const rows = Object.values(songCount).sort((a, b) => b.n - a.n || b.last - a.last).slice(0, 50);
+    this.list.set(rows);
     this.list.select(0, false);
     revealRows(this.el);
+    if (spotify) this.fillCovers(rows, token);                   // imported plays come without pictures
   },
   act(kind, t) { return Resolve.act(kind, t); },
   onKey(e) {
@@ -2807,10 +2973,18 @@ views.stats = {
     if (k === "q") { this.act("queue", x && x.t); return true; }
     if (k === "a") { this.act("add", x && x.t); return true; }
     if (k === "f") { go("friends"); return true; }
+    if (k === "i") { this.importHistory(); return true; }
+    if (k === "s") { this.nextSource(); return true; }
     return false;
   },
 };
-$("st-tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) views.stats.setRange(+b.dataset.r); });
+$("st-tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.id === "st-import") return views.stats.importHistory();
+  if (b.id === "st-source") return views.stats.nextSource();
+  views.stats.setRange(+b.dataset.r);
+});
 
 /* =====================================================================
    FRIENDS: your Last.fm friends, what they're playing, and how close your taste is
@@ -3309,6 +3483,9 @@ const Palette = {
 
     // ----- Stats and friends -----
     [[7, "this week"], [30, "this month"], [365, "this year"], [0, "all time"]].forEach(([r, label]) => add("STATS", "stats", "Stats: " + label, goTo("stats", () => views.stats.setRange(r)), "STATS", { keys: "top listening history" }));
+    add("STATS", "plus", "Import Spotify listening history", goTo("stats", () => views.stats.importHistory()), "I", { keys: "extended streaming history json zip data download" });
+    if (views.stats.sources().length > 1) add("STATS", "stats", "Stats: switch source", goTo("stats", () => views.stats.nextSource()), "S", { keys: "spotify last.fm cadenza all" });
+    if (views.stats.spotPlays) add("STATS", "trash", "Remove imported Spotify history", () => views.stats.clearHistory(), "STATS", { keys: "delete forget extended streaming" });
     add("FRIENDS", "plus", "Add a friend (Last.fm username)", goTo("friends", () => views.friends.add()), "+", { keys: "follow" });
     (views.friends.list.items || []).filter((f) => f && !f.add).forEach((f) => {
       add("FRIENDS", "artist", "Friend: " + f.name, goTo("friends", () => this.pickFriend(f.name)), f.match != null ? f.match + "% MATCH" : "FRIEND", { keys: (f.realname || "") + " compare taste" });
@@ -3345,7 +3522,7 @@ const Palette = {
     // ----- Every setting -----
     try {
       views.system.allOptions().forEach((o) => {
-        if (o.type === "group" || ["theme", "stats", "friends", "commands", "stage"].includes(o.key)) return;
+        if (o.type === "group" || ["theme", "stats", "devices", "friends", "commands", "stage"].includes(o.key)) return;
         const state = o.type === "toggle" ? (o.on ? "ON" : "OFF") : o.go || "CHANGE";
         add("SETTINGS", o.type === "toggle" ? "check" : "tools", "Setting: " + o.label, () => this.setting(o.key), state, { keys: "system preference option " + (typeof o.value === "string" ? o.value : "") });
       });
@@ -5490,7 +5667,7 @@ views.dj = {
    ===================================================================== */
 const ENGINE_TEXT = { running: "RUNNING", starting: "STARTING…", login: "WAITING FOR SPOTIFY SIGN-IN (CHECK YOUR BROWSER)", stopped: "STOPPED", missing: "NOT FOUND (brew install librespot)", error: "CRASHED. SEE LOG BELOW" };
 // System is split up: the things you reach for most sit at the top, the rest live in groups.
-const SYS_TOP = ["theme", "account", "stats", "friends", "commands", "stage", "update"];
+const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", "update"];
 const SYS_GROUPS = {
   sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "djVoiceId", "sfx", "sfxVolume"] },
   connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfm", "lastfmAccount", "lastfmKey", "lastfmSecret", "geniusToken"] },
@@ -5586,6 +5763,7 @@ views.system = {
       { key: "lastfmSecret", label: "Last.fm secret", type: "text", value: s.lastfmSecret ? "Saved (hidden)" : "Not set", raw: "", go: "EDIT" },
       { key: "geniusToken", label: "Genius token", type: "text", value: s.geniusToken ? "Saved (hidden) · lets Search find songs from a lyric" : "Not set (genius.com/api-clients → Generate Access Token) · for Search → Lyrics", raw: "", go: "EDIT" },
       { key: "crossfade", label: "Crossfade", type: "cycle", value: (s.crossfade ?? 6) ? `${s.crossfade ?? 6} seconds: the end of each song blends into the next` : "Off: songs follow each other with no overlap", go: "CHANGE" },
+      { key: "devices", label: "Devices", type: "action", value: (S.player && S.player.device) ? "Playing on " + S.player.device + " · speakers, AirPods, Spotify Connect" : "Speakers, AirPods, Bluetooth and Spotify Connect devices", go: "OPEN" },
       { key: "stats", label: "Listening stats", type: "action", value: LFM.ready() ? "Your whole history from Last.fm: top artists and songs, plays, when you listen" : "Your top artists and songs (connect Last.fm for your whole history)", go: "OPEN" },
       { key: "friends", label: "Friends", type: "action", value: LFM.ready() ? "What your Last.fm friends are playing, and how close your taste is" : "Connect Last.fm to see your friends", go: "OPEN" },
       { key: "diagnostics", label: "Copy diagnostics", type: "action", value: "Copies the engine log, recent events and settings (no passwords) to paste into a bug report", go: "COPY" },
@@ -5707,6 +5885,7 @@ views.system = {
     if (o.key === "account") return this.logout();
     if (o.key === "activity") return this.copyActivity();
     if (o.key === "stats") return go("stats");
+    if (o.key === "devices") return go("output");
     if (o.key === "friends") return go("friends");
     if (o.key === "diagnostics") return copyDiagnostics();
     if (o.type === "text") return this.edit(o);
@@ -6517,6 +6696,8 @@ const COMMANDS = [
   ["STAGE", "Leave stage mode", "ESC  ·  F"],
   ["LYRICS", "Translate the lyrics", "T"],
   ["STATS", "Week / month / year / all time", "← →", () => go("stats")],
+  ["STATS", "Import Spotify listening history", "I", () => go("stats").then(() => settled()).then(() => views.stats.importHistory())],
+  ["STATS", "Switch source (Spotify / Last.fm / Cadenza)", "S", () => go("stats")],
   ["STATS", "Friends", "F", () => go("friends")],
   ["FRIENDS", "Play their song  ·  blend  ·  profile", "⏎  ·  B  ·  O", () => go("friends")],
   ["FRIENDS", "Add  ·  remove a friend", "+  ·  X"],
@@ -6851,6 +7032,25 @@ const Demo = (() => {
             out.push({ uri: t.uri, name: t.name, artists: t.artists.map((a) => a.name).join(", "), album: t.album.name, image: t.album.images[0].url, ms: Math.round(t.duration_ms * (0.6 + rnd() * 0.4)), at, dur: t.duration_ms });
           }
           return Promise.resolve(out.sort((a, b) => a.at - b.at));
+        }
+        // Importing Spotify's history: two years of made-up plays, with the same songs counted once.
+        case "spotifyHistory.get": return Promise.resolve(window.__demoSpot || { tracks: [], plays: [] });
+        case "spotifyHistory.clear": window.__demoSpot = null; return Promise.resolve(true);
+        case "spotifyHistory.import": {
+          const had = window.__demoSpot ? window.__demoSpot.plays.length : 0;
+          if (!window.__demoSpot) {
+            const ts = tracks.map((t) => [t.uri, t.name, t.artists[0].name, t.album.name]), plays = [];
+            let seed = 3; const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+            const end = Math.floor((Date.now() - 20 * 86400e3) / 1000);
+            for (let d = 730; d >= 0; d--) for (let k = 0, n = Math.floor(rnd() * 12); k < n; k++) {
+              const i = Math.floor(Math.pow(rnd(), 1.5) * ts.length);
+              plays.push([end - d * 86400 - Math.floor(rnd() * 86400), i, 60000 + Math.floor(rnd() * 150000)]);
+            }
+            plays.sort((a, b) => a[0] - b[0]);
+            window.__demoSpot = { tracks: ts, plays };
+          }
+          const total = window.__demoSpot.plays.length;
+          return new Promise((res) => setTimeout(() => res({ files: 3, read: total + 400, added: total - had, duplicates: had, skipped: 400, total }), 600));
         }
         case "translate": return new Promise((res) => setTimeout(() => res({ lines: args.lines.map((l) => l && l !== "♪" ? "(ES) " + l.split(" ").reverse().join(" ") : ""), error: null, target: "es" }), 400));
         case "genius.search": return Promise.resolve({ hits: [{ title: "Midnight Tide (Full Moon Mix)", artist: "Kairo Blue" }, { title: "Undertow", artist: "Kairo Blue" }], error: null });

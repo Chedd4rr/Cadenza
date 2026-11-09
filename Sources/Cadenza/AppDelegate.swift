@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     let lastfm = LastFM()
     let updater = Updater()
     let history = History()
+    let spotifyHistory = SpotifyHistory()
+    let lastfmPlays = LastfmPlays()
     let floating = FloatingPlayer()
     let translator = LyricsTranslator()
     private var hotKey: HotKey?

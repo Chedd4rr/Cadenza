@@ -147,6 +147,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             app.lastfm.read(method, params) { status, json in reply(["status": status, "body": json ?? NSNull()]) }
         case "lastfm.logout":
             app.lastfm.logout()
+            app.lastfmPlays.clear()
             reply(true)
 
         case "update.status":
@@ -175,6 +176,23 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             let since = (args["since"] as? Double) ?? 0
             let history = app.history
             DispatchQueue.global(qos: .userInitiated).async { reply(history.entries(since: since)) }
+
+        case "spotifyHistory.import":
+            // You pick the files in a macOS dialog, so the page never chooses what gets read.
+            app.spotifyHistory.pickAndImport(window: app.window) { result in reply(result) }
+        case "lastfmPlays.get":
+            app.lastfmPlays.get { reply($0) }
+        case "lastfmPlays.set":
+            app.lastfmPlays.set(args["value"]) { reply($0) }
+        case "spotifyHistory.get":
+            app.spotifyHistory.snapshot { reply($0) }
+        case "spotifyHistory.clear":
+            ask("Remove your imported Spotify history?",
+                "Stats goes back to Last.fm or Cadenza's own history. Your Spotify account and the files you imported aren't touched, and you can import them again any time.",
+                ok: "Remove") { [weak self] yes in
+                guard yes, let self else { return reply(false) }
+                self.app.spotifyHistory.clear { reply(true) }
+            }
 
         case "diagnostics":
             let text = app.diagnostics()

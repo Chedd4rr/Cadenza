@@ -159,10 +159,10 @@
     <div class="tracks scroller" id="hist-list"></div>
   </section>
 
-  <!-- STATS: Cadenza's own listening history -->
+  <!-- STATS: imported Spotify history, Last.fm or Cadenza's own listening history -->
   <section class="view" id="v-stats" hidden>
     <h1 class="vh st"><span class="title" data-title="STATS"></span><small id="st-range"></small></h1>
-    <div class="s-tabs st" id="st-tabs"><button data-r="7" class="on">THIS WEEK</button><button data-r="30">THIS MONTH</button><button data-r="365">THIS YEAR</button><button data-r="0">ALL TIME</button></div>
+    <div class="s-tabs st" id="st-tabs"><button data-r="7" class="on">THIS WEEK</button><button data-r="30">THIS MONTH</button><button data-r="365">THIS YEAR</button><button data-r="0">ALL TIME</button><span class="st-gap"></span><button id="st-source" hidden></button><button id="st-import">+ IMPORT</button></div>
     <div class="st-tiles st" id="st-tiles"></div>
     <div class="st-cols">
       <div class="st-left st">

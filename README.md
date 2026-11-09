@@ -41,8 +41,8 @@ which it starts and manages for you.
   Mac's language (done on your Mac, macOS 15+). Search → Lyrics finds a song from a line you remember.
 - Up Next, Cadenza's own queue: add with Q, reorder with ⌥↑/⌥↓, remove with X, clear with C.
 - Listening stats for the week, month, year or all time: top artists and songs, plays, and the hours
-  you listen. With Last.fm connected they cover your whole scrobbling history; without it, what
-  Cadenza itself has played.
+  you listen. Import the history Spotify sends you and they cover every play since your account
+  began. They can also come from Last.fm, or from what Cadenza itself has played.
 - Play counts from Last.fm on every song: in playlists, albums, search, the queue and Now Playing,
   plus how many times you've played an artist on their page.
 - Friends: what your Last.fm friends are playing right now, a taste match score, the artists you have
@@ -157,16 +157,16 @@ The mouse and trackpad work too, and the Controls menu in the menu bar has the m
 
 | Page | What it does |
 |---|---|
-| Home | DJ, Lyrics, Library, Search, Queue, Devices, EQ and System, plus the now-playing panel with playback controls. Click the artist or album there to look it up in Search. |
+| Home | DJ, Lyrics, Library, Search, Queue, Stats, EQ and System, plus the now-playing panel with playback controls. Click the artist or album there to look it up in Search. |
 | DJ | Builds a set and talks you through it with your Mac's voices. A "Premium" voice from System Settings → Accessibility → Spoken Content sounds the most natural. |
 | Lyrics | Synced lyrics; click a line to jump there |
 | Library | Liked Songs and your playlists, with AI tags |
 | Playlist / Album / Artist | Play, queue, add, remove, reorder, edit details and cover, save, follow, share |
 | Search | Songs, albums, artists and playlists (Tab switches type) |
 | Queue / History | Your Up Next, then Spotify's queue; and what you played recently |
-| Stats | Top artists and songs, plays, when you listen; from Last.fm when it's connected (System → Listening stats, or ⌘K) |
+| Stats | Top artists and songs, plays, when you listen: your imported Spotify history, Last.fm and Cadenza together, or Last.fm's charts or Cadenza's own log on their own (S switches). I imports Spotify history |
 | Friends | Your Last.fm friends: what they're playing, taste match, artists in common, blends (F in Stats, or ⌘K) |
-| Devices | This Mac's outputs (speakers, AirPods, Bluetooth) and Spotify Connect devices |
+| Devices | This Mac's outputs (speakers, AirPods, Bluetooth) and Spotify Connect devices (System → Devices, or ⌘K) |
 | EQ | Ten bands (32 Hz to 16 kHz), presets, boost |
 | System | Theme, account and the most-used settings at the top; Sound & EQ, Connections, Preferences and Engine settings in groups |
 
@@ -182,6 +182,47 @@ put the API key and shared secret in System → Connections, then choose Log in.
 Cadenza uses your Last.fm history for Stats, play counts, the DJ and Friends. It only reads what
 you've scrobbled, so if you've listened elsewhere, connect Spotify to Last.fm in Last.fm's settings
 (Applications → Spotify scrobbling) so everything ends up there.
+
+### Your whole Spotify history
+
+Last.fm only knows what was scrobbled, and it won't take years of old plays. Spotify will send you all
+of them instead:
+
+1. On [spotify.com/account/privacy](https://www.spotify.com/account/privacy/), tick
+   **Extended streaming history** and request it. Spotify emails you a download, which can take a few
+   days and up to 30.
+2. In Cadenza, open Stats and press **I** (or the **+ IMPORT** button, or ⌘K → "Import Spotify
+   listening history"). Pick the .zip Spotify sent, the folder inside it, or the
+   `Streaming_History_Audio_….json` files. The shorter "Account data" download
+   (`StreamingHistory_music_….json`) works too.
+
+Stats then puts everything together, each play counted once:
+
+1. your imported Spotify history;
+2. then everything scrobbled to Last.fm after it ends (if Last.fm is connected), so plays from your
+   phone or the Spotify app show up too. Cadenza saves these and only asks Last.fm for new ones, at
+   most every 10 minutes. The first time it fetches everything since the import ends, or your whole
+   Last.fm history if you haven't imported anything, which can take a minute or two;
+3. then anything Cadenza played after it ends that Last.fm doesn't have. Cadenza scrobbles its own
+   plays, so a Cadenza play counts as the same play when Last.fm has the same song within 10 minutes.
+
+Press **S** on the Stats page to switch between that (ALL), Last.fm's own charts and Cadenza's own log.
+Last.fm doesn't say how long you listened, so a scrobble counts for that song's usual length from your
+other plays (or 3.5 minutes) in "hours listened".
+
+If you link Spotify to Last.fm (Last.fm settings → Applications → Spotify scrobbling), you can turn off
+Cadenza's own scrobbling (System → Connections → Last.fm scrobbling) so Last.fm doesn't get every
+Cadenza play twice. Stats keeps reading Last.fm while you stay logged in. Stats
+copes either way: the same song scrobbled twice within 90 seconds counts once.
+
+- No play is counted twice. A play is matched by the minute it ended and the song's name and artist,
+  so importing the same files again, or a newer download that overlaps an older one, only adds what's
+  new. It also works across the two kinds of download.
+- A play counts once you listened for 30 seconds, like on Spotify. Podcasts and audiobooks are left out.
+- Only the time, length, song, artist, album and song link are kept, in
+  `~/Library/Application Support/Cadenza/spotify-history.json` (readable only by you). The rest of
+  Spotify's files (IP addresses, countries, devices) is never saved. Nothing is uploaded anywhere.
+- ⌘K → "Remove imported Spotify history" deletes it again.
 
 Cadenza checks this repository's releases at launch (at most every 6 hours) and offers to install new
 versions. To follow a fork instead, set System → Preferences → GitHub repository (Cadenza asks you to
@@ -262,7 +303,8 @@ The native code is in `Sources/Cadenza/`:
 | `AudioOutputs.swift` | output devices |
 | `MediaKeys.swift`, `StatusBar.swift`, `Notifier.swift` | media keys and Control Center, menu-bar player (drawn by `Resources/web/mini/`), notifications |
 | `Discord.swift`, `LastFM.swift`, `Updater.swift` | integrations |
-| `History.swift` | Cadenza's own listening history (Stats when Last.fm isn't connected) |
+| `History.swift` | Cadenza's own listening history (one of the sources for Stats) |
+| `SpotifyHistory.swift` | imports the listening history Spotify sends you without duplicates, and keeps the Last.fm scrobbles made since |
 | `Extras.swift` | lyrics from LRCLIB, finding songs on Genius, picking a playlist cover |
 | `Migration.swift` | brings over settings and data from when the app was called Chord |
 | `FloatingPlayer.swift` | floating mini player |
