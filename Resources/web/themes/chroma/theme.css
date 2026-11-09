@@ -1,55 +1,185 @@
-/* CHROMA · COVER. Its colours come from the album cover that's playing: theme.js reads the cover and
-   sets the shared colour variables (--navy, --cyan, --white and the rest) on the page. The values here
-   are what it looks like before anything plays. */
+/* CHROMA · COVER. A gallery-print look whose colours come from the album cover that's playing.
+   theme.js reads the cover and sets the colours below on the page (fading from the old ones):
+   --c1 … --c4 are the cover's own colours (strongest first), and the shared --navy, --cyan, --white
+   and friends are built from them. The values here are what it looks like before anything plays.
+   Unlike the other themes nothing is slanted: upright serif headings, round pills and soft glows. */
+
+@font-face { font-family: "Abril Fatface"; src: url(../heist/fonts/abril-fatface.woff2) format("woff2"); }
+@font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-500-normal.woff2) format("woff2"); font-weight: 400 500; }
+@font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-600-normal.woff2) format("woff2"); font-weight: 600; }
+@font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-700-normal.woff2) format("woff2"); font-weight: 700 900; }
 
 :root {
-  --navy: #14101c;   --navy-rgb: 20 16 28;
-  --deep: #1d1628;   --deep-rgb: 29 22 40;
-  --blue: #6b4bd8;
+  --navy: #120e1a;   --navy-rgb: 18 14 26;
+  --deep: #1c1527;   --deep-rgb: 28 21 39;
+  --blue: #5b3fc4;
   --cyan: #b48cff;   --cyan-rgb: 180 140 255;
   --ice: #e2d6ff;    --ice-rgb: 226 214 255;
   --white: #f8f5ff;  --white-rgb: 248 245 255;
+  --c1: #b48cff; --c1-rgb: 180 140 255;
+  --c2: #ff8fb8; --c2-rgb: 255 143 184;
+  --c3: #6fd6ff; --c3-rgb: 111 214 255;
+  --c4: #ffd27a; --c4-rgb: 255 210 122;
   --placeholder: #3a2d55;
-  --drawer-bg: linear-gradient(180deg, #4a3a6e, #14101c);
-  --liked-bg: linear-gradient(135deg, #b48cff, #e2d6ff);
-  --skew: -6deg;
+  --drawer-bg: linear-gradient(180deg, #4a3a6e, #120e1a);
+  --liked-bg: linear-gradient(135deg, #b48cff, #ff8fb8);
+  --skew: 0deg;
+  --display: "Abril Fatface", "Didot", "Bodoni 72", Georgia, serif;
+  --text: "Inter", -apple-system, "Helvetica Neue", sans-serif;
+  --snap: cubic-bezier(.3,1.25,.5,1);
+  --glow: 0 2vh 5vh rgb(var(--c1-rgb) / .35);
 }
-html, body { background: var(--navy); }
+html, body { background: var(--navy); font-style: normal; font-weight: 500; }
 
-/* ---------- Background: the cover itself, blown up and blurred, under a wash of its own colours ---------- */
-#bg .ch-base { position: absolute; inset: 0; background: var(--navy); transition: background-color 1.2s; }
-/* Two layers take turns, so a new cover fades in over the old one. Blurred once; only opacity animates. */
-#bg .ch-art { position: absolute; inset: -12%; background: center / cover no-repeat; filter: blur(70px) saturate(1.35); opacity: 0; transition: opacity 1.4s ease; transform: scale(1.1); }
-#bg .ch-art.on { opacity: .62; }
-#bg .ch-wash {
-  position: absolute; inset: 0;
-  background:
-    radial-gradient(90% 70% at 85% 0%, rgb(var(--cyan-rgb) / .28) 0%, transparent 60%),
-    radial-gradient(80% 80% at 0% 100%, rgb(var(--deep-rgb) / .9) 0%, transparent 70%),
-    linear-gradient(180deg, rgb(var(--navy-rgb) / .35) 0%, rgb(var(--navy-rgb) / .82) 100%);
-}
-/* soft blobs of the accent colour drifting about */
-#bg .ch-blob { position: absolute; border-radius: 50%; background: radial-gradient(circle, rgb(var(--cyan-rgb) / .35), rgb(var(--cyan-rgb) / 0) 70%); will-change: transform; animation: chdrift 26s ease-in-out infinite alternate; }
-#bg .ch-blob.a { width: 60vw; height: 60vw; left: -18vw; top: -24vw; }
-#bg .ch-blob.b { width: 44vw; height: 44vw; right: -10vw; bottom: -18vw; animation-duration: 32s; animation-delay: -9s; }
-#bg .ch-blob.c { width: 26vw; height: 26vw; left: 46vw; top: 38vh; animation-duration: 21s; animation-delay: -4s; opacity: .6; }
-@keyframes chdrift { to { transform: translate3d(6vw, 5vh, 0) scale(1.12); } }
-#bg .ch-grain { position: absolute; inset: 0; opacity: .07; mix-blend-mode: overlay; background-size: 220px 220px; }
+/* ============ Background ============ */
+#bg .ch-base { position: absolute; inset: 0; background: var(--navy); }
+/* The cover itself, enormous and blurred. Two layers take turns so a new cover fades in over the old. */
+#bg .ch-art { position: absolute; inset: -14%; background: center / cover no-repeat; filter: blur(80px) saturate(1.5); opacity: 0; transition: opacity 1.6s ease; }
+#bg .ch-art.on { opacity: .5; }
+/* Colour fields: one soft orb per cover colour, drifting slowly. Plain gradients, so moving them is cheap. */
+#bg .ch-orb { position: absolute; border-radius: 50%; will-change: transform; animation: chorb 30s ease-in-out infinite alternate; }
+#bg .ch-orb.o1 { width: 62vw; height: 62vw; left: -16vw; top: -26vw; background: radial-gradient(circle, rgb(var(--c1-rgb) / .55), rgb(var(--c1-rgb) / 0) 66%); }
+#bg .ch-orb.o2 { width: 50vw; height: 50vw; right: -14vw; top: 18vh; background: radial-gradient(circle, rgb(var(--c2-rgb) / .42), rgb(var(--c2-rgb) / 0) 66%); animation-duration: 36s; animation-delay: -12s; }
+#bg .ch-orb.o3 { width: 44vw; height: 44vw; left: 22vw; bottom: -26vw; background: radial-gradient(circle, rgb(var(--c3-rgb) / .38), rgb(var(--c3-rgb) / 0) 66%); animation-duration: 27s; animation-delay: -6s; }
+#bg .ch-orb.o4 { width: 26vw; height: 26vw; left: 52vw; top: -8vw; background: radial-gradient(circle, rgb(var(--c4-rgb) / .32), rgb(var(--c4-rgb) / 0) 66%); animation-duration: 22s; animation-delay: -3s; }
+@keyframes chorb { 0% { transform: translate3d(0, 0, 0) scale(1); } 50% { transform: translate3d(5vw, 4vh, 0) scale(1.12); } 100% { transform: translate3d(-3vw, 7vh, 0) scale(.94); } }
+/* A wash that keeps text readable, darker at the bottom */
+#bg .ch-wash { position: absolute; inset: 0; background: linear-gradient(180deg, rgb(var(--navy-rgb) / .25) 0%, rgb(var(--navy-rgb) / .55) 55%, rgb(var(--navy-rgb) / .85) 100%); }
+/* Fine print-like grain over everything */
+#bg .ch-grain { position: absolute; inset: 0; opacity: .08; background-size: 240px 240px; }
+/* Concentric rings, like the grooves of a record, turning slowly while music plays */
+#bg .ch-rings { position: absolute; right: -22vh; top: 50%; width: 120vh; height: 120vh; margin-top: -60vh; opacity: .16; animation: chspin 90s linear infinite; animation-play-state: paused; }
+body.playing #bg .ch-rings { animation-play-state: running; }
+@keyframes chspin { to { transform: rotate(360deg); } }
+/* A big outlined word in the corner: the first word of the playing song */
+#bg .ch-ghost { position: absolute; left: 30vw; bottom: 2vh; font: 400 34vh/.8 var(--display); color: transparent; -webkit-text-stroke: 2px rgb(var(--c2-rgb) / .22); white-space: nowrap; max-width: 140vw; overflow: hidden; transition: opacity .8s; }
+/* The palette card: the cover's colours as paint chips, with their codes */
+#bg .ch-chips { position: absolute; left: 50%; top: 3.4vh; transform: translateX(-50%); display: flex; gap: .8vw; align-items: flex-start; }
+#bg .ch-chip { display: flex; flex-direction: column; align-items: center; gap: .6vh; }
+#bg .ch-chip i { width: 3.6vh; height: 3.6vh; border-radius: 50%; box-shadow: 0 0 0 .25vh rgb(var(--white-rgb) / .25), 0 1vh 2vh rgb(0 0 0 / .3); transition: background-color 1s; }
+#bg .ch-chip b { font: 600 1.25vh/1 var(--text); letter-spacing: .08em; color: rgb(var(--ice-rgb) / .7); text-transform: uppercase; }
+body:not([data-view="home"]) #bg .ch-chips { opacity: 0; }
+#bg .ch-chips { transition: opacity .3s; }
 
-/* ---------- Details ---------- */
-/* panels are frosted glass tinted with the cover's dark colour */
-.trk .in, .opt .in, .dev .in { backdrop-filter: none; }
-#toast { border-radius: .6vh; }
-#hl .face { border-radius: .4vh; }
-.card .cover { border-radius: .6vh; overflow: hidden; }
-/* the cover on the now-playing panel glows in its accent colour */
-#np-photo { box-shadow: 0 0 6vh rgb(var(--cyan-rgb) / .45); transition: box-shadow 1.2s; }
-body.playing[data-view="home"] .art-wrap { animation: chbreathe 4.2s ease-in-out infinite alternate; }
-@keyframes chbreathe { from { scale: 1; } to { scale: 1.015; } }
+/* ============ Type and shapes: upright, rounded, no slants ============ */
+#clock .date { font-family: var(--display); font-size: 6vh; text-shadow: none; letter-spacing: -.01em; }
+#clock .dow { background: linear-gradient(90deg, var(--c1), var(--c2)); color: var(--navy); border-radius: 99px; font: 700 1.8vh/1 var(--text); letter-spacing: .12em; padding: .55vh .9vw; }
+#clock .time { font: 600 2.3vh/1.2 var(--text); color: var(--c2); letter-spacing: .04em; }
+.vh { font-family: var(--display); font-weight: 400; text-shadow: none; letter-spacing: -.01em; position: relative; }
+.vh .title::after { content: ""; display: block; height: .6vh; width: 12vh; margin-top: .6vh; border-radius: 99px; background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c4)); }
+.vh small { font: 600 1.9vh/1 var(--text); color: var(--c2); letter-spacing: .1em; text-transform: uppercase; }
+.empty { font-family: var(--display); color: rgb(var(--ice-rgb) / .22); }
+.notice { border-left: 0; border-radius: 1.2vh; background: rgb(var(--navy-rgb) / .6); box-shadow: inset .5vh 0 0 var(--c1); }
 
-/* ---------- Transition: a bloom of colour ---------- */
-#sweep .th { transform: none; position: absolute; translate: 0 0; scale: 0; }
-#sweep .ch-bloom { left: 50%; top: 50%; width: 90vmax; height: 90vmax; margin: -45vmax 0 0 -45vmax; border-radius: 50%;
-  background: radial-gradient(circle, rgb(var(--cyan-rgb) / .55) 0%, rgb(var(--cyan-rgb) / .18) 45%, rgb(var(--cyan-rgb) / 0) 70%); }
-#drawer { transform: translateX(110%); transition: transform .34s cubic-bezier(.3,1.2,.5,1); }
+/* Home menu: serif labels and a glowing pill that slides between them */
+.item .label { font-family: var(--display); text-transform: none; font-size: 4.4vh; color: rgb(var(--ice-rgb) / .9); text-shadow: none; letter-spacing: -.005em; }
+.item .tag { border-radius: 99px; font: 700 1.6vh/1 var(--text); letter-spacing: .1em; background: var(--c2); color: var(--navy); padding: .45vh .7vw; }
+.item.active .label { color: var(--navy); transform: translateX(1vw); }
+#hl .face, #hl .shadow { transform: none; border-radius: 99px; }
+#hl .face { background: linear-gradient(90deg, var(--c1), var(--c2) 70%, var(--c3)); box-shadow: 0 0 3.5vh rgb(var(--c1-rgb) / .55); }
+#hl .shadow { background: none; }
+#hl .cursor { border: 0; width: 1.4vh; height: 1.4vh; margin-top: -.7vh; left: -1.6vw; border-radius: 50%; background: var(--c3); filter: none; box-shadow: 0 0 1.6vh var(--c3); }
+#hint { border-left: 0; border-radius: 99px; background: rgb(var(--navy-rgb) / .55); font: 500 2.2vh/1 var(--text); letter-spacing: .01em; padding: 1vh 1.4vw; box-shadow: inset .4vh 0 0 var(--c3); }
+
+/* Lists: rounded rows; the selected one glows in the cover's colours */
+.trk .in, .opt .in { transform: none; border-left: 0; border-radius: 1.2vh; background: rgb(var(--navy-rgb) / .5); }
+.trk .ti b { font: 600 2.3vh/1.15 var(--text); text-transform: none; letter-spacing: -.005em; }
+.trk .ti i { font-style: normal; font-weight: 500; color: var(--c2); }
+.trk .no { font-family: var(--display); color: rgb(var(--ice-rgb) / .45); }
+.trk .du { font-weight: 500; }
+.trk .thumb { transform: none; border: 0; border-radius: .7vh; box-shadow: 0 .6vh 1.4vh rgb(0 0 0 / .35); }
+.trk.active .in, .opt.active .in { background: linear-gradient(90deg, var(--c1), var(--c2)); box-shadow: var(--glow); }
+.trk.active .ti b, .trk.active .no, .trk.active .du, .opt.active .k, .opt.active .v { color: var(--navy); }
+.trk.active .ti i { color: rgb(var(--navy-rgb) / .75); }
+.opt .k { font-family: var(--text); font-weight: 600; text-transform: none; }
+
+/* Cards: straight, rounded covers that lift and glow */
+.card .in, .card:nth-child(even) .in { transform: none; }
+.card.active .in { transform: translateY(-1vh) scale(1.05); }
+.card .cover { border: 0; border-radius: 1.4vh; box-shadow: 0 1.6vh 3vh rgb(0 0 0 / .35); }
+.card.active .cover { box-shadow: 0 0 0 .4vh var(--c1), var(--glow); }
+.card .cap { transform: none; }
+.card .n { font: 600 2.2vh/1.15 var(--text); text-transform: none; }
+.card .c { font-weight: 600; color: var(--c2); }
+.card.active .cap { background: none; padding: 0; margin-left: 0; }
+.card.active .cap .n { color: var(--white); }
+.card.active .cap .c { color: var(--c3); }
+.dev .in { transform: none; border: 0; border-radius: 1.6vh; }
+.dev .in > * { transform: none; }
+.dev .nm { font: 600 2.6vh/1.1 var(--text); text-transform: none; }
+.dev.active .in { background: linear-gradient(135deg, var(--c1), var(--c2)); transform: translateY(-1vh); box-shadow: var(--glow); }
+
+/* Playlist and album pages */
+.pl-cover, .q-now .art { transform: none; border: 0; border-radius: 1.6vh; box-shadow: var(--glow); }
+.pl-meta .kind { transform: none; border-radius: 99px; background: var(--c2); }
+.pl-meta h1 { font-family: var(--display); text-transform: none; text-shadow: none; transform: none; }
+.pl-meta p { transform: none; }
+.chip, .s-tabs button { transform: none; border-radius: 99px; font: 600 1.8vh/1 var(--text); letter-spacing: .06em; }
+.chip:hover, .chip.on { transform: translateY(-.3vh); background: var(--c1); color: var(--navy); }
+.s-tabs button.on { background: linear-gradient(90deg, var(--c1), var(--c2)); color: var(--navy); box-shadow: none; translate: 0 0; }
+
+/* ============ Now playing: a record sleeve with the vinyl sliding out ============ */
+.np-tag { transform: none; }
+.np-tag span { border-radius: 99px; font: 700 1.6vh/1 var(--text); letter-spacing: .14em; }
+.np-tag .k { background: rgb(var(--navy-rgb) / .7); color: var(--c2); }
+.np-tag .v { background: var(--c1); color: var(--navy); }
+.np-like { transform: none; }
+.art-wrap { width: 19vw; margin-right: 6vw; }
+/* the record, peeking out of the sleeve; it spins while music plays */
+.art-wrap::before { inset: 4% -30% 4% 30%; transform: none; border-radius: 50%;
+  background: radial-gradient(circle, var(--c1) 0 15%, var(--navy) 15.5% 17%, transparent 17.5%),
+              repeating-radial-gradient(circle, #0c0a10 0 .35vh, #18151e .35vh .5vh);
+  box-shadow: 0 2vh 4vh rgb(0 0 0 / .5); animation: chspin 4s linear infinite; animation-play-state: paused; }
+body.playing .art-wrap::before { animation-play-state: running; }
+.polaroid { background: none; padding: 0; transform: none; box-shadow: 0 2.6vh 5vh rgb(0 0 0 / .45), 0 0 6vh rgb(var(--c1-rgb) / .35); border-radius: .6vh; }
+.polaroid .photo { border-radius: .6vh; box-shadow: none; }
+.polaroid .photo::after { background: linear-gradient(120deg, rgb(255 255 255 / .18), rgb(255 255 255 / 0) 40%); border-radius: .6vh; }
+.polaroid .pcap, .polaroid .tape { display: none; }
+.art-wrap .state { transform: none; left: -1.6vw; bottom: 1.6vw; border-radius: 99px; background: var(--white); color: var(--navy); font: 700 1.7vh/1 var(--text); letter-spacing: .12em; padding: .8vh 1vw; box-shadow: 0 1vh 2vh rgb(0 0 0 / .3); }
+.np-text { transform: none; margin-top: 3.6vh; }
+.np-title { font-family: var(--display); text-transform: none; text-shadow: none; font-size: 6.2vh; letter-spacing: -.01em; line-height: 1.02; }
+.np-artist { font: 600 2.8vh/1.2 var(--text); color: var(--c2); }
+.np-album { font: 500 2vh/1.3 var(--text); }
+.bar { height: .9vh; border-radius: 99px; outline: 0; background: rgb(var(--white-rgb) / .14); }
+.bar .fill { background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3)); border-radius: 99px; }
+.progress .t { font-weight: 600; font-size: 1.9vh; }
+.np-ctrl { transform: none; }
+.np-ctrl button { border-radius: 50%; width: 4.8vh; height: 4.8vh; background: rgb(var(--navy-rgb) / .55); border: 0; }
+.np-ctrl button .ico { transform: none; }
+.np-ctrl button:hover { background: var(--white); color: var(--navy); box-shadow: none; }
+.np-ctrl button.on { background: var(--c2); color: var(--navy); box-shadow: none; }
+.np-ctrl button.main { width: 7vh; height: 7vh; background: linear-gradient(135deg, var(--c1), var(--c2)); color: var(--navy); box-shadow: 0 0 4vh rgb(var(--c1-rgb) / .55); border: 0; }
+
+/* ============ Small things ============ */
+.key { transform: none; border-radius: 99px; background: rgb(var(--navy-rgb) / .65); padding: .55vh .9vw .55vh .55vw; }
+.key b { border-radius: 99px; background: var(--white); color: var(--navy); font: 700 1.6vh/1 var(--text); padding: .45vh .6vw; }
+.key span { font: 600 1.6vh/1 var(--text); letter-spacing: .08em; }
+#toast { transform: translate(-50%, -16vh); border-radius: 99px; background: var(--white); color: var(--navy); box-shadow: 0 0 0 .3vh var(--c1), 0 1.6vh 4vh rgb(var(--c1-rgb) / .45); font: 700 2.1vh/1 var(--text); letter-spacing: .04em; padding: 1.4vh 2vw; transition: transform .38s cubic-bezier(.3,1.3,.5,1); }
+#toast.show { transform: translate(-50%, 0); }
+#drawer { border-radius: 2vh 0 0 2vh; transform: translateX(110%); transition: transform .34s cubic-bezier(.3,1.2,.5,1); }
 #drawer.on { transform: none; }
+
+/* ============ Transition: colour blooms in each of the cover's colours ============ */
+#sweep .th { transform: none; position: absolute; translate: 0 0; scale: 0; border-radius: 50%; }
+#sweep .ch-bloom { left: 50%; top: 50%; width: 80vmax; height: 80vmax; margin: -40vmax 0 0 -40vmax; }
+#sweep .ch-bloom.b1 { background: radial-gradient(circle, rgb(var(--c1-rgb) / .6), rgb(var(--c1-rgb) / 0) 68%); }
+#sweep .ch-bloom.b2 { background: radial-gradient(circle, rgb(var(--c2-rgb) / .5), rgb(var(--c2-rgb) / 0) 68%); }
+#sweep .ch-bloom.b3 { background: radial-gradient(circle, rgb(var(--c3-rgb) / .45), rgb(var(--c3-rgb) / 0) 68%); }
+#sweep .ch-dot { width: 18vh; height: 18vh; margin: -9vh 0 0 -9vh; background: radial-gradient(circle, rgb(var(--c2-rgb) / .7), rgb(var(--c2-rgb) / 0) 68%); }
+
+/* ============ Home: the info card and the visualiser ============ */
+#intel { transform: none; border-left: 0; border-radius: 2.4vh; box-shadow: 0 2vh 5vh rgb(0 0 0 / .3);
+  background: linear-gradient(160deg, rgb(var(--navy-rgb) / .78), rgb(var(--navy-rgb) / .45)); }
+#intel::after { left: 2.4vw; right: 2.4vw; top: 0; bottom: auto; height: .45vh; border-radius: 99px; background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c4)); }
+#intel .no { font-family: var(--display); -webkit-text-stroke: .2vh rgb(var(--c2-rgb) / .5); top: -5vh; }
+#intel .kick { border-radius: 99px; background: var(--c1); font: 700 1.6vh/1 var(--text); letter-spacing: .14em; padding: .6vh .9vw; }
+#intel .head { font-family: var(--display); text-transform: none; letter-spacing: -.01em; }
+#intel .body .row { font-weight: 500; }
+#intel .body .row.lead { font-weight: 600; color: var(--c2); }
+#intel .covers span { border: 0; border-radius: 1vh; box-shadow: 0 1vh 2vh rgb(0 0 0 / .35); }
+#intel .covers span:nth-child(2) { box-shadow: 0 0 0 .3vh var(--c1); }
+#intel .foot { border-radius: 99px; background: var(--white); color: var(--navy); box-shadow: 0 1vh 2.4vh rgb(var(--c1-rgb) / .4); font: 700 1.6vh/1 var(--text); letter-spacing: .12em; padding: .8vh 1.1vw; }
+#intel .foot b { color: var(--c1); -webkit-text-stroke: 0; }
+#viz { transform: none; border-left: 0; border-radius: 1.6vh; background: rgb(var(--navy-rgb) / .45); }
+.trk .acts button { border-radius: 99px; background: rgb(var(--navy-rgb) / .8); font: 700 1.5vh/1 var(--text); letter-spacing: .06em; padding: .5vh .7vw; }
+.trk .acts button:hover { background: var(--white); color: var(--navy); }

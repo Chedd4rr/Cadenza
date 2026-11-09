@@ -3771,7 +3771,11 @@ const Breach = {
     if (Stage.isOpen) await Stage.close();
     setBusy(true);
     const ready = Theme.load("rogue");
-    try { const f = new FontFace("Unbounded", "url(themes/rogue/fonts/unbounded-latin-900-normal.woff2)", { weight: "900" }); document.fonts.add(f); f.load().catch(() => {}); } catch (e) { /* old WebKit */ }
+    // The big OGMI.OS lettering's font, added once per session (adding it again on every takeover made
+    // the page re-check its fonts in the middle of the animation).
+    if (!this.font) {
+      try { this.font = new FontFace("Unbounded", "url(themes/rogue/fonts/unbounded-latin-900-normal.woff2)", { weight: "900" }); document.fonts.add(this.font); this.font.load().catch(() => {}); } catch (e) { this.font = true; /* old WebKit */ }
+    }
     Sfx.play("breach", "rogue");
     const box = h("div"); box.id = "breach";
     const cv = h("canvas"), term = h("pre", "br-term"), big = h("div", "br-big", "OGMI.OS");
@@ -3786,8 +3790,10 @@ const Breach = {
     const shake = () => Array.from({ length: 26 }, (_, i) => ({ transform: i % 2 ? `translate3d(${(R() - 0.5) * 3}vw, ${(R() - 0.5) * 1}vh, 0) skewX(${(R() - 0.5) * 12}deg)` : "none" }));
     const hijack = [{ filter: "none" }, { filter: "invert(1)", offset: 0.03 }, { filter: "none", offset: 0.06 }, { filter: "hue-rotate(40deg) saturate(1.6)", offset: 0.4 },
       { filter: "invert(1) hue-rotate(90deg)", offset: 0.42 }, { filter: "hue-rotate(80deg) saturate(2.6) contrast(1.4)", offset: 0.75 }, { filter: "grayscale(1) contrast(2.2) brightness(.6)" }];
+    // (No colour filters on the background layer: some themes have big blurred layers there, and
+    // re-filtering those every frame made the takeover stutter. The canvas covers it soon enough.)
     const fx = reduced ? [] : parts.flatMap((el) => [el.animate(snap(shake()), { duration: 5200, fill: "forwards", composite: "add" }),
-                                                     el.animate(hijack, { duration: 5200, fill: "forwards" })]);
+                                                     ...(el.id === "bg" ? [] : [el.animate(hijack, { duration: 5200, fill: "forwards" })])]);
     // The AI types its message while the screen corrupts.
     const typed = (async () => {
       await wait(250);
@@ -3801,10 +3807,13 @@ const Breach = {
       }
     })();
     const GLYPHS = ["OGMI.OS", "R0GUE", "01101001", "▮▮▮", "SIGNAL", "0xDEAD", "//////", "WHO OPENED THE DOOR", "▒▒▓▓", "I SEE YOU"];
-    const t0 = performance.now(), TAKE = reduced ? 600 : 5300, END = TAKE + 800;
-    let swapped = false;
+    const t0 = performance.now(), TAKE = reduced ? 600 : 5300, TEAR = 800;
+    // The theme is switched while the screen is fully covered. That can take a moment (stylesheet,
+    // fonts, layout), so the animation keeps running meanwhile and only tears open once it's done.
+    // (It used to wait inside the animation loop, which froze the screen for up to half a second.)
+    let swapped = false, switched = false, tearAt = 0;
     await new Promise((resolve) => {
-      const frame = async (now) => {
+      const frame = (now) => {
         const e = now - t0;
         if (e < TAKE) {
           // Corruption spreads: more blocks every frame, faster and faster.
@@ -3833,13 +3842,23 @@ const Breach = {
                       { duration: 700, easing: "steps(10, end)", fill: "forwards" });
           term.style.opacity = "0";
           fx.forEach((a) => a.cancel());
-          await ready;
-          try { const st = await native("settings.set", { key: "theme", value: "rogue" }); if (st) S.settings = st; } catch (err) { /* demo */ }
-          await Theme.apply("rogue", false);
+          (async () => {
+            await ready;
+            try { const st = await native("settings.set", { key: "theme", value: "rogue" }); if (st) S.settings = st; } catch (err) { /* demo */ }
+            await Theme.apply("rogue", false);
+          })().catch(() => {}).finally(() => { switched = true; });
           requestAnimationFrame(frame);
-        } else if (e < END) {
+        } else if (!switched) {
+          // Still switching: keep the covered screen alive with a few flickering blocks.
+          c.globalAlpha = 1;
+          for (let i = 0; i < 6; i++) {
+            c.fillStyle = R() < 0.5 ? "#000" : "#d2ff1f";
+            c.fillRect(Math.floor(R() * W / cell) * cell, Math.floor(R() * H / cell) * cell, cell - 2, cell - 2);
+          }
+          requestAnimationFrame(frame);
+        } else if (now - (tearAt || (tearAt = now)) < TEAR) {
           // Then it tears open to show the new world: bands and blocks are ripped out.
-          const p = (e - TAKE) / (END - TAKE), k = Math.floor(6 + p * 60);
+          const p = (now - tearAt) / TEAR, k = Math.floor(6 + p * 60);
           for (let i = 0; i < k; i++) {
             if (R() < 0.5) c.clearRect(0, Math.floor(R() * H / cell) * cell, W, cell * (1 + Math.floor(R() * 3)));
             else c.clearRect(Math.floor(R() * W / cell) * cell, Math.floor(R() * H / cell) * cell, cell * (2 + Math.floor(R() * 10)), cell * (1 + Math.floor(R() * 4)));
@@ -6869,7 +6888,7 @@ function applyMotion() {
 }
 
 async function boot() {
-  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme };   // demo-mode testing hook
+  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
