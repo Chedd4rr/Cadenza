@@ -5052,7 +5052,7 @@ const Taste = {
       a: {}, t: {}, g: {}, b: {}, bt: {}, h: this.freshHistory(), at: {}, rec: [], ban: {}, banA: {}, fs: {},
       pin: {},      // artists you marked yourself: { nm, v: 1 you love / −1 you hate, at }
       forgot: {},   // "kind:key" → when you removed it: anything learned before then doesn't count
-      w: this.START.slice(), bias: 0, n: 0, plays: 0, auto: 0, hits: 0, explored: 0, exploredHits: 0, histPlays: 0 };
+      w: this.START.slice(), bias: 0, n: 0, plays: 0, auto: 0, hits: 0, explored: 0, exploredHits: 0, histPlays: 0, histImported: 0, histFlagged: 0, histSkips: 0 };
   },
   freshHistory() { return { a: {}, t: {}, g: {}, b: {}, bt: {} }; },
   load() {
@@ -5070,8 +5070,9 @@ const Taste = {
       if (!isFinite(d.bias)) d.bias = 0;
       for (const k of this.KINDS) if (!d.h[k] || typeof d.h[k] !== "object" || Array.isArray(d.h[k])) d.h[k] = {};
       this.d = d;
-      // First run with history imported earlier: learn from it once, in the background.
-      if (!d.seedTried) setTimeout(() => this.seed(false), 20000);
+      // First run with history imported earlier: learn from it once, in the background. (Also for a profile
+      // from before Cadenza noted whether the history had skip details, so the Taste page can say.)
+      if (!d.seedTried || (v && v.histImported == null)) setTimeout(() => this.seed(false), 20000);
     })());
   },
   save(now) {
@@ -5434,7 +5435,7 @@ const Taste = {
     if (this.seeding) return 0;
     this.seeding = true;
     d.seedTried = 1;
-    let n = 0, skips = 0;
+    let n = 0, skips = 0, flagged = 0, imported = 0;
     try {
       let h = null, sc = null;
       try { h = await native("spotifyHistory.get"); } catch (e) { h = null; }
@@ -5449,6 +5450,7 @@ const Taste = {
         if (++k % 5000 === 0) await wait(0);                      // stay responsive on a big history
         const [end, i, ms, flags] = p, at = end * 1000, t = tracks[i];
         spotEnd = Math.max(spotEnd, at);
+        imported++; if (flags != null) flagged++;
         if (at >= upTo || !t) continue;
         const w = this.historyWeight(ms, flags);
         if (w == null) continue;
@@ -5474,6 +5476,8 @@ const Taste = {
       }
       if (!n && !manual) d.h = before;                            // nothing there (Last.fm unreachable, say): keep what it had
       d.histPlays = n || d.histPlays;
+      // For the Taste page: whether your imported history has Spotify's skip details at all.
+      d.histImported = imported; d.histFlagged = flagged; d.histSkips = skips;
       this.prune();
       // Look up the styles of the artists that matter most, a few a second in the background.
       this.keys("a").filter((a) => !d.at[a]).map((a) => [a, this.get("a", a)]).sort((x, y) => this.mass(y[1]) - this.mass(x[1])).slice(0, 150)
@@ -5649,7 +5653,7 @@ views.taste = {
     if (pins.length) add("MARKED BY YOU", pins);
     add("YOU LOVE", Taste.top("a", 6, 1).map((e) => ({ ...e, kind: "a" })), "Play some music and this fills in.");
     add("YOUR STYLES", Taste.top("g", 5, 1).map((e) => ({ ...e, kind: "g" })), LFM.ready() ? "Styles come from Last.fm tags as you listen." : "Connect Last.fm in System → Connections to learn styles.");
-    add("YOU SKIP", [...Taste.top("a", 3, -1, 1).map((e) => ({ ...e, kind: "a" })), ...Taste.top("t", 4, -1, 1).map((e) => ({ ...e, kind: "t" })), ...Taste.top("g", 2, -1, 1).map((e) => ({ ...e, kind: "g" }))], "Nothing you skip a lot yet.");
+    add("YOU SKIP", [...Taste.top("a", 4, -1, 0.6).map((e) => ({ ...e, kind: "a" })), ...Taste.top("t", 5, -1, 0.6).map((e) => ({ ...e, kind: "t" })), ...Taste.top("g", 2, -1, 0.6).map((e) => ({ ...e, kind: "g" }))], this.skipHint());
     this.left.set(rows);
     // Stay on the same entry (or the one that took its place) after a change.
     let i = keep ? rows.findIndex((r) => r.k === keep.k && r.kind === keep.kind) : -1;
@@ -5660,6 +5664,14 @@ views.taste = {
     this.left.i = Math.max(0, i);
     this.left.rows[this.left.i].classList.add("active");
     this.leftWant = null;
+  },
+  /** Why "You skip" is empty, and what would fill it. */
+  skipHint() {
+    const d = Taste.d;
+    if (!d.histImported) return "Nothing you skip a lot yet. Import your Spotify history (Stats → I) and it learns from years of skips.";
+    if (!d.histFlagged) return "Your imported history was saved by an older Cadenza, without Spotify's skip details. Import the same files again (Stats → I) and they're added.";
+    if (!d.histSkips) return "Your imported history has no skips in it. Live skips show up here as you listen.";
+    return "Nothing you skip a lot yet.";
   },
   /** Arrow keys on the left skip over the section titles. */
   navLeft(e) {
