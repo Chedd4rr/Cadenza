@@ -2840,9 +2840,10 @@ views.stats = {
     if (!r) { this.renderActs(); return; }                      // cancelled
     if (!r.files) { this.renderActs(); return toast("NO SPOTIFY HISTORY IN THOSE FILES. LOOK FOR STREAMING_HISTORY_AUDIO_….JSON", true); }
     const n = (x) => Number(x || 0).toLocaleString();
-    toast(r.added ? `ADDED ${n(r.added)} PLAYS` + (r.skips ? ` AND ${n(r.skips)} SKIPS` : "") + (r.duplicates ? ` · ${n(r.duplicates)} WERE ALREADY THERE` : "") : `NOTHING NEW · ALL ${n(r.duplicates)} PLAYS WERE ALREADY THERE`);
+    toast(r.added || r.skips ? `ADDED ${n(r.added)} PLAYS` + (r.skips ? ` AND ${n(r.skips)} SKIPS` : "") + (r.duplicates ? ` · ${n(r.duplicates)} WERE ALREADY THERE` : "")
+      : r.updated ? `ADDED SKIP DETAILS TO ${n(r.updated)} PLAYS YOU'D ALREADY IMPORTED` : `NOTHING NEW · ALL ${n(r.duplicates)} PLAYS WERE ALREADY THERE`);
     await this.loadSpotify(true);
-    if (r.added || r.skips) setTimeout(() => Taste.seed(false), 1500);      // the taste profile learns from them too
+    if (r.added || r.skips || r.updated) setTimeout(() => Taste.seed(false), 1500);      // the taste profile relearns your past with them
     if (r.added) { this.source = "all"; this.picked = true; this.range = 0; $("st-tabs").querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.r === 0)); }
     if (current() && current().name === "stats") this.show();
   },
@@ -5036,23 +5037,38 @@ const Taste = {
   FEATS: ["How close a match", "The artist", "The style", "Time of day", "Songs you love", "Heard a lot lately", "New artists"],
   START: [1, 1.2, 0.8, 0.4, 0.2, -1, 0],
   EXPLORE: 6,
+  // Plays learned from your past (imported history, Last.fm) count a quarter as much as what Cadenza sees
+  // you do now: they give autoplay a head start without drowning out how you listen today.
+  HISTORY: 0.25,
   JUNK: /^(seen live|favou?rites?|my |albums i own|check out|spotify|awesome|love at first listen|under \d|all$|\d+$)/,
   d: null, ready: null, saveT: 0, saves: 0, cur: null, tagQ: [], tagBusy: false, tagAsked: new Set(), seeding: false,
 
+  KINDS: ["a", "t", "g", "b", "bt"],
+  // Two sets of the same counters: what Cadenza saw you do (a, t, g, b, bt) and what it learned from your
+  // past (h.a, h.t…). They're read together; the second is rebuilt from scratch whenever you import more
+  // history, so nothing is ever counted twice.
   fresh() {
-    return { v: 1, born: Date.now(), seededTo: 0, seedTried: 0, seededTop: 0,
-      a: {}, t: {}, g: {}, b: {}, bt: {}, at: {}, rec: [], ban: {}, banA: {}, fs: {},
-      w: this.START.slice(), bias: 0, n: 0, plays: 0, auto: 0, hits: 0, explored: 0, exploredHits: 0 };
+    return { v: 2, born: Date.now(), seedTried: 0,
+      a: {}, t: {}, g: {}, b: {}, bt: {}, h: this.freshHistory(), at: {}, rec: [], ban: {}, banA: {}, fs: {},
+      pin: {},      // artists you marked yourself: { nm, v: 1 you love / −1 you hate, at }
+      forgot: {},   // "kind:key" → when you removed it: anything learned before then doesn't count
+      w: this.START.slice(), bias: 0, n: 0, plays: 0, auto: 0, hits: 0, explored: 0, exploredHits: 0, histPlays: 0 };
   },
+  freshHistory() { return { a: {}, t: {}, g: {}, b: {}, bt: {} }; },
   load() {
     return this.ready || (this.ready = (async () => {
       let v = null;
       try { v = await native("taste.get"); } catch (e) { v = null; }
       const d = this.fresh();
       // Only what's expected, of the expected kind: a damaged file just means starting fresh in places.
-      if (v && v.v === 1) for (const k of Object.keys(d)) if (v[k] != null && typeof v[k] === typeof d[k] && Array.isArray(v[k]) === Array.isArray(d[k])) d[k] = v[k];
+      if (v && (v.v === 1 || v.v === 2)) for (const k of Object.keys(d)) if (k !== "v" && v[k] != null && typeof v[k] === typeof d[k] && Array.isArray(v[k]) === Array.isArray(d[k])) d[k] = v[k];
+      // The first version mixed what it learned from your history into the live counters, at full weight
+      // and with skips barely counting. Start those over (your bans and what autoplay learned to weigh stay)
+      // and relearn the history the new way.
+      if (v && v.v === 1 && v.seededTo) { for (const k of this.KINDS) d[k] = {}; d.h = this.freshHistory(); d.seedTried = 0; d.plays = 0; d.rec = []; }
       if (d.w.length !== this.START.length || d.w.some((x) => typeof x !== "number" || !isFinite(x))) d.w = this.START.slice();
       if (!isFinite(d.bias)) d.bias = 0;
+      for (const k of this.KINDS) if (!d.h[k] || typeof d.h[k] !== "object" || Array.isArray(d.h[k])) d.h[k] = {};
       this.d = d;
       // First run with history imported earlier: learn from it once, in the background.
       if (!d.seedTried) setTimeout(() => this.seed(false), 20000);
@@ -5070,9 +5086,18 @@ const Taste = {
 
   // ----- Counters that fade with time: { p: liked, n: not liked, t: as of when } -----
   fade(dt) { return dt > 0 ? Math.pow(0.5, dt / this.HALF) : 1; },
-  bump(map, key, w, when, nm) {
+  /** `burst` (songs and styles): plays bunched into one week count for less each, the k-th one 1/√k.
+   *  Playing a song 30 times in a week then counts about like 10 plays, not 30. */
+  bump(map, key, w, when, nm, burst) {
     if (!key || !w || !isFinite(w)) return null;
     const c = map[key] || (map[key] = { p: 0, n: 0, t: when });
+    if (burst && w > 0) {
+      if (!c.wk || when - c.wk > 7 * 86400e3 || when < c.wk) { c.wk = when; c.wc = 0; }
+      c.wc++;
+      w /= Math.sqrt(c.wc);
+      c.pk = Math.max(c.pk || 0, c.wc);                          // the most plays it ever had in one week
+      c.l = Math.max(c.l || 0, when);                            // the last time you played it
+    }
     if (when >= c.t) { const f = this.fade(when - c.t); c.p *= f; c.n *= f; c.t = when; }
     else w *= this.fade(c.t - when);                           // an old play (from imported history) counts for less
     if (w > 0) c.p += w; else c.n -= w;
@@ -5086,6 +5111,21 @@ const Taste = {
     return ((c.p - c.n) * f) / ((c.p + c.n) * f + this.PRIOR);
   },
   mass(c, now = Date.now()) { return c ? (c.p + c.n) * this.fade(now - c.t) : 0; },
+  /** One counter, live and learned-from-history added together. A song or style you binged (5+ plays in one
+   *  week) and then left alone for over a month counts for less the longer you stay away: you wore it out. */
+  get(kind, key, now = Date.now()) {
+    const x = this.d[kind][key], y = this.d.h[kind][key];
+    if (!x && !y) return undefined;
+    const fx = x ? this.fade(now - x.t) : 0, fy = y ? this.fade(now - y.t) : 0;
+    const c = { p: (x ? x.p * fx : 0) + (y ? y.p * fy : 0), n: (x ? x.n * fx : 0) + (y ? y.n * fy : 0), t: now,
+      nm: (x && x.nm) || (y && y.nm), pk: Math.max((x && x.pk) || 0, (y && y.pk) || 0), l: Math.max((x && x.l) || 0, (y && y.l) || 0) };
+    if ((kind === "t" || kind === "g") && c.pk >= 5 && c.l) {
+      const away = now - c.l - 30 * 86400e3;
+      if (away > 0) c.p /= 1 + away / (60 * 86400e3);           // three months away: half; five: a third
+    }
+    return c;
+  },
+  keys(kind) { return [...new Set([...Object.keys(this.d[kind]), ...Object.keys(this.d.h[kind])])]; },
   pos(c, now = Date.now()) { return c ? c.p * this.fade(now - c.t) : 0; },
 
   /** Weekday or weekend, and night / morning / afternoon / evening. */
@@ -5107,15 +5147,21 @@ const Taste = {
   signal(t, w, opts = {}) {
     const d = this.d, x = this.info(t);
     if (!d || !x || !w) return;
+    const m = opts.hist ? d.h : d;
     const when = opts.when || Date.now(), bk = this.bucket(when);
-    this.bump(d.a, x.a, w, when, x.an);
-    if (!opts.artistOnly) this.bump(d.t, x.key, w, when, x.name + " · " + x.an);
+    const ok = (kind, key) => !((d.forgot[kind + ":" + key] || 0) > when);   // you removed it after this play
     const timed = w > 0 && !opts.noTime;
-    if (timed) { this.bump(d.b, bk + "|a:" + x.a, w, when); this.bump(d.bt, bk, w, when); }
+    if (ok("a", x.a)) {
+      this.bump(m.a, x.a, w, when, x.an);
+      if (timed) this.bump(m.b, bk + "|a:" + x.a, w, when);
+    }
+    if (!opts.artistOnly && ok("t", x.key)) this.bump(m.t, x.key, w, when, x.name + " · " + x.an, true);
+    if (timed) this.bump(m.bt, bk, w, when);
     const tags = d.at[x.a];
     if (tags) tags.forEach((g, i) => {
-      this.bump(d.g, g, w * this.SHARE[i], when);
-      if (timed) this.bump(d.b, bk + "|g:" + g, w * this.SHARE[i], when);
+      if (!ok("g", g)) return;
+      this.bump(m.g, g, w * this.SHARE[i], when, null, true);
+      if (timed) this.bump(m.b, bk + "|g:" + g, w * this.SHARE[i], when);
     });
     else if (!opts.when) this.needTags(x);
     if (!opts.quiet) this.save();
@@ -5125,12 +5171,14 @@ const Taste = {
     const d = this.d;
     if (!d || d.at[x.a]) return;
     d.at[x.a] = tags;
-    const c = d.a[x.a];
-    if (c) tags.forEach((g, i) => {
-      const s = this.SHARE[i];
-      this.bump(d.g, g, c.p * s, c.t); this.bump(d.g, g, -c.n * s, c.t);
-      for (const bk of this.BUCKETS) { const bc = d.b[bk + "|a:" + x.a]; if (bc) this.bump(d.b, bk + "|g:" + g, bc.p * s, bc.t); }
-    });
+    for (const m of [d, d.h]) {
+      const c = m.a[x.a];
+      if (c) tags.forEach((g, i) => {
+        const s = this.SHARE[i];
+        this.bump(m.g, g, c.p * s, c.t); this.bump(m.g, g, -c.n * s, c.t);
+        for (const bk of this.BUCKETS) { const bc = m.b[bk + "|a:" + x.a]; if (bc) this.bump(m.b, bk + "|g:" + g, bc.p * s, bc.t); }
+      });
+    }
     this.save();
   },
   needTags(x) {
@@ -5239,8 +5287,8 @@ const Taste = {
   timeFit(x, tags, now) {
     const d = this.d, bk = this.bucket(now);
     let tot = 0;
-    for (const k of this.BUCKETS) tot += this.pos(d.bt[k], now);
-    const here = this.pos(d.bt[bk], now);
+    for (const k of this.BUCKETS) tot += this.pos(this.get("bt", k, now), now);
+    const here = this.pos(this.get("bt", bk, now), now);
     if (tot < 20 || here < 1) return 0;
     const base = here / tot, out = [];
     const lift = (num, den) => {
@@ -5248,21 +5296,22 @@ const Taste = {
       const v = Math.log2((num / den + 0.01) / base) / 2;
       out.push(Math.max(-1, Math.min(1, v)) * (den / (den + 5)));
     };
-    lift(this.pos(d.b[bk + "|a:" + x.a], now), this.pos(d.a[x.a], now));
-    tags.slice(0, 3).forEach((g) => lift(this.pos(d.b[bk + "|g:" + g], now), this.pos(d.g[g], now)));
+    lift(this.pos(this.get("b", bk + "|a:" + x.a, now), now), this.pos(this.get("a", x.a, now), now));
+    tags.slice(0, 3).forEach((g) => lift(this.pos(this.get("b", bk + "|g:" + g, now), now), this.pos(this.get("g", g, now), now)));
     return out.length ? out.reduce((s, v) => s + v, 0) / out.length : 0;
   },
   feats(t, sim) {
     const d = this.d, x = this.info(t), now = Date.now();
     const f = [Math.max(0, Math.min(1, (sim || 0) / 1.5)), 0, 0, 0, 0, 0, 0];
     if (!d || !x) return f;
-    const ac = d.a[x.a], tags = d.at[x.a] || [];
-    f[1] = this.val(ac, now);
+    const ac = this.get("a", x.a, now), tags = d.at[x.a] || [];
+    const pin = d.pin[x.a];
+    f[1] = pin ? pin.v : this.val(ac, now);                      // you said so yourself
     let gs = 0, gw = 0;
-    tags.forEach((g, i) => { const c = d.g[g]; if (c) { gs += this.val(c, now) * this.SHARE[i]; gw += this.SHARE[i]; } });
+    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c) { gs += this.val(c, now) * this.SHARE[i]; gw += this.SHARE[i]; } });
     f[2] = gw ? gs / gw : 0;
     f[3] = this.timeFit(x, tags, now);
-    f[4] = this.val(d.t[x.key], now);
+    f[4] = this.val(this.get("t", x.key, now), now);
     let same = 0, artist = 0;
     for (const r of d.rec) {
       if (now - r[2] > 6 * 3600e3) break;                       // newest first
@@ -5287,7 +5336,7 @@ const Taste = {
   blocked(t) {
     const d = this.d, x = this.info(t);
     if (!d || !x) return false;
-    return !!d.banA[x.a] || (d.ban[x.key] || 0) > Date.now();
+    return !!d.banA[x.a] || !!(d.pin[x.a] && d.pin[x.a].v < 0) || (d.ban[x.key] || 0) > Date.now();
   },
   /** Why autoplay picked a song, in a few words (for the Queue page). */
   why(t) {
@@ -5297,7 +5346,7 @@ const Taste = {
     const best = f.map((v, i) => [d.w[i] * v, i]).filter(([c, i]) => c > 0.12 && i < 5).sort((a, b) => b[0] - a[0])[0];
     switch (best ? best[1] : 0) {
       case 1: return "AN ARTIST YOU LOVE";
-      case 2: { const g = (d.at[x.a] || []).find((gg) => this.val(d.g[gg]) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
+      case 2: { const g = (d.at[x.a] || []).find((gg) => this.val(this.get("g", gg)) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
       case 3: return "YOUR " + this.bucketName(this.bucket(Date.now())).split(" ")[1] + " SOUND";
       case 4: return "A SONG YOU LOVE";
       default: { const s = t._seed && Radio.order.find((o) => o.uri === t._seed); return s ? "LIKE " + upper(cleanTitle(s.name)) : "SIMILAR"; }
@@ -5333,6 +5382,37 @@ const Taste = {
     toast("AUTOPLAY WON'T PLAY " + upper(x.an) + " · UNDO ON THE TASTE PAGE");
   },
   unban(a) { if (this.d && this.d.banA[a]) { delete this.d.banA[a]; this.save(); } },
+  /** Take an artist, song or style out of the profile: what it learned about it so far stops counting
+   *  (your imported history included, also when it's relearned). What you do from now on counts again. */
+  forgetItem(kind, key) {
+    const d = this.d;
+    if (!d || !key) return;
+    d.forgot[kind + ":" + key] = Date.now();
+    delete d[kind][key]; delete d.h[kind][key];
+    if (kind === "a" || kind === "g") {
+      const end = "|" + kind + ":" + key;
+      for (const m of [d.b, d.h.b]) for (const k of Object.keys(m)) if (k.endsWith(end)) delete m[k];
+    }
+    if (kind === "a") delete d.pin[key];
+    this.save();
+  },
+  /** You love (1) or hate (−1) an artist, or neither (0). It overrides what the profile worked out, and an
+   *  artist you hate is never autoplayed. */
+  mark(a, nm, v) {
+    const d = this.d;
+    if (!d || !a) return;
+    if (v) d.pin[a] = { nm: nm || (d.pin[a] && d.pin[a].nm) || a, v, at: Date.now() };
+    else delete d.pin[a];
+    if (v < 0 && Radio.active) {
+      const start = Radio.at + 1 + Radio.qd.length;
+      Radio.order = Radio.order.slice(0, start).concat(Radio.order.slice(start).filter((o) => this.info(o)?.a !== a));
+      Radio.refreshQueue();
+    } else if (Radio.active) Radio.rerank();
+    this.save();
+    const name = upper(nm || a);
+    toast(v > 0 ? "♥ YOU LOVE " + name : v < 0 ? "YOU HATE " + name + " · AUTOPLAY WON'T PLAY THEM" : "MARK CLEARED: " + name);
+  },
+  markTrackArtist(t, v) { const x = this.info(t); if (x) this.mark(x.a, x.an, v); },
   async forget() {
     let ok = false;
     try { ok = await native("taste.clear"); } catch (e) { ok = false; }
@@ -5343,8 +5423,10 @@ const Taste = {
   },
 
   // ----- Learning from your past -----
-  /** Your imported Spotify history (with what you skipped), then Last.fm scrobbles after it. Only plays from
-   *  before the profile started following you live, and only once each. With neither, Last.fm's top lists. */
+  /** Your imported Spotify history (with what you skipped), then Last.fm scrobbles after it; with neither,
+   *  Last.fm's top lists. Only plays from before the profile started following you live (those it saw
+   *  itself). This part of the profile is rebuilt from scratch each time, so running it again after
+   *  importing more history never counts a play twice. */
   async seed(manual) {
     await this.load();
     if (!Links.lastfm) { try { await Links.load(); } catch (e) { /* no Last.fm: styles wait */ } }
@@ -5352,62 +5434,74 @@ const Taste = {
     if (this.seeding) return 0;
     this.seeding = true;
     d.seedTried = 1;
-    let n = 0, newest = d.seededTo;
+    let n = 0, skips = 0;
     try {
       let h = null, sc = null;
       try { h = await native("spotifyHistory.get"); } catch (e) { h = null; }
       try { sc = LFM.ready() ? await native("lastfmPlays.get") : null; } catch (e) { sc = null; }
       const tracks = (h && Array.isArray(h.tracks)) ? h.tracks : [], plays = (h && Array.isArray(h.plays)) ? h.plays : [];
-      const upTo = d.born, from = d.seededTo;
+      const scrobs = (sc && sc.user === LFM.user() && Array.isArray(sc.plays)) ? sc.plays : [];
+      const before = d.h;
+      d.h = this.freshHistory();
+      const upTo = d.born;
       let spotEnd = 0, k = 0;
       for (const p of plays) {
         if (++k % 5000 === 0) await wait(0);                      // stay responsive on a big history
         const [end, i, ms, flags] = p, at = end * 1000, t = tracks[i];
         spotEnd = Math.max(spotEnd, at);
-        if (at <= from || at >= upTo || !t) continue;
-        let w;
-        if (flags == null) w = 0.6;                               // imported before skips were kept: a listen
-        else if (flags & 1) w = ms < 30000 ? ((flags & 4) ? -0.2 : -0.4) : 0.1;
-        else if (flags & 2) w = (flags & 4) ? 1.2 : 1;
-        else w = 0.6;
-        this.signal({ name: t[1], artists: [{ name: t[2] }] }, w, { when: at, quiet: true });
-        newest = Math.max(newest, at); n++;
+        if (at >= upTo || !t) continue;
+        const w = this.historyWeight(ms, flags);
+        if (w == null) continue;
+        this.signal({ name: t[1], artists: [{ name: t[2] }] }, w * this.HISTORY, { when: at, quiet: true, hist: true });
+        n++; if (w < 0) skips++;
       }
-      const scrobs = (sc && sc.user === LFM.user() && Array.isArray(sc.plays)) ? sc.plays : [];
       for (const [uts, name, artist] of scrobs) {
         const at = uts * 1000;
-        if (at <= Math.max(from, spotEnd) || at >= upTo || !name || !artist) continue;
-        this.signal({ name, artists: [{ name: artist }] }, 0.6, { when: at, quiet: true });
-        newest = Math.max(newest, at); n++;
+        if (at <= spotEnd || at >= upTo || !name || !artist) continue;
+        this.signal({ name, artists: [{ name: artist }] }, 0.5 * this.HISTORY, { when: at, quiet: true, hist: true });
+        n++;
       }
-      if (!n && !d.seededTop && LFM.ready() && !plays.length) {
+      if (!n && LFM.ready() && !plays.length) {
         // Nothing with dates: your Last.fm top artists and songs of the past year, as a starting point.
         const when = Date.now() - 60 * 86400e3;
-        const [ba, bt] = await Promise.all([LFM.get("user.getTopArtists", { period: "12month", limit: 200 }, 0), LFM.get("user.getTopTracks", { period: "12month", limit: 300 }, 0)]);
+        const [ba, bt] = await Promise.all([LFM.get("user.getTopArtists", { period: "12month", limit: 200 }, 3600e3), LFM.get("user.getTopTracks", { period: "12month", limit: 300 }, 3600e3)]);
         LFM.arr(ba && ba.topartists && ba.topartists.artist).forEach((a) => {
-          this.signal({ name: "-", artists: [{ name: a.name }] }, Math.log2(1 + (+a.playcount || 0) / 5), { when, quiet: true, artistOnly: true, noTime: true }); n++;
+          this.signal({ name: "-", artists: [{ name: a.name }] }, Math.log2(1 + (+a.playcount || 0) / 5) * this.HISTORY, { when, quiet: true, artistOnly: true, noTime: true, hist: true }); n++;
         });
         LFM.arr(bt && bt.toptracks && bt.toptracks.track).forEach((x) => {
-          this.signal({ name: x.name, artists: [{ name: x.artist && x.artist.name }] }, Math.min(3, Math.log2(1 + (+x.playcount || 0) / 3)), { when, quiet: true, noTime: true }); n++;
+          this.signal({ name: x.name, artists: [{ name: x.artist && x.artist.name }] }, Math.min(3, Math.log2(1 + (+x.playcount || 0) / 3)) * this.HISTORY, { when, quiet: true, noTime: true, hist: true }); n++;
         });
-        if (n) d.seededTop = 1;
       }
-      d.seededTo = newest;
+      if (!n && !manual) d.h = before;                            // nothing there (Last.fm unreachable, say): keep what it had
+      d.histPlays = n || d.histPlays;
       this.prune();
       // Look up the styles of the artists that matter most, a few a second in the background.
-      Object.entries(d.a).filter(([a]) => !d.at[a]).sort((x, y) => this.mass(y[1]) - this.mass(x[1])).slice(0, 150)
+      this.keys("a").filter((a) => !d.at[a]).map((a) => [a, this.get("a", a)]).sort((x, y) => this.mass(y[1]) - this.mass(x[1])).slice(0, 150)
         .forEach(([a, c]) => this.needTags({ a, an: c.nm || a, aid: "" }));
       this.save(true);
     } finally { this.seeding = false; }
-    if (manual || n) toast(n ? `TASTE PROFILE: LEARNED FROM ${n.toLocaleString()} PLAYS` : "NOTHING NEW TO LEARN FROM · IMPORT YOUR SPOTIFY HISTORY IN STATS", !n);
+    if (manual || n) toast(n ? `TASTE PROFILE: LEARNED FROM ${n.toLocaleString()} PLAYS` + (skips ? `, ${skips.toLocaleString()} OF THEM SKIPS` : "") : "NOTHING TO LEARN FROM · IMPORT YOUR SPOTIFY HISTORY IN STATS", !n);
     if (current() && current().name === "taste") views.taste.render();
     return n;
+  },
+  /** What one play from Spotify's files says about you (before the HISTORY discount). A skip counts more
+   *  the sooner it came: a few seconds in, you knew you didn't want it. See SpotifyHistory.swift for the flags. */
+  historyWeight(ms, f) {
+    if (f == null) return ms >= 30000 ? 0.5 : null;              // imported before skips were kept: a listen
+    if (f & 16) return ms >= 30000 ? 0.5 : null;                 // ended by "back", a crash or an error: no verdict
+    if (f & 1) {
+      let w = ms < 1000 ? -0.4 : ms < 10000 ? -1.2 : ms < 30000 ? -0.8 : ms < 60000 ? -0.4 : -0.15;
+      if (f & 8) w /= 2;                                          // you moved on to something else
+      if (f & 4) w /= 2;                                          // you'd picked it yourself: maybe just not now
+      return w;
+    }
+    if (f & 2) return (f & 4) ? 1.3 : 1;                          // played to the end
+    return ms >= 30000 ? 0.5 : null;
   },
   prune() {
     const d = this.d, now = Date.now();
     if (!d) return;
-    for (const k of ["a", "t", "g", "b", "bt"]) {
-      const m = d[k];
+    for (const [k, m] of this.KINDS.flatMap((k) => [[k, d[k]], [k, d.h[k]]])) {
       for (const key of Object.keys(m)) {
         const c = m[key], f = this.fade(now - c.t);
         c.p = Math.round(c.p * f * 1000) / 1000; c.n = Math.round(c.n * f * 1000) / 1000; c.t = now;
@@ -5416,37 +5510,40 @@ const Taste = {
       const left = Object.keys(m);
       if (left.length > this.MAX[k]) left.sort((x, y) => (m[y].p + m[y].n) - (m[x].p + m[x].n)).slice(this.MAX[k]).forEach((key) => delete m[key]);
     }
-    for (const a of Object.keys(d.at)) if (!d.a[a]) delete d.at[a];
+    for (const a of Object.keys(d.at)) if (!d.a[a] && !d.h.a[a]) delete d.at[a];
     for (const k of Object.keys(d.ban)) if (d.ban[k] < now) delete d.ban[k];
     for (const k of Object.keys(d.fs)) if (now - d.fs[k][1] > 30 * 86400e3) delete d.fs[k];
+    const fg = Object.keys(d.forgot);
+    if (fg.length > 2000) fg.sort((x, y) => d.forgot[x] - d.forgot[y]).slice(0, fg.length - 2000).forEach((k) => delete d.forgot[k]);
     d.w = d.w.map((w) => Math.round(w * 1000) / 1000); d.bias = Math.round(d.bias * 1000) / 1000;
   },
 
   // ----- For the Taste page -----
   /** The best (dir 1) or worst (dir −1) entries of one kind, with enough behind them to mean something. */
-  top(map, n, dir = 1, min = 1.5) {
+  top(kind, n, dir = 1, min = 1.5) {
     const now = Date.now();
-    return Object.entries(map).map(([k, c]) => ({ k, nm: c.nm || k, v: this.val(c, now), m: this.mass(c, now) }))
-      .filter((e) => e.m >= min && e.v * dir > 0.05).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
+    return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: this.val(c, now), m: this.mass(c, now) }))
+      .filter((e) => e.m >= min && e.v * dir > 0.05 && !(kind === "a" && this.d.pin[e.k])).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
   },
   /** What stands out at each time of day: artists and styles you play there more than usual. */
   patterns(perBucket = 3) {
-    const d = this.d, now = Date.now(), out = [];
+    const now = Date.now(), out = [];
     let tot = 0;
-    for (const k of this.BUCKETS) tot += this.pos(d.bt[k], now);
+    for (const k of this.BUCKETS) tot += this.pos(this.get("bt", k, now), now);
     if (tot < 20) return out;
+    const bkeys = this.keys("b");
     for (const bk of this.BUCKETS) {
-      const here = this.pos(d.bt[bk], now);
+      const here = this.pos(this.get("bt", bk, now), now);
       if (here < 3) continue;
       const base = here / tot, names = [];
-      for (const [key, c] of Object.entries(d.b)) {
+      for (const key of bkeys) {
         if (!key.startsWith(bk + "|")) continue;
-        const kind = key[4], id = key.slice(6), num = this.pos(c, now);
+        const kind = key[4], id = key.slice(6), num = this.pos(this.get("b", key, now), now);
         if (num < 2) continue;
-        const den = kind === "a" ? this.pos(d.a[id], now) : this.pos(d.g[id], now);
+        const ref = this.get(kind === "a" ? "a" : "g", id, now), den = this.pos(ref, now);
         if (den < 3) continue;
         const lift = (num / den) / base;
-        if (lift > 1.3) names.push({ nm: kind === "a" ? ((d.a[id] && d.a[id].nm) || id) : id, s: lift * Math.log2(1 + num), style: kind === "g" });
+        if (lift > 1.3) names.push({ nm: kind === "a" ? ((ref && ref.nm) || id) : id, s: lift * Math.log2(1 + num), style: kind === "g" });
       }
       names.sort((x, y) => y.s - x.s);
       out.push({ bk, share: here / tot, names: names.slice(0, perBucket) });
@@ -5459,9 +5556,33 @@ const Taste = {
    TASTE PAGE: what autoplay has learned about you, and the controls to correct it.
    ===================================================================== */
 views.taste = {
-  el: $("v-taste"),
-  keys: () => [["↑↓", "SELECT"], ["⏎", "RUN"], ["X", "LET THIS ARTIST BACK"], ["H", "LEARN FROM HISTORY", () => Taste.seed(true)],
-    ["R", "FORGET EVERYTHING", () => views.taste.forget()], ["ESC", "BACK", back]],
+  el: $("v-taste"), side: "left",
+  keys: () => {
+    const v = views.taste;
+    if (v.side === "left") {
+      const x = v.left.cur;
+      return [["↑↓", "SELECT"], ["⏎", "OPTIONS"], ...(x && x.kind === "a" ? [["+", "LOVE"], ["−", "HATE"]] : []), ["X", "REMOVE"], ["TAB", "CONTROLS"], ["ESC", "BACK", back]];
+    }
+    const x = v.list.cur;
+    return [["↑↓", "SELECT"], ["⏎", "RUN"], ...(x && x.ban ? [["X", "LET BACK"]] : []), ["TAB", "YOUR TASTE"],
+      ["A", "MARK AN ARTIST", () => v.markByName()], ["H", "LEARN FROM HISTORY", () => Taste.seed(true)], ["ESC", "BACK", back]];
+  },
+  // Left: what it has learned (and what you marked), each row something you can correct.
+  left: new List($("tz-left"), {
+    render: (x) => {
+      if (x.head) { const r = h("div", "st-h tz-head"); r.textContent = x.head; return r; }
+      if (x.hint) return h("div", "fr-hint tz-hint", x.hint);
+      const r = h("div", "st-artist tz-item" + (x.v < 0 ? " tz-neg" : ""));
+      const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${Math.min(1, Math.abs(x.v)).toFixed(3)})`;
+      const mark = x.pin ? (x.pin > 0 ? "♥" : "✕") : String(x.n);
+      r.append(h("em", null, mark), h("span", null, upper(x.nm)),
+        h("small", null, x.pin ? (x.pin > 0 ? "YOU LOVE" : "YOU HATE") : (x.v > 0 ? "+" : "") + Math.round(x.v * 100) + (x.kind === "t" ? " · SONG" : x.kind === "g" ? " · STYLE" : "")), bar);
+      return r;
+    },
+    onActivate: (x) => views.taste.options(x),
+    onSelect: (x) => { views.taste.setSide("left"); const r = views.taste.left.rows[views.taste.left.i]; if (r) r.scrollIntoView({ block: "nearest" }); setKeys(views.taste.keys()); },
+  }),
+  // Right: controls, then artists left out of autoplay.
   list: new List($("tz-list"), {
     render: (x) => {
       const r = h("div", "trk media tz-row" + (x.ban ? " tz-ban" : ""));
@@ -5473,50 +5594,119 @@ views.taste = {
       return r;
     },
     onActivate: (x) => views.taste.act(x),
-    // The list sits inside a column that scrolls as a whole: keep the selected row in sight.
-    onSelect: () => { const r = views.taste.list.rows[views.taste.list.i]; if (r) r.scrollIntoView({ block: "nearest" }); },
+    onSelect: () => { views.taste.setSide("right"); const r = views.taste.list.rows[views.taste.list.i]; if (r) r.scrollIntoView({ block: "nearest" }); setKeys(views.taste.keys()); },
   }),
   async show() {
     await Taste.load();
+    this.side = "left";
     this.render();
+  },
+  setSide(side) {
+    if (this.side === side) return;
+    this.side = side;
+    $("tz-left").classList.toggle("tz-off", side !== "left");
+    $("tz-list").classList.toggle("tz-off", side !== "right");
   },
   render() {
     const d = Taste.d;
     if (!d) return;
-    const known = Object.keys(d.a).length;
-    setText("tz-sub", d.plays || known ? `FOLLOWING YOU SINCE ${new Date(d.born).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }).toUpperCase()}` : "PLAY SOME MUSIC, OR LEARN FROM YOUR HISTORY (H)");
+    const known = Taste.keys("a").length;
+    setText("tz-sub", d.plays || d.histPlays || known ? `FOLLOWING YOU SINCE ${new Date(d.born).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }).toUpperCase()}` : "PLAY SOME MUSIC, OR LEARN FROM YOUR HISTORY (H)");
     const pct = (a, b) => (b >= 5 ? Math.round((a / b) * 100) + "%" : "–");
     const tiles = $("tz-tiles");
     tiles.textContent = "";
-    [[known.toLocaleString(), "ARTISTS KNOWN"], [d.plays.toLocaleString(), "PLAYS FOLLOWED"], [pct(d.hits, d.auto), "AUTOPLAY PICKS YOU KEPT"], [pct(d.exploredHits, d.explored), "NEW ARTISTS YOU KEPT"]]
+    [[known.toLocaleString(), "ARTISTS KNOWN"], [(d.plays + d.histPlays).toLocaleString(), "PLAYS LEARNED FROM"], [pct(d.hits, d.auto), "AUTOPLAY PICKS YOU KEPT"], [pct(d.exploredHits, d.explored), "NEW ARTISTS YOU KEPT"]]
       .forEach(([v, l]) => { const t = h("div", "st-tile"); t.append(h("b", null, String(v)), h("span", null, l)); tiles.append(t); });
-    this.bars($("tz-love"), Taste.top(d.a, 6, 1), "Play some music and this fills in.");
-    this.bars($("tz-styles"), Taste.top(d.g, 5, 1), LFM.ready() ? "Styles come from Last.fm tags as you listen." : "Connect Last.fm in System → Connections to learn styles.");
-    this.bars($("tz-skip"), [...Taste.top(d.a, 3, -1), ...Taste.top(d.g, 2, -1)], "Nothing you skip a lot yet.");
+    this.renderLeft();
     this.renderTimes();
     this.renderWeights();
-    // The list: controls, then artists you've banned from autoplay.
     const bans = Object.entries(d.banA).sort((a, b) => b[1].at - a[1].at)
       .map(([a, b]) => ({ ban: a, name: b.nm || a, sub: "Never autoplayed · ⏎ or X lets them back", tag: ago(b.at) }));
     const songBans = Object.keys(d.ban).length;
+    const keepR = this.list.i || 0;
     this.list.set([
+      { run: () => this.markByName(), icon: "♥", name: "Mark an artist you love or hate", sub: "Type a name · or + / − on any artist on the left", tag: "A" },
       { run: () => Taste.seed(true), icon: "↺", name: "Learn from your history", sub: "Imported Spotify history (with skips) and Last.fm scrobbles", tag: "H" },
       { run: () => go("stats").then(() => settled()).then(() => views.stats.importHistory()), icon: "+", name: "Import Spotify listening history", sub: "Every play since you joined, including what you skipped", tag: "STATS" },
       { run: () => this.forget(), icon: "!", name: "Forget everything", sub: "Autoplay starts learning from scratch", tag: "R" },
       ...(songBans ? [{ run: () => { d.ban = {}; Taste.save(); this.render(); toast("SONGS LET BACK INTO AUTOPLAY"); }, icon: "×", name: `${songBans} song${songBans === 1 ? "" : "s"} left out of autoplay for now`, sub: "Skipped twice in a row, or 'Less like this' · ⏎ lets them all back", tag: "CLEAR" }] : []),
       ...bans,
     ]);
-    this.list.select(Math.min(this.list.i || 0, this.list.items.length - 1), false);
+    if (this.list.items.length) { this.list.rows[this.list.i].classList.remove("active"); this.list.i = Math.min(keepR, this.list.items.length - 1); this.list.rows[this.list.i].classList.add("active"); }
+    $("tz-left").classList.toggle("tz-off", this.side !== "left");
+    $("tz-list").classList.toggle("tz-off", this.side !== "right");
+    setKeys(this.keys());
   },
-  bars(box, rows, empty) {
-    box.textContent = "";
-    if (!rows.length) { box.append(h("div", "fr-hint", empty)); return; }
-    rows.forEach((e, i) => {
-      const r = h("div", "st-artist" + (e.v < 0 ? " tz-neg" : ""));
-      const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${Math.min(1, Math.abs(e.v)).toFixed(3)})`;
-      r.append(h("em", null, String(i + 1)), h("span", null, upper(e.nm)), h("small", null, (e.v > 0 ? "+" : "") + Math.round(e.v * 100)), bar);
-      box.append(r);
-    });
+  renderLeft() {
+    const d = Taste.d, rows = [], keep = this.left.cur;
+    const add = (head, list, hint) => {
+      rows.push({ head });
+      if (!list.length) { rows.push({ hint }); return; }
+      list.forEach((e, i) => rows.push({ ...e, n: i + 1 }));
+    };
+    const pins = Object.entries(d.pin).sort((a, b) => b[1].v - a[1].v || b[1].at - a[1].at)
+      .map(([k, p]) => ({ kind: "a", k, nm: p.nm || k, v: p.v, pin: p.v }));
+    if (pins.length) add("MARKED BY YOU", pins);
+    add("YOU LOVE", Taste.top("a", 6, 1).map((e) => ({ ...e, kind: "a" })), "Play some music and this fills in.");
+    add("YOUR STYLES", Taste.top("g", 5, 1).map((e) => ({ ...e, kind: "g" })), LFM.ready() ? "Styles come from Last.fm tags as you listen." : "Connect Last.fm in System → Connections to learn styles.");
+    add("YOU SKIP", [...Taste.top("a", 3, -1, 1).map((e) => ({ ...e, kind: "a" })), ...Taste.top("t", 4, -1, 1).map((e) => ({ ...e, kind: "t" })), ...Taste.top("g", 2, -1, 1).map((e) => ({ ...e, kind: "g" }))], "Nothing you skip a lot yet.");
+    this.left.set(rows);
+    // Stay on the same entry (or the one that took its place) after a change.
+    let i = keep ? rows.findIndex((r) => r.k === keep.k && r.kind === keep.kind) : -1;
+    if (i < 0) i = Math.min(this.leftWant != null ? this.leftWant : 0, rows.length - 1);
+    while (i < rows.length - 1 && !rows[i].k) i++;
+    while (i > 0 && !rows[i].k) i--;
+    this.left.rows[this.left.i].classList.remove("active");
+    this.left.i = Math.max(0, i);
+    this.left.rows[this.left.i].classList.add("active");
+    this.leftWant = null;
+  },
+  /** Arrow keys on the left skip over the section titles. */
+  navLeft(e) {
+    const from = this.left.i;
+    if (!this.left.nav(e)) return false;
+    const dir = this.left.i >= from ? 1 : -1;
+    let i = this.left.i;
+    while (this.left.items[i] && !this.left.items[i].k && i + dir >= 0 && i + dir < this.left.items.length) i += dir;
+    if (!this.left.items[i] || !this.left.items[i].k) i = from;
+    if (i !== this.left.i) this.left.select(i);
+    return true;
+  },
+  /** ⏎ on something on the left: everything you can do with it. */
+  options(x) {
+    if (!x || !x.k) return;
+    const d = Taste.d, items = [];
+    if (x.kind === "a") {
+      const pin = d.pin[x.k];
+      items.push({ kind: "act", icon: "heart", name: pin && pin.v > 0 ? "Unmark as loved" : "Love " + x.nm, hint: "+", run: () => this.mark(x, pin && pin.v > 0 ? 0 : 1) });
+      items.push({ kind: "act", icon: "stop", name: pin && pin.v < 0 ? "Unmark as hated" : "Hate " + x.nm, hint: "−", run: () => this.mark(x, pin && pin.v < 0 ? 0 : -1) });
+    }
+    items.push({ kind: "act", icon: "trash", name: x.pin ? "Remove the mark" : "Forget it", hint: "X", run: () => this.remove(x) });
+    if (x.kind === "a" && !d.banA[x.k]) items.push({ kind: "act", icon: "stop", name: "Never autoplay " + x.nm, run: () => { d.banA[x.k] = { nm: x.nm, at: Date.now() }; Taste.save(); toast("AUTOPLAY WON'T PLAY " + upper(x.nm)); this.render(); } });
+    Drawer.actions("YOUR<br>TASTE", upper(x.nm) + (x.kind === "t" ? "  ·  SONG" : x.kind === "g" ? "  ·  STYLE" : "  ·  ARTIST"), items);
+  },
+  mark(x, v) { Taste.mark(x.k, x.nm, v); this.render(); },
+  remove(x) {
+    if (!x || !x.k) return;
+    // A marked artist loses the mark first; removing again forgets what was learned.
+    if (x.pin) { Taste.mark(x.k, x.nm, 0); return this.render(); }
+    this.leftWant = this.left.i;
+    Taste.forgetItem(x.kind, x.k);
+    toast("REMOVED " + upper(x.nm) + " · ONLY WHAT YOU DO FROM NOW ON COUNTS");
+    this.render();
+  },
+  async markByName() {
+    const name = await Modal.open({ title: "MARK AN ARTIST", text: "Which artist? Then choose love or hate.", input: "", ok: "NEXT" });
+    const nm = String(name || "").trim();
+    if (!nm) return;
+    const a = LFM.norm(nm);
+    if (!a) return;
+    // Use the name as Cadenza already knows it, when it does.
+    const known = Taste.get("a", a), shown = (known && known.nm) || nm;
+    Drawer.actions("MARK AN<br>ARTIST", upper(shown), [
+      { kind: "act", icon: "heart", name: "Love " + shown, run: () => { Taste.mark(a, shown, 1); this.render(); } },
+      { kind: "act", icon: "stop", name: "Hate " + shown, hint: "NEVER AUTOPLAYED", run: () => { Taste.mark(a, shown, -1); this.render(); } },
+    ]);
   },
   renderTimes() {
     const box = $("tz-times"), pats = Taste.patterns(3), now = Taste.bucket(Date.now());
@@ -5550,12 +5740,32 @@ views.taste = {
   },
   async forget() { if (await Taste.forget()) this.render(); },
   onKey(e) {
-    if (this.list.nav(e)) return true;
-    const k = e.key.toLowerCase(), x = this.list.cur;
-    if (e.key === "Enter") { pop(this.list.rows[this.list.i]); this.act(x); return true; }
-    if (k === "x" && x && x.ban) { this.act(x); return true; }
-    if (k === "h") { Taste.seed(true); return true; }
-    if (k === "r") { this.forget(); return true; }
+    const k = e.key;
+    if (k === "Tab" || (k === "ArrowRight" && this.side === "left") || (k === "ArrowLeft" && this.side === "right")) {
+      const to = k === "Tab" ? (this.side === "left" ? "right" : "left") : k === "ArrowRight" ? "right" : "left";
+      this.setSide(to);
+      const l = to === "left" ? this.left : this.list;
+      if (l.rows.length) l.select(l.i);
+      setKeys(this.keys());
+      return true;
+    }
+    const left = this.side === "left", x = left ? this.left.cur : this.list.cur;
+    if (left ? this.navLeft(e) : this.list.nav(e)) return true;
+    if (k === "Enter") {
+      const l = left ? this.left : this.list;
+      pop(l.rows[l.i]);
+      left ? this.options(x) : this.act(x);
+      return true;
+    }
+    if (left && x && x.k) {
+      if ((k === "+" || k === "=") && x.kind === "a") { this.mark(x, x.pin > 0 ? 0 : 1); return true; }
+      if ((k === "-" || k === "_") && x.kind === "a") { this.mark(x, x.pin < 0 ? 0 : -1); return true; }
+      if (k.toLowerCase() === "x" || k === "Backspace" || k === "Delete") { this.remove(x); return true; }
+    }
+    if (!left && k.toLowerCase() === "x" && x && x.ban) { this.act(x); return true; }
+    if (k.toLowerCase() === "a") { this.markByName(); return true; }
+    if (k.toLowerCase() === "h") { Taste.seed(true); return true; }
+    if (k.toLowerCase() === "r") { this.forget(); return true; }
     return false;
   },
 };
@@ -6694,7 +6904,14 @@ const TrackMenu = {
       { kind: "act", icon: "heart", name: "Like", like: true, run: () => toggleLike(t) },
       { kind: "act", icon: "plus", name: "More like this", hint: "Taste profile", run: () => Taste.more(t) },
       { kind: "act", icon: "minus", name: "Less like this", hint: "Taste profile", run: () => Taste.less(t) },
-      ...(Taste.info(t) ? [{ kind: "act", icon: "stop", name: "Never autoplay " + Taste.info(t).an, hint: "Taste profile", run: () => Taste.banArtist(t) }] : []),
+      ...(Taste.info(t) ? (() => {
+        const x = Taste.info(t), pin = Taste.d && Taste.d.pin[x.a];
+        return [
+          { kind: "act", icon: "heart", name: pin && pin.v > 0 ? "Stop marking " + x.an + " as loved" : "You love " + x.an, hint: "Taste profile", run: () => Taste.markTrackArtist(t, pin && pin.v > 0 ? 0 : 1) },
+          { kind: "act", icon: "stop", name: pin && pin.v < 0 ? "Stop marking " + x.an + " as hated" : "You hate " + x.an, hint: "Never autoplayed", run: () => Taste.markTrackArtist(t, pin && pin.v < 0 ? 0 : -1) },
+          { kind: "act", icon: "stop", name: "Never autoplay " + x.an, hint: "Taste profile", run: () => Taste.banArtist(t) },
+        ];
+      })() : []),
       ...(t.album && t.album.id ? [{ kind: "act", icon: "album", name: "Go to album", hint: t.album.name, run: () => go("album", { id: t.album.id }) }] : []),
       ...a.slice(0, 3).map((x) => ({ kind: "act", icon: "artist", name: "Go to " + x.name, run: () => go("artist", { id: x.id }) })),
       { kind: "act", icon: "link", name: "Copy link", run: () => copyLink(t.uri, t.name) },

@@ -752,3 +752,12 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 .bd-drag.drop-after { box-shadow: 0 .5vh 0 var(--cyan); }
 body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select: none; }
 .tz-times .fr-hint { grid-column: 1 / -1; }
+/* Taste: the left side is a list you can move through and correct. */
+.tz-left { margin-bottom: 2vh; }
+.tz-left .tz-head { margin: 1.4vh 0 .4vh; }
+.tz-left .tz-head:first-child { margin-top: 0; }
+.tz-left .tz-hint { margin-bottom: .6vh; }
+.st-artist.tz-item { cursor: pointer; padding: .45vh .4vw; margin: 0 -.4vw; transition: background .12s; }
+.st-artist.tz-item.active { background: rgb(var(--cyan-rgb) / .16); box-shadow: inset 3px 0 0 var(--cyan); }
+.tz-off .active { background: none !important; box-shadow: none !important; }
+.tz-off .trk.active .in { filter: saturate(.4) opacity(.75); }

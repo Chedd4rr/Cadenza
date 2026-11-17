@@ -14,9 +14,15 @@ import UniformTypeIdentifiers
 /// Only what Stats needs is kept: when each song was played, for how long, and the song's name, artist,
 /// album and link. The rest of each line (IP address, country, device and so on) is never saved.
 /// A play counts (in Stats) once you heard 30 seconds of it, the same rule Spotify uses. Shorter plays
-/// are kept too, marked as skips: your taste profile learns from what you skipped as well as what you
-/// finished. Each play also keeps three yes/no facts from Spotify's files, as bits: 1 = you skipped it,
-/// 2 = it played to the end, 4 = you picked it yourself (clicked it, rather than it coming up next).
+/// are kept too: your taste profile learns from what you skipped as well as what you finished. Each play
+/// also keeps a few yes/no facts from Spotify's files, as bits:
+///   1 = you skipped it (Spotify's "skipped", or it ended because you pressed next),
+///   2 = it played to the end,
+///   4 = you picked it yourself (clicked it, rather than it coming up next),
+///   8 = it ended because you started something else (another song, or another device),
+///  16 = it ended for a reason that says nothing about the song (you pressed back, the app quit or
+///       logged out, or the song failed to load).
+/// The shorter "account data" files say none of this, so there a play under 30 seconds counts as a skip.
 ///
 /// No play is counted twice. Each one is keyed by the minute it ended plus the song's name and artist,
 /// so importing the same files again, both kinds of download, or two downloads that overlap, only adds
@@ -35,7 +41,7 @@ final class SpotifyHistory {
     private var loaded = false
 
     private static let minimumMs = 30_000
-    private var flagFixes: [String: Int] = [:]          // plays imported before flags were kept: their flags
+    private var flagFixes: [String: Int] = [:]          // plays already here, with the flags this import found for them
     private static let maxFileBytes = 300 * 1024 * 1024     // one history file is ~10-20 MB
 
     // MARK: - Picking files
@@ -101,12 +107,15 @@ final class SpotifyHistory {
                 }
             }
         }
-        // Plays that were already here from an older import, without flags: add them now.
+        // Plays that were already here from an older import (without flags, or with fewer of them):
+        // bring their flags up to date.
         var fixed = 0
         if !flagFixes.isEmpty {
-            for i in plays.indices where plays[i].count == 3 {
+            for i in plays.indices {
                 let t = tracks[plays[i][1]]
-                if let f = flagFixes["\(plays[i][0] / 60)|" + (t[1] + "\u{1}" + t[2]).lowercased()] { plays[i].append(f); fixed += 1 }
+                guard let f = flagFixes["\(plays[i][0] / 60)|" + (t[1] + "\u{1}" + t[2]).lowercased()] else { continue }
+                if plays[i].count == 3 { plays[i].append(f); fixed += 1 }
+                else if plays[i][3] != f { plays[i][3] = f; fixed += 1 }
             }
         }
         if plays.count != before || fixed > 0 {
@@ -114,7 +123,7 @@ final class SpotifyHistory {
             save()
         }
         return [
-            "files": used, "read": read, "added": added, "skips": skips, "duplicates": duplicates, "skipped": short,
+            "files": used, "read": read, "added": added, "skips": skips, "duplicates": duplicates, "skipped": short, "updated": fixed,
             "total": plays.count, "first": (plays.first?[0] ?? 0) * 1000, "last": (plays.last?[0] ?? 0) * 1000,
         ]
     }
@@ -154,6 +163,8 @@ final class SpotifyHistory {
             if (row["skipped"] as? Bool) == true || endReason == "fwdbtn" { flags |= 1 }
             if endReason == "trackdone" { flags |= 2 }
             if startReason == "clickrow" { flags |= 4 }
+            if endReason == "endplay" || endReason == "remote" { flags |= 8 }
+            if ["backbtn", "trackerror", "logout", "unexpected-exit", "unexpected-exit-while-paused", "unknown"].contains(endReason) { flags |= 16 }
         } else {
             name = (row["trackName"] as? String) ?? ""
             artist = (row["artistName"] as? String) ?? ""
@@ -161,15 +172,16 @@ final class SpotifyHistory {
             uri = ""
             ms = Self.int(row["msPlayed"])
             end = (row["endTime"] as? String).flatMap { Self.minuteParser.date(from: $0) }
+            if ms < Self.minimumMs { flags |= 1 }                        // no reasons in these files: short means skipped
         }
-        // Under a second is a misclick or an autoplay flicker, not a choice either way.
-        guard !name.isEmpty, !artist.isEmpty, ms >= 1000, let end else { return .skipped }
-        if ms < Self.minimumMs { flags |= 1 }                            // a short play is a skip
+        // Under a second counts only when you pressed next (skipping straight past a song you know):
+        // otherwise it's a flicker, not a choice either way.
+        guard !name.isEmpty, !artist.isEmpty, ms > 0, ms >= 1000 || flags & 1 != 0, let end else { return .skipped }
 
         let id = (name + "\u{1}" + artist).lowercased()
         let endSec = Int(end.timeIntervalSince1970)
         let key = "\(endSec / 60)|\(id)"
-        guard !seen.contains(key) else { if flags != 0 { flagFixes[key] = flags }; return .duplicate }
+        guard !seen.contains(key) else { flagFixes[key] = flags; return .duplicate }
         seen.insert(key)
 
         let index: Int

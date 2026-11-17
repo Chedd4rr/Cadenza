@@ -174,7 +174,7 @@ The mouse and trackpad work too, and the Controls menu in the menu bar has the m
 | Search | Songs, albums, artists and playlists (Tab switches type) |
 | Queue / History | Your Up Next, then Spotify's queue; and what you played recently |
 | Stats | Top artists and songs, plays, when you listen: your imported Spotify history, Last.fm and Cadenza together, or Last.fm's charts or Cadenza's own log on their own (S switches). I imports Spotify history |
-| Your taste | What autoplay has learned about you: artists and styles you love or skip, what you play at different times, what matters most when it picks, and artists you've banned (T in Stats, or ⌘K). H learns from your history, R forgets it all |
+| Your taste | What autoplay has learned about you: artists, songs and styles you love or skip, what you play at different times, what matters most when it picks, and artists you've banned (T in Stats, or ⌘K). X removes something, + / − marks an artist you love or hate, Tab goes to the controls |
 | Friends | Your Last.fm friends: what they're playing, taste match, artists in common, blends (F in Stats, or ⌘K) |
 | Devices | This Mac's outputs (speakers, AirPods, Bluetooth) and Spotify Connect devices (System → Devices, or ⌘K) |
 | EQ | Ten bands (32 Hz to 16 kHz), presets, boost |
@@ -229,9 +229,11 @@ counts once.
   so importing the same files again, or a newer download that overlaps an older one, only adds what's
   new. It also works across the two kinds of download.
 - A play counts in Stats once you listened for 30 seconds, like on Spotify. Shorter plays are kept too,
-  as skips, along with whether you skipped, finished or picked each song: your taste profile learns from
-  them (Stats leaves them out). Plays under a second, podcasts and audiobooks are left out.
-- Only the time, length, song, artist, album, song link and those three skip/finish/pick facts are kept, in
+  along with how each play started and ended (skipped, finished, picked by you, or interrupted): your
+  taste profile learns from them (Stats leaves them out). Importing files you've imported before adds
+  these details to the plays already there. Plays under a second are kept only if you skipped them;
+  podcasts and audiobooks are left out.
+- Only the time, length, song, artist, album, song link and those skip/finish details are kept, in
   `~/Library/Application Support/Cadenza/spotify-history.json` (readable only by you). The rest of
   Spotify's files (IP addresses, countries, devices) is never saved. Nothing is uploaded anywhere.
 - ⌘K → "Remove imported Spotify history" deletes it again.
@@ -246,11 +248,18 @@ Autoplay keeps a taste profile that grows with you. It learns from:
   to the playlist builder;
 - "More like this", "Less like this" and "Never autoplay this artist" in any song's menu (M);
 - your imported Spotify history, with its skips, and Last.fm scrobbles after it (with neither, your
-  Last.fm top artists and songs). That happens once after an import, or on the Taste page with H.
+  Last.fm top artists and songs). That happens after each import, or on the Taste page with H, and is
+  rebuilt from scratch each time, so nothing is counted twice. Your past counts a quarter as much as
+  what you do now, so it gives autoplay a head start without outweighing how you listen today.
+  Skips in your history count more the sooner they came (a few seconds in counts the most). A song that
+  ended because you started something else counts half, and one that ended because you pressed back,
+  the app quit or the song failed counts as no verdict at all.
 
 It keeps scores for artists, songs and styles (Last.fm tags, or Spotify genres), and for what you play
 on weekday and weekend mornings, afternoons, evenings and nights. Old marks fade, half every 90 days,
-so it follows you when your taste changes.
+so it follows you when your taste changes. Songs and styles you binge count for less: plays bunched
+into one week add up slower (30 plays in a week count about like 10), and something you played five or
+more times in a week and then left alone for over a month keeps losing weight the longer you stay away.
 
 When autoplay picks the next songs, it weighs how close a match each one is, how you treat the artist
 and the style, whether it fits this time of day, whether you love that exact song, whether you've heard
@@ -258,8 +267,16 @@ the artist a lot in the last couple of hours, and whether the artist is new to y
 each of those matters to you from which of its picks you keep. Every sixth song is a new artist, so it
 keeps finding things. The Queue page says why each autoplay song is there.
 
-The Taste page (T in Stats, or ⌘K → "Your taste") shows all of it and lets you let banned artists back or
-forget everything. The profile is kept in `~/Library/Application Support/Cadenza/taste.json`, readable
+The Taste page (T in Stats, or ⌘K → "Your taste") shows all of it, and you can correct it:
+
+- On anything under You love, Your styles or You skip, press X (or ⏎ for options) to take it out of
+  the profile. What it learned about it so far stops counting, including from your imported history;
+  what you do from now on counts again.
+- Press + or − on an artist to mark them as an artist you love or hate (or use A, or a song's menu).
+  Your mark overrides what the profile worked out, and an artist you hate is never autoplayed. Marked
+  artists are listed at the top; press the same key again (or X) to clear the mark.
+- Tab switches to the controls: mark an artist by name, learn from your history, let banned artists back,
+  or forget everything. The profile is kept in `~/Library/Application Support/Cadenza/taste.json`, readable
 only by you, and never leaves your Mac.
 
 Cadenza checks this repository's releases at launch (at most every 6 hours) and offers to install new
