@@ -15,7 +15,7 @@ final class Settings {
     private let d = UserDefaults.standard
 
     /// Keys the web UI is allowed to read and change.
-    static let keys = ["theme", "djVoice", "notifications", "menuBar", "miniStyle", "aiTags", "clientId", "manageLibrespot", "librespotPath", "deviceName", "bitrate",
+    static let keys = ["theme", "notifications", "menuBar", "miniStyle", "playlistTags", "clientId", "manageLibrespot", "librespotPath", "deviceName", "bitrate",
                        "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin", "themedCovers",
                        "sfx", "sfxVolume", "normalize", "eqPerDevice", "autoplay", "trueShuffle", "crossfade", "geniusToken",
                        "discord", "discordAppId", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate"]
@@ -23,11 +23,10 @@ final class Settings {
     init() {
         d.register(defaults: [
             "theme": "tide",
-            "djVoice": true,
             "notifications": true,
             "menuBar": true,
             "miniStyle": "theme",
-            "aiTags": true,
+            "playlistTags": true,
             "clientId": "",
             "manageLibrespot": true,
             "librespotPath": "",
@@ -90,7 +89,7 @@ final class Settings {
     /// How the menu-bar mini player looks: "theme" (matches the current theme) or "mp3" (a USB-stick MP3 player).
     var miniStyle: String { d.string(forKey: "miniStyle") == "mp3" ? "mp3" : "theme" }
     var notifications: Bool { d.bool(forKey: "notifications") }
-    var aiTags: Bool { d.bool(forKey: "aiTags") }
+    var playlistTags: Bool { d.bool(forKey: "playlistTags") }
     var discord: Bool { d.bool(forKey: "discord") }
     var volume: Int {
         get { d.integer(forKey: "volume") }
@@ -104,11 +103,10 @@ final class Settings {
     func all() -> [String: Any] {
         [
             "theme": d.string(forKey: "theme") ?? "tide",
-            "djVoice": d.bool(forKey: "djVoice"),
             "notifications": d.bool(forKey: "notifications"),
             "menuBar": d.bool(forKey: "menuBar"),
             "miniStyle": miniStyle,
-            "aiTags": d.bool(forKey: "aiTags"),
+            "playlistTags": d.bool(forKey: "playlistTags"),
             "clientId": clientId,
             "manageLibrespot": manageLibrespot,
             "librespotPath": librespotPath,

@@ -23,10 +23,6 @@ let package = Package(
                 .linkedFramework("ServiceManagement"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("UserNotifications"),
-                // Apple Intelligence (macOS 26+). Weak-linked so the app still opens on older macOS.
-                .unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"]),
-                // Lyrics translation (macOS 15+), weak-linked for the same reason.
-                .unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "Translation"]),
             ]
         ),
     ]

@@ -24,10 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     let audio = AudioOutputs()
     lazy var librespot = Librespot(api: api)
     lazy var media = MediaKeys(api: api)
-    let speech = Speech()
     let statusBar = StatusBar()
     let notifier = Notifier()
-    let tagAI = TagAI()
     let store = Store()
     let eq = AudioPipe()
     let discord = DiscordPresence()
@@ -38,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     let lastfmPlays = LastfmPlays()
     let taste = TasteFile()
     let floating = FloatingPlayer()
-    let translator = LyricsTranslator()
+    let translationModels = TranslationModels()
     private var hotKey: HotKey?
     /// cadenza:// links that arrived before the page was ready (e.g. the link is what opened Cadenza).
     private var pendingURLs: [URL] = []
@@ -88,7 +86,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         librespot.onQueueEnd = { [weak self] in self?.bridge.emit("engine.end", [:]) }
         librespot.audio = eq
         librespot.history = history
-        speech.pipe = eq
         librespot.onTrackChange = { [weak self] in self?.eq.trackChanged() }
         // Music resumed from elsewhere (phone, Spotify app, Control Center): make sure Cadenza's sound is on.
         librespot.onPlaying = { [weak self] playing in if playing { self?.eq.localResume() } }
@@ -216,6 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         config.userContentController = content
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")   // right-click → Inspect Element
 
+        // The translator, language detector and translation models reach the page through this (see TranslationModels.swift).
+        config.setURLSchemeHandler(FilesScheme(webRoot: WebFiles.directory(), models: translationModels.dir), forURLScheme: FilesScheme.scheme)
         webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self

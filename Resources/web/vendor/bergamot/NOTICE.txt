@@ -1,0 +1,10 @@
+bergamot-translator-worker.js and bergamot-translator-worker.wasm are the WebAssembly build of
+bergamot-translator v0.4.5 (the offline translator Firefox uses), from the npm package
+@browsermt/bergamot-translator 0.4.9, unchanged.
+
+Source: https://github.com/browsermt/bergamot-translator
+License: Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/)
+
+The translation models are not included: Cadenza downloads them from Mozilla
+(firefox-settings-attachments.cdn.mozilla.net) the first time you translate from or into a language.
+Each model comes with its own license, listed at https://github.com/mozilla/firefox-translations-models

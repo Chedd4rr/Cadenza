@@ -107,17 +107,6 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 reply(s)
             }
 
-        case "speak":
-            app.speech.speak((args["text"] as? String) ?? "") { reply(true) }
-        case "speak.voices":
-            reply(["voices": Speech.list(), "current": UserDefaults.standard.string(forKey: "djVoiceId") ?? ""])
-        case "speak.setVoice":
-            UserDefaults.standard.set((args["id"] as? String) ?? "", forKey: "djVoiceId")
-            reply(true)
-        case "speak.stop":
-            app.speech.stop()
-            reply(true)
-
         case "nowplaying":
             app.media.updateNowPlaying(args)
             app.statusBar.update(args)
@@ -214,10 +203,20 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             NSPasteboard.general.setString(text, forType: .string)
             reply(text)
 
-        case "translate":
-            app.translator.translate((args["lines"] as? [String]) ?? [], in: app.window) { lines, error in
-                reply(["lines": (lines as Any?) ?? NSNull(), "error": (error as Any?) ?? NSNull(), "target": LyricsTranslator.targetCode])
+        case "translate.models":
+            // The language models Firefox's translator needs for these two languages: downloaded from
+            // Mozilla the first time (checked against the hashes Mozilla publishes), then kept on this Mac.
+            let bridge = self
+            app.translationModels.prepare(from: (args["from"] as? String) ?? "", to: (args["to"] as? String) ?? "",
+                                          below: args["below"] as? String,
+                                          progress: { got, total in bridge.emit("translate.progress", ["got": got, "total": total]) }) { models, error in
+                reply(["models": (models as Any?) ?? NSNull(), "error": (error as Any?) ?? NSNull()])
             }
+        case "translate.size":
+            reply(app.translationModels.diskUsage())
+        case "translate.clear":
+            app.translationModels.clear()
+            reply(true)
 
         case "genius.search":
             Genius.search((args["q"] as? String) ?? "") { hits, error in
@@ -227,13 +226,6 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "mini.toggle":
             app.floating.toggle()
             reply(app.floating.isOpen)
-
-        case "ai.status":
-            reply(app.tagAI.status())
-        case "ai.tags":
-            app.tagAI.tags(prompt: (args["prompt"] as? String) ?? "") { tags, error in
-                reply(["tags": (tags as Any?) ?? NSNull(), "error": (error as Any?) ?? NSNull()])
-            }
 
         case "eq.get":
             var s = app.eq.state()

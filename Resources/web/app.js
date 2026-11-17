@@ -1591,7 +1591,7 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 const DJ = {
-  active: false, building: false, segments: [], announced: new Set(), lastLine: "", talking: false,
+  active: false, building: false, segments: [], announced: new Set(), lastLine: "",
   SEG: {
     // Written the way people talk: short bits, contractions, a little personality.
     repeat: { title: "ON REPEAT", lines: [
@@ -1810,7 +1810,6 @@ const DJ = {
     clearInterval(this.timer);
     if (!this.active) return;
     this.active = false;
-    native("speak.stop").catch(() => {});
     views.home.update();
     if (current() && current().name === "dj") views.dj.render();
   },
@@ -1831,22 +1830,11 @@ const DJ = {
     }
     if (current() && current().name === "dj") views.dj.render();
   },
-  async say(line, speak) {
+  /** What the DJ says between segments, shown on the DJ page (and, for new segments, as a toast). */
+  say(line, fresh) {
     this.lastLine = line;
     views.dj.caption(line);
-    if (!speak || !S.settings.djVoice || this.talking) return;
-    this.talking = true;
-    const vol = S.player && S.player.volume;
-    // Through Cadenza's own sound engine the voice already dips the music itself; only duck Spotify's
-    // volume when the music is playing somewhere else (saves two requests every time the DJ talks).
-    const viaEngine = Local.active() && (!EQ.state || EQ.state.engine !== false);
-    const duck = !viaEngine && vol != null && vol > 12;
-    try {
-      if (duck) await api("PUT", `/me/player/volume?volume_percent=${Math.round(vol * 0.3)}`);
-      await native("speak", { text: line });
-    } catch (e) { /* ignore */ }
-    if (duck) await api("PUT", `/me/player/volume?volume_percent=${vol}`);
-    this.talking = false;
+    if (fresh && !(current() && current().name === "dj")) toast("DJ · " + upper(line).slice(0, 120));
   },
 };
 
@@ -1906,7 +1894,7 @@ views.home = {
       case "lyrics": return { label: "Lyrics", hint: "Sing along: lyrics that follow the song." };
       case "system": return { label: "System", hint: "Account, audio engine and app settings." };
       case "eq": return { label: "EQ", tag: EQ.state && EQ.state.enabled && EQ.state.engine !== false ? (EQ.state.preset || "").toUpperCase() : "OFF", hint: "Shape the sound: ten bands, presets and a volume boost." };
-      case "dj": return { label: "DJ", tag: DJ.active ? "ON AIR" : "", hint: "A DJ that builds sets from what you love and talks you through them." };
+      case "dj": return { label: "DJ", tag: DJ.active ? "ON AIR" : "", hint: "A DJ that builds sets from what you love and introduces each part." };
     }
   },
   build() {
@@ -4103,7 +4091,6 @@ const Palette = {
     add("DJ", "play", DJ.active ? "Switch up the DJ set" : "Start the DJ", () => DJ.start(), "DJ", { keys: "mix set" });
     if (DJ.active) add("DJ", "stop", "Stop the DJ", () => DJ.stop(), "DJ");
     if (DJ.segments.length) add("DJ", "plus", "Save the DJ set as a playlist", goTo("dj", () => views.dj.act({ key: "save" })), "DJ");
-    add("DJ", "artist", "Change the DJ's voice", () => this.setting("djVoiceId"), "VOICE");
 
     // ----- Stats and friends -----
     [[7, "this week"], [30, "this month"], [365, "this year"], [0, "all time"]].forEach(([r, label]) => add("STATS", "stats", "Stats: " + label, goTo("stats", () => views.stats.setRange(r)), "STATS", { keys: "top listening history" }));
@@ -4184,7 +4171,6 @@ const Palette = {
   /** Runs a setting from System. Switches and buttons work from anywhere; text needs the System page. */
   async setting(key) {
     const sys = views.system;
-    if (!sys.voices && key === "djVoiceId") { try { sys.voices = await native("speak.voices"); } catch (e) { /* demo */ } }
     const o = sys.allOptions().find((x) => x.key === key);
     if (!o) return;
     if (o.type === "text" || key === "account") {
@@ -4658,9 +4644,230 @@ const Meter = {
 /** Redraw the key hints at the bottom for the page you're on (after its options change). */
 function refreshKeys() { const c = current(); if (c && c.view && c.view.keys) setKeys(c.view.keys()); }
 
+/* ---------- Offline translation: Firefox's translator (Bergamot) + Google's language detector (CLD3) ---------- */
+// Both run in this page, in background workers, from files bundled with the app (vendor/). The language
+// models are downloaded from Mozilla by the native side the first time (see TranslationModels.swift)
+// and read through cadenza-files://, the same way. Nothing you translate leaves your Mac.
+
+/** A background worker made from a function, with a small "call a method, await the answer" wrapper. */
+function rpcWorker(fn) {
+  const url = URL.createObjectURL(new Blob(["(" + fn.toString() + ")()"], { type: "text/javascript" }));
+  const w = new Worker(url);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  let serial = 0;
+  const pending = new Map();
+  w.onmessage = ({ data }) => {
+    const p = pending.get(data && data.id);
+    if (!p) return;
+    pending.delete(data.id);
+    data.error ? p.reject(new Error(data.error)) : p.resolve(data.result);
+  };
+  w.onerror = (e) => { for (const p of pending.values()) p.reject(new Error(e.message || "worker failed")); pending.clear(); };
+  return {
+    call: (name, args, transfer) => new Promise((resolve, reject) => {
+      const id = ++serial;
+      pending.set(id, { resolve, reject });
+      w.postMessage({ id, name, args }, transfer || []);
+    }),
+    end: () => w.terminate(),
+  };
+}
+
+/** Runs inside the language-detection worker: CLD3, compiled to WebAssembly (vendor/cld3). */
+function cld3Worker() {
+  let M = null, handle = 0, size = 0, find = null;
+  const api = {
+    init({ glue }) {
+      return new Promise((resolve, reject) => {
+        (0, eval)(glue);                                   // defines the module factory as `Module`
+        const factory = self.Module;
+        factory({
+          onRuntimeInitialized() {
+            M = this;
+            size = M.cwrap("get_SizeLanguageResult", "number")();
+            find = M.cwrap("Cld_findLanguage", null, ["number", "number", "number"]);
+            handle = M.cwrap("Cld_create", "number", ["number", "number"])(0, 1000);
+            resolve(true);
+          },
+          onAbort: (e) => reject(new Error(String(e))),
+          print() {}, printErr() {},
+        });
+      });
+    },
+    detect({ text }) {
+      const out = M._malloc(size), p = M.allocateUTF8(String(text).slice(0, 4000));
+      find(handle, p, out);
+      M._free(p);
+      const langPtr = M.getValue(out, "*");
+      const res = { language: M.UTF8ToString(langPtr), probability: M.getValue(out + 4, "float"), reliable: !!M.getValue(out + 8, "i8") };
+      M._free(langPtr); M._free(out);
+      return res;
+    },
+  };
+  self.onmessage = async ({ data: { id, name, args } }) => {
+    try { self.postMessage({ id, result: await api[name](args) }); } catch (e) { self.postMessage({ id, error: String((e && e.message) || e) }); }
+  };
+}
+
+/** Runs inside the translation worker: bergamot-translator (vendor/bergamot). Adapted from the worker in
+ *  @browsermt/bergamot-translator (Mozilla Public License 2.0), cut down to what Cadenza needs. */
+function bergamotWorker() {
+  const GEMM = {
+    int8_prepare_a: "int8PrepareAFallback", int8_prepare_b: "int8PrepareBFallback",
+    int8_prepare_b_from_transposed: "int8PrepareBFromTransposedFallback",
+    int8_prepare_b_from_quantized_transposed: "int8PrepareBFromQuantizedTransposedFallback",
+    int8_prepare_bias: "int8PrepareBiasFallback", int8_multiply_and_add_bias: "int8MultiplyAndAddBiasFallback",
+    int8_select_columns_of_b: "int8SelectColumnsOfBFallback",
+  };
+  let M = null, service = null;
+  const models = new Map();
+  const memory = (buffer, align) => {
+    const bytes = new Int8Array(buffer), m = new M.AlignedMemory(bytes.byteLength, align);
+    m.getByteArrayView().set(bytes);
+    return m;
+  };
+  const yaml = (o) => Object.entries(o).map(([k, v]) => `${k}: ${v}`).join("\n") + "\n";
+  const api = {
+    init({ glue, wasm }) {
+      return new Promise((resolve, reject) => {
+        self.Module = {
+          instantiateWasm(info, accept) {
+            const gemm = Object.fromEntries(Object.entries(GEMM).map(([k, n]) => [k, (...a) => self.Module.asm[n](...a)]));
+            WebAssembly.instantiate(wasm, { ...info, wasm_gemm: gemm }).then((r) => accept(r.instance), reject);
+            return {};
+          },
+          onRuntimeInitialized() { M = self.Module; service = new M.BlockingService({ cacheSize: 0 }); resolve(true); },
+          onAbort: (e) => reject(new Error(String(e))),
+          print() {}, printErr() {},
+        };
+        (0, eval)(glue);
+      });
+    },
+    has({ key }) { return models.has(key); },
+    load({ key, model, lex, vocabs, int8 }) {
+      const unique = vocabs.filter((v, i) => vocabs.indexOf(v) === i);
+      const list = new M.AlignedMemoryList();
+      unique.forEach((v) => list.push_back(memory(v, 64)));
+      const config = {
+        "beam-size": 1, normalize: 1.0, "word-penalty": 0, "cpu-threads": 0,
+        "gemm-precision": int8 ? "int8shiftAll" : "int8shiftAlphaAll", "skip-cost": true,
+        alignment: "soft", quiet: true, "quiet-translation": true, "max-length-break": 128,
+        "mini-batch-words": 1024, workspace: 128, "max-length-factor": 2.0,
+      };
+      models.set(key, new M.TranslationModel(yaml(config), memory(model, 256), memory(lex, 64), list, null));
+      return true;
+    },
+    free({ key }) { const m = models.get(key); if (m) { models.delete(key); m.delete(); } return true; },
+    translate({ keys, texts }) {
+      const input = new M.VectorString(), options = new M.VectorResponseOptions();
+      texts.forEach((t) => { input.push_back(t); options.push_back({ alignment: false, html: false, qualityScores: false }); });
+      const ms = keys.map((k) => models.get(k));
+      if (ms.some((m) => !m)) throw new Error("model-not-loaded");
+      const res = ms.length > 1 ? service.translateViaPivoting(ms[0], ms[1], input, options) : service.translate(ms[0], input, options);
+      const out = texts.map((_, i) => res.get(i).getTranslatedText());
+      input.delete(); options.delete(); res.delete();
+      return out;
+    },
+  };
+  self.onmessage = async ({ data: { id, name, args } }) => {
+    try { self.postMessage({ id, result: await api[name](args) }); } catch (e) { self.postMessage({ id, error: String((e && e.message) || e) }); }
+  };
+}
+
+const Translator = {
+  detector: null, engine: null, loaded: [],
+  base() { return bridge ? "cadenza-files://app/vendor/" : "vendor/"; },
+  /** The language lyrics are translated into: the Mac's own. */
+  target() { return String(navigator.language || "en").split("-")[0].toLowerCase(); },
+  name(code) { try { return new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code; } catch (e) { return code; } },
+  async fetchOk(url, kind) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("couldn't read " + url.split("/").pop());
+    return kind === "text" ? r.text() : r.arrayBuffer();
+  },
+  /** Which language a text is in, with CLD3. CLD3's codes are matched to the translator's. */
+  async detect(text) {
+    if (!this.detector) {
+      this.detector = (async () => {
+        const w = rpcWorker(cld3Worker);
+        await w.call("init", { glue: await this.fetchOk(this.base() + "cld3/cld3.js", "text") });
+        return w;
+      })().catch((e) => { this.detector = null; throw e; });
+    }
+    const r = await (await this.detector).call("detect", { text });
+    if (!r || !r.language || r.language === "und" || /-Latn$/.test(r.language)) return null;   // unknown, or romanized (no model for that)
+    const map = { iw: "he", fil: "tl", no: "nb", jw: "jv", "zh-Hant": "zh" };
+    return { lang: map[r.language] || r.language, sure: r.reliable || r.probability >= 0.7 };
+  },
+  async start() {
+    if (!this.engine) {
+      this.engine = (async () => {
+        const [glue, wasm] = await Promise.all([this.fetchOk(this.base() + "bergamot/bergamot-translator-worker.js", "text"), this.fetchOk(this.base() + "bergamot/bergamot-translator-worker.wasm")]);
+        const w = rpcWorker(bergamotWorker);
+        await w.call("init", { glue, wasm }, [wasm]);
+        return w;
+      })().catch((e) => { this.engine = null; throw e; });
+    }
+    return this.engine;
+  },
+  /** Gets the models for from → to into the translator (downloading them the first time). If a model
+   *  doesn't load (made for a newer translator than the one bundled), an older version is tried. */
+  async ensure(from, to) {
+    let w = await this.start();
+    let below = null;
+    for (let tries = 0; tries < 4; tries++) {
+      const r = await native("translate.models", { from, to, below });
+      if (!r || r.error || !Array.isArray(r.models)) throw new Error((r && r.error) || "unavailable");
+      const keys = [];
+      try {
+        for (const m of r.models) {
+          const key = `${m.from}-${m.to}@${m.version}`;
+          if (!this.loaded.includes(key)) {
+            const f = {};
+            for (const [type, url] of Object.entries(m.files || {})) f[type] = await this.fetchOk(url);
+            const vocabs = f.vocab ? [f.vocab] : [f.srcvocab, f.trgvocab];
+            if (!f.model || !f.lex || vocabs.some((v) => !v)) throw new Error("incomplete-model");
+            await w.call("load", { key, model: f.model, lex: f.lex, vocabs, int8: !!m.int8 }, [f.model, f.lex, ...new Set(vocabs)]);
+            this.loaded.push(key);
+          }
+          keys.push(key);
+        }
+      } catch (e) {
+        if (/couldn't read|incomplete/.test(String(e.message))) throw e;
+        // A model the translator can't read can leave it broken: start a fresh one before trying older models.
+        w.end(); this.engine = null; this.loaded = [];
+        w = await this.start();
+        below = r.models.map((m) => m.version).sort((a, b) => parseFloat(a) - parseFloat(b))[0];
+        continue;
+      }
+      // Keep memory in check: only the models in use stay loaded.
+      for (const k of this.loaded.filter((k) => !keys.includes(k))) { w.call("free", { key: k }).catch(() => {}); }
+      this.loaded = this.loaded.filter((k) => keys.includes(k));
+      return keys;
+    }
+    throw new Error("unsupported");
+  },
+  /** Translates each line on its own (blank ones stay blank). */
+  async lines(lines) {
+    const text = lines.filter((l) => l && l !== "♪").join("\n");
+    if (!text.trim()) return { error: "unknown-language" };
+    const d = await this.detect(text);
+    if (!d) return { error: "unknown-language" };
+    const to = this.target();
+    if (d.lang === to) return { error: "same-language" };
+    const keys = await this.ensure(d.lang, to);
+    const w = await this.start();
+    const todo = lines.map((l, i) => [i, l]).filter(([, l]) => l && l !== "♪" && l.trim());
+    const out = await w.call("translate", { keys, texts: todo.map(([, l]) => l) });
+    const result = lines.map(() => "");
+    todo.forEach(([i], k) => (result[i] = out[k] || ""));
+    return { lines: result, from: d.lang, to };
+  },
+};
+
 /* ---------- Lyrics translation (T in Lyrics, or ⌘K) ---------- */
-// Done on your Mac by Apple's Translation (macOS 15+), into the Mac's own language. Each translated line
-// sits under the original. Remembered per song; stays on as songs change until you turn it off.
+// Done on your Mac by Firefox's offline translator (above), into the Mac's own language. Each translated
+// line sits under the original. Remembered per song; stays on as songs change until you turn it off.
 const Lyrics_tr = {
   on: false, cache: {}, busy: false,
   toggle(force) {
@@ -4677,13 +4884,20 @@ const Lyrics_tr = {
       this.busy = true;
       toast("TRANSLATING THE LYRICS…");
       let res = null;
-      try { res = await native("translate", { lines: L.lines.map((l) => l.text || "") }); } catch (e) { res = { error: String(e) }; }
+      const lines = L.lines.map((l) => l.text || "");
+      try { res = bridge ? await Translator.lines(lines) : await native("translate", { lines }); } catch (e) { res = { error: String((e && e.message) || e) }; }
       this.busy = false;
       if (!res || res.error || !Array.isArray(res.lines)) {
-        const err = res && res.error;
+        const err = String((res && res.error) || "");
         if (err === "same-language") { toast("THESE LYRICS ARE ALREADY IN YOUR LANGUAGE"); this.cache[uri] = []; return; }
         this.on = false; refreshKeys();
-        return toast(err === "needs-macos-15" ? "LYRICS TRANSLATION NEEDS MACOS 15 OR LATER" : "COULDN'T TRANSLATE THESE LYRICS" + (err ? ": " + upper(String(err)).slice(0, 80) : ""), true);
+        const msg = {
+          "unknown-language": "COULDN'T TELL WHAT LANGUAGE THESE LYRICS ARE IN",
+          unsupported: "THE OFFLINE TRANSLATOR CAN'T DO THIS LANGUAGE YET",
+          offline: "CONNECT TO THE INTERNET ONCE SO CADENZA CAN DOWNLOAD THIS LANGUAGE",
+          busy: "STILL GETTING THE LAST LANGUAGE READY",
+        }[err];
+        return toast(msg || "COULDN'T TRANSLATE THESE LYRICS" + (err ? ": " + upper(err).slice(0, 80) : ""), true);
       }
       tr = this.cache[uri] = res.lines;
     }
@@ -5073,6 +5287,9 @@ const Taste = {
       // First run with history imported earlier: learn from it once, in the background. (Also for a profile
       // from before Cadenza noted whether the history had skip details, so the Taste page can say.)
       if (!d.seedTried || (v && v.histImported == null)) setTimeout(() => this.seed(false), 20000);
+      // Your playlists: once a little after launch, then every six hours.
+      setTimeout(() => this.scanPlaylists(), 45000);
+      setInterval(() => this.scanPlaylists(), 6 * 3600e3);
     })());
   },
   save(now) {
@@ -5089,7 +5306,7 @@ const Taste = {
   fade(dt) { return dt > 0 ? Math.pow(0.5, dt / this.HALF) : 1; },
   /** `burst` (songs and styles): plays bunched into one week count for less each, the k-th one 1/√k.
    *  Playing a song 30 times in a week then counts about like 10 plays, not 30. */
-  bump(map, key, w, when, nm, burst) {
+  bump(map, key, w, when, nm, burst, plays = 1, kept = plays) {
     if (!key || !w || !isFinite(w)) return null;
     const c = map[key] || (map[key] = { p: 0, n: 0, t: when });
     if (burst && w > 0) {
@@ -5099,17 +5316,175 @@ const Taste = {
       c.pk = Math.max(c.pk || 0, c.wc);                          // the most plays it ever had in one week
       c.l = Math.max(c.l || 0, when);                            // the last time you played it
     }
-    if (when >= c.t) { const f = this.fade(when - c.t); c.p *= f; c.n *= f; c.t = when; }
-    else w *= this.fade(c.t - when);                           // an old play (from imported history) counts for less
+    let fp = 1;
+    if (when >= c.t) { const f = this.fade(when - c.t); c.p *= f; c.n *= f; c.k = (c.k || 0) * f; c.kp = (c.kp || 0) * f; c.t = when; }
+    else { fp = this.fade(c.t - when); w *= fp; }              // an old play (from imported history) counts for less
     if (w > 0) c.p += w; else c.n -= w;
+    c.k = (c.k || 0) + plays * fp;                               // how many plays are behind it (fading the same way)
+    if (w > 0) c.kp = (c.kp || 0) + kept * fp;                  // …and how many of them you kept
     if (nm) c.nm = nm;
     return c;
   },
-  /** −1 (you skip it) … +1 (you love it), near 0 when there's little to go on. */
-  val(c, now = Date.now()) {
+  /** −1 (you skip it) … +1 (you love it), near 0 when there's little to go on. For a counter from get().
+   *
+   *  Proportional, not absolute: the share of it you kept (finished rather than skipped) is compared with
+   *  your usual share for that kind of thing. A style you play constantly also gets skipped a lot, because
+   *  you skip through it to reach other songs in it; that's normal for you, so it counts as neutral.
+   *  Then it's scaled by how many plays are behind it: 8 plays make it count half, 40 plays about 85%. */
+  val(c, kind = "a", now = Date.now()) {
     if (!c) return 0;
-    const f = this.fade(now - c.t);
-    return ((c.p - c.n) * f) / ((c.p + c.n) * f + this.PRIOR);
+    const [rel, k] = this.rel(c, kind, now);
+    return rel * (k / (k + this.PLAYS));
+  },
+  /** The proportional part of val(), and how many plays are behind it. */
+  rel(c, kind, now) {
+    const tot = c.p + c.n;
+    if (tot <= 0) return [0, 0];
+    const B = this.base(kind, now), r = c.p / tot;
+    return [r >= B ? (r - B) / (1 - B) : (r - B) / B, c.k != null ? c.k : tot / 0.6];
+  },
+  /** An artist's score. Besides the proportional part, how much of them you actually listen to counts:
+   *  how many plays you kept, and above all how many *different* songs you keep coming back to. One song
+   *  played a lot says you like that song; twenty different songs says you like the artist, even if you
+   *  skip plenty of their others along the way. */
+  artistVal(a, c, now = Date.now()) {
+    if (!c) c = { p: 0, n: 0, k: 0, kp: 0 };                    // never played here, but maybe in your playlists
+    const [rel, k] = this.rel(c, "a", now);
+    const mp = k / (k + this.PLAYS);
+    const kp = c.kp != null ? c.kp : c.p / 0.8;
+    const songs = this.breadth(now)[a] || 0, mb = songs / (songs + 3);      // 1 song: a quarter; 3: half; 10: three quarters
+    const eng = (kp / (kp + this.PLAYS)) * mb;
+    // How much you listen to them counts for more the longer you've kept it up (an artist you've played
+    // for years outranks one you just found), and a burst of plays lately gives a boost that wears off.
+    // Two more things feed the base score (not the "lately" part): how many of your playlists they're in,
+    // and a little from the styles you like that they belong to. Styles keep their own scores; this is
+    // only a nudge, so an artist in a style you love starts a bit higher.
+    const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * this.playlistFit(a) + this.styleBoost(a, now);
+    let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + 0.3 * this.surge(c);
+    if (x > 0) x *= this.fewSongs(a, songs);
+    return Math.tanh(x);
+  },
+  /** A liking that rests on only a few songs counts for less: one to three songs you keep coming back to
+   *  (×0.65 / 0.75 / 0.85), and one to three songs of theirs across all your playlists (×0.75 / 0.85 / 0.95).
+   *  You may well like their other songs, but that isn't loving the artist. */
+  fewSongs(a, kept) {
+    const ps = (this.plSongs && this.plSongs[a]) || 0;
+    return (kept >= 1 && kept <= 3 ? 0.55 + 0.1 * kept : 1) * (ps >= 1 && ps <= 3 ? 0.65 + 0.1 * ps : 1);
+  },
+  /** 0 … 1: how many of your playlists (and Liked Songs) have their songs. 3 playlists: half. */
+  playlistFit(a) { const n = (this.inPlaylists && this.inPlaylists[a]) || 0; return n / (n + 3); },
+  /** Up to +0.2 when the artist's styles are ones you like (never a penalty). */
+  styleBoost(a, now = Date.now()) {
+    const tags = (this.d && this.d.at[a]) || [];
+    let s = 0, w = 0;
+    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c) { s += this.styleVal(c, now) * this.SHARE[i]; w += this.SHARE[i]; } });
+    return w && s > 0 ? 0.2 * (s / w) : 0;
+  },
+  /** A style's score: the proportional part, plus how long you've stuck with it and how much lately. */
+  styleVal(c, now = Date.now()) {
+    if (!c) return 0;
+    return Math.tanh(this.val(c, "g", now) + 0.25 * this.longevity(c) + 0.2 * this.surge(c));
+  },
+
+  // ----- Your playlists -----
+  inPlaylists: null,
+  /** Which artists are in which of your own playlists (and Liked Songs). Each playlist is read once and then
+   *  only again when it changes, slowly, in the background; the result is kept in store.json. */
+  async scanPlaylists() {
+    if (this.scanning || !S.loggedIn) return;
+    this.scanning = true;
+    try {
+      let cache = this.plCache;
+      if (!cache) {
+        let saved = null;
+        try { saved = await native("store.get", { key: "tastePlaylists" }); } catch (e) { saved = null; }
+        cache = (saved && saved.v === 2 && saved.lists && typeof saved.lists === "object") ? saved.lists : {};
+      }
+      const lists = (await loadPlaylists()).filter((p) => p && p.id && isOwned(p));
+      const next = {};
+      const read = async (id, ver, path, pages) => {
+        if (cache[id] && cache[id].ver === ver) { next[id] = cache[id]; return; }
+        if (cooling()) { if (cache[id]) next[id] = cache[id]; return; }
+        const arts = await this.artistsIn(path, pages);
+        if (arts) next[id] = { ver, arts }; else if (cache[id]) next[id] = cache[id];
+        await wait(1500);                                         // gently: there's no hurry
+      };
+      if (S.likedTotal != null) await read("liked", "liked:" + S.likedTotal, "/me/tracks?limit=50", 40);
+      for (const pl of lists) await read(pl.id, pl.snapshot_id || "n" + plCount(pl), `/playlists/${pl.id}/items?limit=100`, 10);
+      // Per artist: how many playlists have them, and how many different songs of theirs are in them.
+      const counts = {}, songs = {};
+      for (const v of Object.values(next)) for (const [a, ids] of Object.entries(v.arts)) {
+        counts[a] = (counts[a] || 0) + 1;
+        const set = songs[a] || (songs[a] = new Set());
+        ids.forEach((id) => set.add(id));
+      }
+      this.inPlaylists = counts; this.plCache = next;
+      this.plSongs = Object.fromEntries(Object.entries(songs).map(([a, set]) => [a, set.size]));
+      native("store.set", { key: "tastePlaylists", value: { v: 2, lists: next } }).catch(() => {});
+      if (current() && current().name === "taste") views.taste.render();
+    } catch (e) { console.error(e); } finally { this.scanning = false; }
+  },
+  /** The artists (first artist of each song) in a list of songs, as normalized names, each with the IDs
+   *  of their songs there. */
+  async artistsIn(path, maxPages) {
+    const arts = {};
+    let url = path;
+    for (let p = 0; p < maxPages && url; p++) {
+      const r = await api("GET", url);
+      if (r.status !== 200 || !r.body) return p ? arts : null;
+      for (const e of r.body.items || []) {
+        const t = e && (e.item || e.track), a = t && t.artists && t.artists[0];
+        if (!a || !a.name) continue;
+        const k = LFM.norm(a.name), id = t.id || LFM.norm(t.name || "");
+        if (!arts[k]) arts[k] = [];
+        if (id && !arts[k].includes(id)) arts[k].push(id);
+      }
+      url = r.body.next ? String(r.body.next).replace(/^https:\/\/api\.spotify\.com\/v1/, "") : null;
+      if (url) await wait(700);
+    }
+    return arts;
+  },
+
+  // ----- How long, and how much lately -----
+  LONG: 365 * 86400e3,            // the months you kept listening fade by half over a year…
+  SURGE: 14 * 86400e3,            // …and recent plays over two weeks
+  /** After a play you kept: note the month (once per calendar month) and add to the recent-plays count. */
+  stamp(c, when) {
+    if (!c) return;
+    if (!c.rt || when >= c.rt) { c.r = this.recent(c, when) + 1; c.rt = when; }
+    else c.r = (c.r || 0) + Math.pow(0.5, (c.rt - when) / this.SURGE);
+    const mo = Math.floor(when / (30.44 * 86400e3));
+    if (mo !== c.mo && (!c.mt || when >= c.mt)) { c.m = this.months(c, when) + 1; c.mo = mo; c.mt = when; }
+  },
+  months(c, now) { return c && c.mt ? (c.m || 0) * Math.pow(0.5, Math.max(0, now - c.mt) / this.LONG) : 0; },
+  recent(c, now) { return c && c.rt ? (c.r || 0) * Math.pow(0.5, Math.max(0, now - c.rt) / this.SURGE) : 0; },
+  /** 0 … 1: months you've kept coming back. 6 months: half; steady for years: about three quarters. */
+  longevity(c) { const m = c.m || 0; return m / (m + 6); },
+  /** 0 … 1: plays you kept in the last couple of weeks. 8 of them: half. */
+  surge(c) { const r = c.r || 0; return r / (r + 8); },
+  /** For each artist, how many of their songs you've kept at least twice (worked out at most once a minute). */
+  breadth(now = Date.now()) {
+    const b = this.baseCache || (this.baseCache = {});
+    if (b.songs && now - b.songs.at < 60000) return b.songs.v;
+    const v = {};
+    for (const key of this.keys("t")) {
+      const c = this.get("t", key, now), kp = c.kp != null ? c.kp : c.p / 0.8;
+      if (kp >= 1.5 && c.p >= c.n) { const a = key.split("|")[0]; v[a] = (v[a] || 0) + 1; }
+    }
+    b.songs = { at: now, v };
+    return v;
+  },
+  PLAYS: 8,
+  /** Your usual kept share for artists, songs or styles (worked out again at most once a minute). */
+  base(kind, now = Date.now()) {
+    const b = this.baseCache || (this.baseCache = {});
+    const hit = b[kind];
+    if (hit && now - hit.at < 60000) return hit.v;
+    let p = 0, t = 0;
+    for (const key of this.keys(kind)) { const c = this.get(kind, key, now); p += c.p; t += c.p + c.n; }
+    const v = t > 5 ? Math.max(0.2, Math.min(0.95, p / t)) : 0.7;
+    b[kind] = { at: now, v };
+    return v;
   },
   mass(c, now = Date.now()) { return c ? (c.p + c.n) * this.fade(now - c.t) : 0; },
   /** One counter, live and learned-from-history added together. A song or style you binged (5+ plays in one
@@ -5118,7 +5493,10 @@ const Taste = {
     const x = this.d[kind][key], y = this.d.h[kind][key];
     if (!x && !y) return undefined;
     const fx = x ? this.fade(now - x.t) : 0, fy = y ? this.fade(now - y.t) : 0;
-    const c = { p: (x ? x.p * fx : 0) + (y ? y.p * fy : 0), n: (x ? x.n * fx : 0) + (y ? y.n * fy : 0), t: now,
+    const k = (z, f) => (z ? (z.k != null ? z.k : (z.p + z.n) / 0.6) * f : 0);
+    const kp = (z, f) => (z ? (z.kp != null ? z.kp : z.p / 0.8) * f : 0);
+    const m = this.months(x, now) + this.months(y, now), r = this.recent(x, now) + this.recent(y, now);
+    const c = { p: (x ? x.p * fx : 0) + (y ? y.p * fy : 0), n: (x ? x.n * fx : 0) + (y ? y.n * fy : 0), k: k(x, fx) + k(y, fy), kp: kp(x, fx) + kp(y, fy), m, r, t: now,
       nm: (x && x.nm) || (y && y.nm), pk: Math.max((x && x.pk) || 0, (y && y.pk) || 0), l: Math.max((x && x.l) || 0, (y && y.l) || 0) };
     if ((kind === "t" || kind === "g") && c.pk >= 5 && c.l) {
       const away = now - c.l - 30 * 86400e3;
@@ -5153,7 +5531,8 @@ const Taste = {
     const ok = (kind, key) => !((d.forgot[kind + ":" + key] || 0) > when);   // you removed it after this play
     const timed = w > 0 && !opts.noTime;
     if (ok("a", x.a)) {
-      this.bump(m.a, x.a, w, when, x.an);
+      const ca = this.bump(m.a, x.a, w, when, x.an);
+      if (w > 0) this.stamp(ca, when);
       if (timed) this.bump(m.b, bk + "|a:" + x.a, w, when);
     }
     if (!opts.artistOnly && ok("t", x.key)) this.bump(m.t, x.key, w, when, x.name + " · " + x.an, true);
@@ -5161,7 +5540,8 @@ const Taste = {
     const tags = d.at[x.a];
     if (tags) tags.forEach((g, i) => {
       if (!ok("g", g)) return;
-      this.bump(m.g, g, w * this.SHARE[i], when, null, true);
+      const cg = this.bump(m.g, g, w * this.SHARE[i], when, null, true);
+      if (w > 0) this.stamp(cg, when);
       if (timed) this.bump(m.b, bk + "|g:" + g, w * this.SHARE[i], when);
     });
     else if (!opts.when) this.needTags(x);
@@ -5176,7 +5556,10 @@ const Taste = {
       const c = m.a[x.a];
       if (c) tags.forEach((g, i) => {
         const s = this.SHARE[i];
-        this.bump(m.g, g, c.p * s, c.t); this.bump(m.g, g, -c.n * s, c.t);
+        this.bump(m.g, g, c.p * s, c.t, null, false, (c.k || 0) * s, (c.kp || 0) * s); this.bump(m.g, g, -c.n * s, c.t, null, false, 0);
+        const gc = m.g[g];                                         // the artist's months and recent plays carry over too
+        if (gc && c.mt) { gc.m = Math.max(this.months(gc, c.mt), c.m || 0); gc.mt = Math.max(gc.mt || 0, c.mt); gc.mo = gc.mo != null ? gc.mo : c.mo; }
+        if (gc && c.rt) { gc.r = this.recent(gc, c.rt) + (c.r || 0) * s; gc.rt = Math.max(gc.rt || 0, c.rt); }
         for (const bk of this.BUCKETS) { const bc = m.b[bk + "|a:" + x.a]; if (bc) this.bump(m.b, bk + "|g:" + g, bc.p * s, bc.t); }
       });
     }
@@ -5249,7 +5632,9 @@ const Taste = {
     } else if (frac >= 0.5) {
       w = 0.2; if (frac >= 0.75) y = 1;
     } else if (c.heard < 30000 || frac < 0.25) {
-      w = auto ? -1.5 : pick ? -0.3 : -0.4; y = 0;
+      // Skips are softer than finishes: you skip for all sorts of reasons (getting to another song, not the
+      // mood right now), and only some of them mean you dislike it.
+      w = auto ? -1 : pick ? -0.2 : -0.3; y = 0;
       if (!pressed) w /= 2;                                     // you moved on to something else, not necessarily away from this
       if (auto && pressed) {
         // Skipped fast twice when autoplay offered it: it stops offering that song for a month.
@@ -5257,7 +5642,7 @@ const Taste = {
         f[0]++; f[1] = now; d.fs[x.key] = f;
         if (f[0] >= 2) { d.ban[x.key] = now + 30 * 86400e3; delete d.fs[x.key]; }
       }
-    } else { w = auto ? -0.7 : -0.2; y = 0; }
+    } else { w = auto ? -0.5 : -0.15; y = 0; }
     this.signal(c.t, w, { quiet: true });
     if (auto) {
       d.auto++; if (y === 1) d.hits++;
@@ -5307,12 +5692,12 @@ const Taste = {
     if (!d || !x) return f;
     const ac = this.get("a", x.a, now), tags = d.at[x.a] || [];
     const pin = d.pin[x.a];
-    f[1] = pin ? pin.v : this.val(ac, now);                      // you said so yourself
+    f[1] = pin ? pin.v : this.artistVal(x.a, ac, now);                      // you said so yourself
     let gs = 0, gw = 0;
-    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c) { gs += this.val(c, now) * this.SHARE[i]; gw += this.SHARE[i]; } });
+    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c) { gs += this.styleVal(c, now) * this.SHARE[i]; gw += this.SHARE[i]; } });
     f[2] = gw ? gs / gw : 0;
     f[3] = this.timeFit(x, tags, now);
-    f[4] = this.val(this.get("t", x.key, now), now);
+    f[4] = this.val(this.get("t", x.key, now), "t", now);
     let same = 0, artist = 0;
     for (const r of d.rec) {
       if (now - r[2] > 6 * 3600e3) break;                       // newest first
@@ -5347,7 +5732,7 @@ const Taste = {
     const best = f.map((v, i) => [d.w[i] * v, i]).filter(([c, i]) => c > 0.12 && i < 5).sort((a, b) => b[0] - a[0])[0];
     switch (best ? best[1] : 0) {
       case 1: return "AN ARTIST YOU LOVE";
-      case 2: { const g = (d.at[x.a] || []).find((gg) => this.val(this.get("g", gg)) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
+      case 2: { const g = (d.at[x.a] || []).find((gg) => this.styleVal(this.get("g", gg)) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
       case 3: return "YOUR " + this.bucketName(this.bucket(Date.now())).split(" ")[1] + " SOUND";
       case 4: return "A SONG YOU LOVE";
       default: { const s = t._seed && Radio.order.find((o) => o.uri === t._seed); return s ? "LIKE " + upper(cleanTitle(s.name)) : "SIMILAR"; }
@@ -5418,7 +5803,7 @@ const Taste = {
     let ok = false;
     try { ok = await native("taste.clear"); } catch (e) { ok = false; }
     if (!ok) return false;
-    this.d = this.fresh(); this.d.seedTried = 1; this.tagAsked.clear(); this.tagQ = [];
+    this.d = this.fresh(); this.d.seedTried = 1; this.tagAsked.clear(); this.tagQ = []; this.baseCache = null;
     toast("TASTE PROFILE CLEARED · AUTOPLAY STARTS FRESH");
     return true;
   },
@@ -5476,6 +5861,7 @@ const Taste = {
       }
       if (!n && !manual) d.h = before;                            // nothing there (Last.fm unreachable, say): keep what it had
       d.histPlays = n || d.histPlays;
+      this.baseCache = null;
       // For the Taste page: whether your imported history has Spotify's skip details at all.
       d.histImported = imported; d.histFlagged = flagged; d.histSkips = skips;
       this.prune();
@@ -5494,7 +5880,7 @@ const Taste = {
     if (f == null) return ms >= 30000 ? 0.5 : null;              // imported before skips were kept: a listen
     if (f & 16) return ms >= 30000 ? 0.5 : null;                 // ended by "back", a crash or an error: no verdict
     if (f & 1) {
-      let w = ms < 1000 ? -0.4 : ms < 10000 ? -1.2 : ms < 30000 ? -0.8 : ms < 60000 ? -0.4 : -0.15;
+      let w = ms < 1000 ? -0.2 : ms < 10000 ? -0.6 : ms < 30000 ? -0.4 : ms < 60000 ? -0.2 : -0.1;
       if (f & 8) w /= 2;                                          // you moved on to something else
       if (f & 4) w /= 2;                                          // you'd picked it yourself: maybe just not now
       return w;
@@ -5509,6 +5895,8 @@ const Taste = {
       for (const key of Object.keys(m)) {
         const c = m[key], f = this.fade(now - c.t);
         c.p = Math.round(c.p * f * 1000) / 1000; c.n = Math.round(c.n * f * 1000) / 1000; c.t = now;
+        if (c.k != null) c.k = Math.round(c.k * f * 100) / 100;
+        if (c.kp != null) c.kp = Math.round(c.kp * f * 100) / 100;
         if (c.p + c.n < 0.02) delete m[key];
       }
       const left = Object.keys(m);
@@ -5524,9 +5912,11 @@ const Taste = {
 
   // ----- For the Taste page -----
   /** The best (dir 1) or worst (dir −1) entries of one kind, with enough behind them to mean something. */
-  top(kind, n, dir = 1, min = 1.5) {
+  /** `min`: how many plays it needs behind it to be listed. */
+  top(kind, n, dir = 1, min = 5) {
     const now = Date.now();
-    return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: this.val(c, now), m: this.mass(c, now) }))
+    return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: kind === "a" ? this.artistVal(k, c, now) : kind === "g" ? this.styleVal(c, now) : this.val(c, kind, now), m: c.k,
+      years: this.longevity(c) >= 0.6, lately: this.surge(c) >= 0.6 }))
       .filter((e) => e.m >= min && e.v * dir > 0.05 && !(kind === "a" && this.d.pin[e.k])).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
   },
   /** What stands out at each time of day: artists and styles you play there more than usual. */
@@ -5580,7 +5970,7 @@ views.taste = {
       const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${Math.min(1, Math.abs(x.v)).toFixed(3)})`;
       const mark = x.pin ? (x.pin > 0 ? "♥" : "✕") : String(x.n);
       r.append(h("em", null, mark), h("span", null, upper(x.nm)),
-        h("small", null, x.pin ? (x.pin > 0 ? "YOU LOVE" : "YOU HATE") : (x.v > 0 ? "+" : "") + Math.round(x.v * 100) + (x.kind === "t" ? " · SONG" : x.kind === "g" ? " · STYLE" : "")), bar);
+        h("small", null, x.pin ? (x.pin > 0 ? "YOU LOVE" : "YOU HATE") : (x.v > 0 ? (x.years && x.lately ? "YEARS + LATELY · " : x.years ? "FOR YEARS · " : x.lately ? "LATELY · " : "") : "") + (x.v > 0 ? "+" : "") + Math.round(x.v * 100) + (x.kind === "t" ? " · SONG" : x.kind === "g" ? " · STYLE" : "")), bar);
       return r;
     },
     onActivate: (x) => views.taste.options(x),
@@ -5653,7 +6043,7 @@ views.taste = {
     if (pins.length) add("MARKED BY YOU", pins);
     add("YOU LOVE", Taste.top("a", 6, 1).map((e) => ({ ...e, kind: "a" })), "Play some music and this fills in.");
     add("YOUR STYLES", Taste.top("g", 5, 1).map((e) => ({ ...e, kind: "g" })), LFM.ready() ? "Styles come from Last.fm tags as you listen." : "Connect Last.fm in System → Connections to learn styles.");
-    add("YOU SKIP", [...Taste.top("a", 4, -1, 0.6).map((e) => ({ ...e, kind: "a" })), ...Taste.top("t", 5, -1, 0.6).map((e) => ({ ...e, kind: "t" })), ...Taste.top("g", 2, -1, 0.6).map((e) => ({ ...e, kind: "g" }))], this.skipHint());
+    add("YOU SKIP", Taste.top("a", 6, -1, 4).map((e) => ({ ...e, kind: "a" })), this.skipHint());
     this.left.set(rows);
     // Stay on the same entry (or the one that took its place) after a change.
     let i = keep ? rows.findIndex((r) => r.k === keep.k && r.kind === keep.kind) : -1;
@@ -5695,7 +6085,14 @@ views.taste = {
     }
     items.push({ kind: "act", icon: "trash", name: x.pin ? "Remove the mark" : "Forget it", hint: "X", run: () => this.remove(x) });
     if (x.kind === "a" && !d.banA[x.k]) items.push({ kind: "act", icon: "stop", name: "Never autoplay " + x.nm, run: () => { d.banA[x.k] = { nm: x.nm, at: Date.now() }; Taste.save(); toast("AUTOPLAY WON'T PLAY " + upper(x.nm)); this.render(); } });
-    Drawer.actions("YOUR<br>TASTE", upper(x.nm) + (x.kind === "t" ? "  ·  SONG" : x.kind === "g" ? "  ·  STYLE" : "  ·  ARTIST"), items);
+    let what = upper(x.nm) + (x.kind === "t" ? "  ·  SONG" : x.kind === "g" ? "  ·  STYLE" : "  ·  ARTIST");
+    if (x.kind === "a") {
+      // What the score is made of, in a line.
+      const c = Taste.get("a", x.k), songs = Taste.breadth()[x.k] || 0, pls = (Taste.inPlaylists && Taste.inPlaylists[x.k]) || 0;
+      const months = c ? Math.round(c.m || 0) : 0;
+      what += [songs ? `  ·  ${songs} SONG${songs === 1 ? "" : "S"} YOU KEEP` : "", pls ? `  ·  IN ${pls} PLAYLIST${pls === 1 ? "" : "S"} (${(Taste.plSongs && Taste.plSongs[x.k]) || 0} SONGS)` : "", months ? `  ·  ${months} MONTH${months === 1 ? "" : "S"}` : ""].join("");
+    }
+    Drawer.actions("YOUR<br>TASTE", what, items);
   },
   mark(x, v) { Taste.mark(x.k, x.nm, v); this.render(); },
   remove(x) {
@@ -6945,33 +7342,27 @@ const TrackMenu = {
 };
 
 /* =====================================================================
-   AI tags: 3 per playlist (genre · mood · tempo), made on-device by Apple Intelligence.
-   Cached per playlist version, so they refresh when songs are added or removed.
+   Playlist tags: 3 per playlist (genre · mood · era), from what Spotify and Last.fm already know.
+   Genre: the artists' Spotify genres and Last.fm tags, weighted by how many of the playlist's songs are
+   theirs. Mood: Last.fm tags (Spotify has none). Era: the decade most of the songs came out in.
+   Kept per playlist version, so they refresh when songs are added or removed.
    ===================================================================== */
 const Tags = {
-  cache: {}, queue: [], running: false, status: null, pending: new Set(), genres: {},
+  cache: {}, queue: [], running: false, pending: new Set(), genres: {}, lfm: {},
+  V: 2,                                                         // tags made the old way (Apple Intelligence) are made again
   key(p) { return p.kind === "liked" ? "liked" : p.id; },
   version(p) { return p.kind === "liked" ? "liked:" + S.likedTotal : (p.snapshot_id || "n" + plCount(p)); },
   async init() {
     try { this.cache = (await native("store.get", { key: "tags" })) || {}; } catch (e) { this.cache = {}; }
     try { this.genres = (await native("store.get", { key: "artistGenres" })) || {}; } catch (e) { this.genres = {}; }
-    try { this.status = await native("ai.status"); } catch (e) { this.status = { available: false, reason: "unknown" }; }
+    try { this.lfm = (await native("store.get", { key: "artistTags" })) || {}; } catch (e) { this.lfm = {}; }
   },
-  enabled() { return !!(S.settings.aiTags !== false && this.status && this.status.available); },
-  reasonText() {
-    const r = (this.status && this.status.reason) || "";
-    if (this.status && this.status.available) return "On-device, refreshed when songs change";
-    if (/NotEnabled/i.test(r)) return "Turn on Apple Intelligence in System Settings";
-    if (/NotEligible/i.test(r)) return "This Mac doesn't support Apple Intelligence";
-    if (/NotReady/i.test(r)) return "Apple Intelligence is still downloading";
-    if (/NewerMacOS/i.test(r)) return "Needs macOS 26 or later";
-    return "Apple Intelligence isn't available";
-  },
-  get(p) { const c = this.cache[this.key(p)]; return c ? c.tags : null; },
+  enabled() { return S.settings.playlistTags !== false; },
+  get(p) { const c = this.cache[this.key(p)]; return c && c.g === this.V ? c.tags : null; },
   stale(p) {
     const c = this.cache[this.key(p)];
     if (c && c.failed && Date.now() - c.failed < 3600000) return false;   // tried recently and couldn't: wait an hour
-    return !c || c.v !== this.version(p) || !c.tags;
+    return !c || c.g !== this.V || c.v !== this.version(p) || !c.tags;
   },
   render(el, p) {
     el.textContent = "";
@@ -7001,40 +7392,103 @@ const Tags = {
     }
     this.running = false;
   },
+  // Last.fm tags that say how music feels, and the mood each one counts towards.
+  MOODS: {
+    Chill: ["chill", "chillout", "chill out", "relaxing", "relax", "mellow", "calm", "lofi", "lo-fi", "downtempo", "easy listening", "laid back", "chillwave", "smooth"],
+    Melancholy: ["sad", "melancholy", "melancholic", "depressing", "heartbreak", "emotional", "bittersweet", "sadcore", "lonely"],
+    Dreamy: ["dreamy", "dream pop", "ethereal", "atmospheric", "shoegaze", "ambient", "psychedelic", "hazy"],
+    Hype: ["energetic", "energy", "party", "hype", "aggressive", "workout", "banger", "dance", "club", "gym"],
+    "Feel-Good": ["happy", "feel good", "feelgood", "uplifting", "summer", "fun", "upbeat", "sunny", "cheerful", "positive"],
+    Dark: ["dark", "gloomy", "haunting", "eerie", "creepy", "sinister"],
+    Romantic: ["love", "romantic", "sexy", "sensual", "love songs"],
+    Moody: ["moody", "brooding", "introspective", "night", "nocturnal", "late night", "rainy"],
+    Angry: ["angry", "rage", "anger", "furious"],
+  },
+  // Tags that aren't a genre (and aren't a mood either).
+  NOT_GENRE: /^(seen live|favou?rites?|favorite songs|my |albums i own|check out|spotify|awesome|amazing|beautiful|cool|good|great|best|love at first listen|under \d|all|male vocalists?|female vocalists?|vocalists?|singer-songwriter|\d{2,4}s?|american|british|english|uk|usa|us|canadian|australian|swedish|german|french|irish|scottish|korean|japanese|chinese|brazilian|spanish|italian|dutch|norwegian|finnish|danish|russian|polish|mexican|argentinian|icelandic|belgian|new zealand|.*\b(albums?|songs?)$)$/,
+  /** "indie rock" → "Indie Rock", with the usual spellings for the few that need them. */
+  label(g) {
+    const special = { "hip hop": "Hip-Hop", "hip-hop": "Hip-Hop", rnb: "R&B", "r&b": "R&B", "r and b": "R&B", edm: "EDM", "j-pop": "J-Pop", jpop: "J-Pop",
+      "k-pop": "K-Pop", kpop: "K-Pop", "j-rock": "J-Rock", "lo-fi": "Lo-Fi", lofi: "Lo-Fi", "uk garage": "UK Garage", idm: "IDM", "drum and bass": "Drum & Bass", dnb: "Drum & Bass" };
+    if (special[g]) return special[g];
+    return g.replace(/(^|[\s-])(\p{L})/gu, (m, sep, c) => sep + c.toUpperCase());
+  },
+  /** One artist's Last.fm tags (remembered for a month, so each artist is asked about rarely). */
+  async artistTags(name) {
+    const k = LFM.norm(name);
+    const hit = this.lfm[k];
+    if (hit && Date.now() - hit.at < 30 * 86400e3) return hit.tags;
+    // The taste profile may already know them.
+    const known = Taste.d && Taste.d.at && Taste.d.at[k];
+    if (known && known.length) return known;
+    if (!LFM.ready()) return null;
+    const b = await LFM.get("artist.getTopTags", { artist: name, autocorrect: 1 }, 7 * 86400e3);
+    if (!b) return null;
+    const tags = LFM.arr(b.toptags && b.toptags.tag).filter((g) => g.count == null || +g.count >= 10)
+      .map((g) => String(g.name || "").toLowerCase().trim()).filter((g) => g && g.length < 30).slice(0, 8);
+    this.lfm[k] = { at: Date.now(), tags };
+    return tags;
+  },
   async generate(p) {
     let tracks = [];
-    const r = p.kind === "liked" ? await api("GET", "/me/tracks?limit=50") : await api("GET", `/playlists/${p.id}/items?limit=50`);
+    const r = p.kind === "liked" ? await api("GET", "/me/tracks?limit=50") : await api("GET", `/playlists/${p.id}/items?limit=100`);
     if (r.status === 429) { this.queue.push(p); this.pending.add(this.key(p)); return; }          // try again after the cool-down
     if (r.status === 200 && r.body) tracks = (r.body.items || []).map((e) => e && (e.item || e.track)).filter((t) => t && t.name);
+    // Artists by how many of the songs are theirs.
     const count = {};
-    tracks.forEach((t) => (t.artists || []).forEach((a) => { if (a.id) { count[a.id] = count[a.id] || { a, n: 0 }; count[a.id].n++; } }));
-    const top = Object.values(count).sort((x, y) => y.n - x.n).slice(0, 5);
-    const genres = [];
-    let looked = 0;
-    for (const { a } of top) {                     // artist genres are remembered, so each artist is only looked up once
-      if (!this.genres[a.id] && looked < 3 && !cooling()) {
+    tracks.forEach((t) => (t.artists || []).slice(0, 2).forEach((a, i) => {
+      const k = a.id || a.name;
+      if (!k) return;
+      count[k] = count[k] || { a, n: 0 };
+      count[k].n += i ? 0.5 : 1;
+    }));
+    const top = Object.values(count).sort((x, y) => y.n - x.n).slice(0, 8);
+    const genre = {}, mood = {};
+    const addGenre = (g, w) => { g = String(g).toLowerCase().trim(); if (g && !this.NOT_GENRE.test(g)) genre[g] = (genre[g] || 0) + w; };
+    let looked = 0, askedLfm = false;
+    for (const { a, n } of top) {
+      // Spotify's genres for the artist (remembered, so each artist is looked up once).
+      if (a.id && !this.genres[a.id] && looked < 4 && !cooling()) {
         looked++;
         const g = await api("GET", `/artists/${a.id}`);
         if (g.status === 200 && g.body) this.genres[a.id] = (g.body.genres || []).slice(0, 4);
         await wait(400);
       }
-      genres.push(...(this.genres[a.id] || []));
+      (this.genres[a.id] || []).forEach((g, i) => addGenre(g, n * (i ? 0.7 : 1)));
+      // Last.fm's tags: genres, and the words for how it feels.
+      const before = this.lfm[LFM.norm(a.name)];
+      const tags = await this.artistTags(a.name);
+      if (!before && this.lfm[LFM.norm(a.name)]) askedLfm = true;
+      (tags || []).forEach((t, i) => {
+        const w = n * Math.max(0.3, 1 - i * 0.12);
+        const m = Object.keys(this.MOODS).find((k) => this.MOODS[k].includes(t));
+        if (m) mood[m] = (mood[m] || 0) + w; else addGenre(t, w * 0.8);
+      });
     }
     if (looked) native("store.set", { key: "artistGenres", value: this.genres }).catch(() => {});
-    const desc = plainText(p.description);
-    const head = `Playlist name: "${p.name}"` + (desc ? `\nDescription: ${desc.slice(0, 200)}` : "") +
-      (genres.length ? `\nArtist genres: ${[...new Set(genres)].slice(0, 12).join(", ")}` : "");
-    const songs = tracks.slice(0, 40).map((t) => `${cleanTitle(t.name)} - ${artistNames(t)}`);
-    let res = await native("ai.tags", { prompt: head + (songs.length ? "\nSongs:\n" + songs.join("\n") : "\n(The song list isn't available; judge by the name and description.)") });
-    if (!res || !res.tags) {   // safety filters sometimes trip on song titles: try again with artists only
-      const artists = top.map((x) => x.a.name).join(", ");
-      res = await native("ai.tags", { prompt: head + (artists ? `\nMain artists: ${artists}` : "") });
+    if (askedLfm) {
+      const keep = Object.entries(this.lfm).sort((x, y) => y[1].at - x[1].at).slice(0, 3000);
+      this.lfm = Object.fromEntries(keep);
+      native("store.set", { key: "artistTags", value: this.lfm }).catch(() => {});
     }
-    if (!res || !res.tags) {
-      this.cache[this.key(p)] = { v: this.version(p), tags: (this.cache[this.key(p)] || {}).tags || null, failed: Date.now() };
+    // The playlist's own name and description count too ("sad songs", "gym", "chill vibes"…).
+    const words = (p.name + " " + plainText(p.description || "")).toLowerCase();
+    for (const [m, list] of Object.entries(this.MOODS)) if (list.some((t) => new RegExp("\\b" + t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(words))) mood[m] = (mood[m] || 0) + 3;
+    const best = (o) => Object.entries(o).sort((x, y) => y[1] - x[1])[0];
+    const g = best(genre), m = best(mood);
+    // Era: the decade most of the songs came out in, or "Mixed Eras" when they're spread wide.
+    const years = tracks.map((t) => parseInt(((t.album && t.album.release_date) || "").slice(0, 4), 10)).filter((y) => y > 1900 && y < 2100).sort((x, y) => x - y);
+    let era = null;
+    if (years.length >= 3) {
+      const q = (f) => years[Math.min(years.length - 1, Math.floor(f * years.length))];
+      era = q(0.75) - q(0.25) > 15 ? "Mixed Eras" : Math.floor(q(0.5) / 10) * 10 + "s";
+    }
+    const tags = [g && this.label(g[0]), m && m[0], era].filter(Boolean);
+    if (!tags.length) {
+      this.cache[this.key(p)] = { g: this.V, v: this.version(p), tags: null, failed: Date.now() };
       return;
     }
-    this.cache[this.key(p)] = { v: this.version(p), tags: [res.tags.genre, res.tags.mood, res.tags.tempo] };
+    this.cache[this.key(p)] = { g: this.V, v: this.version(p), tags };
     native("store.set", { key: "tags", value: this.cache }).catch(() => {});
   },
   paint(p) {
@@ -7056,7 +7510,7 @@ const Tags = {
    ===================================================================== */
 views.dj = {
   el: $("v-dj"),
-  keys: () => [["↑↓", "SELECT"], ["⏎", "CHOOSE"], ["S", "SWITCH IT UP", () => DJ.start()], ["V", "VOICE"], ["ESC", "BACK", back]],
+  keys: () => [["↑↓", "SELECT"], ["⏎", "CHOOSE"], ["S", "SWITCH IT UP", () => DJ.start()], ["ESC", "BACK", back]],
   list: new List($("dj-actions"), {
     render: (o) => {
       const r = h("div", "opt st");
@@ -7072,7 +7526,6 @@ views.dj = {
   actions() {
     return [
       DJ.active ? { key: "switch", icon: "refresh", label: "Switch it up", value: "Build a fresh set" } : { key: "start", icon: "play", label: "Start DJ", value: "A set made from what you love" },
-      { key: "voice", label: "Voice", value: "Spoken intros between segments", toggle: !!S.settings.djVoice },
       ...(DJ.active ? [{ key: "stop", icon: "stop", label: "Stop DJ", value: "Keep the music, lose the DJ" }] : []),
       ...(DJ.segments.length ? [{ key: "save", icon: "plus", label: "Save this set", value: "Keep the whole DJ set as a playlist" }] : []),
     ];
@@ -7110,18 +7563,12 @@ views.dj = {
     }
     if (o.key === "start" || o.key === "switch") return DJ.start();
     if (o.key === "stop") return DJ.stop();
-    if (o.key === "voice") {
-      try { const s = await native("settings.set", { key: "djVoice", value: !S.settings.djVoice }); if (s) S.settings = s; } catch (e) { S.settings.djVoice = !S.settings.djVoice; }
-      if (!S.settings.djVoice) native("speak.stop").catch(() => {});
-      this.render();
-    }
   },
   onKey(e) {
     if (this.list.nav(e)) return true;
     const k = e.key.toLowerCase();
     if (e.key === "Enter") { pop(this.list.rows[this.list.i]); this.act(this.list.cur); return true; }
     if (k === "s") { DJ.start(); return true; }
-    if (k === "v") { this.act({ key: "voice" }); return true; }
     return false;
   },
 };
@@ -7133,9 +7580,9 @@ const ENGINE_TEXT = { running: "RUNNING", starting: "STARTING…", login: "WAITI
 // System is split up: the things you reach for most sit at the top, the rest live in groups.
 const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", "update"];
 const SYS_GROUPS = {
-  sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "djVoiceId", "sfx", "sfxVolume"] },
+  sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "sfx", "sfxVolume"] },
   connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfmAccount", "lastfmKey", "lastfmSecret", "geniusToken"] },
-  prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "aiTags", "retag", "updateRepo", "autoUpdate"] },
+  prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "playlistTags", "retag", "trModels", "updateRepo", "autoUpdate"] },
   engine: { label: "Engine settings", keys: ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId", "activity"] },
 };
 views.system = {
@@ -7166,7 +7613,7 @@ views.system = {
     const summary = {
       sound: `Sound engine ${onOff(!EQ.state || EQ.state.engine !== false)} · crossfade ${(s.crossfade ?? 6) ? (s.crossfade ?? 6) + " s" : "off"} · even loudness ${onOff(s.normalize !== false)} · ${s.bitrate || 320} kbps · clicks ${onOff(s.sfx !== false)}`,
       connections: `Discord ${onOff(!!s.discord)} · Last.fm ${Links.lastfm && Links.lastfm.loggedIn ? "as " + Links.lastfm.user : "off"} · Genius ${s.geniusToken ? "set" : "not set"}`,
-      prefs: "Notifications, menu bar, media keys, open at login, AI tags, update source",
+      prefs: "Notifications, menu bar, media keys, open at login, playlist tags, update source",
       engine: `${ENGINE_TEXT[e.state] || "Audio engine"} · "${s.deviceName || "Cadenza"}" · diagnostics, Client ID, librespot, activity log`,
     };
     return [
@@ -7203,13 +7650,13 @@ views.system = {
       { key: "deviceName", label: "Device name", type: "text", value: s.deviceName || "Cadenza", go: "EDIT" },
       { key: "librespotPath", label: "librespot path", type: "text", value: s.librespotPath || ("Automatic: " + (e.path || "not found")), raw: s.librespotPath || "", go: "EDIT" },
       { key: "bitrate", label: "Quality", type: "cycle", value: (s.bitrate || 320) + " KBPS", go: "CHANGE" },
-      { key: "djVoiceId", label: "DJ voice", type: "action", value: this.voiceText(), go: "CHANGE" },
       { key: "normalize", label: "Even loudness", type: "toggle", on: s.normalize !== false, value: "Keeps every song at a similar volume (restarts the audio engine)" },
       { key: "sfx", label: "Click sounds", type: "toggle", on: s.sfx !== false, value: "Small themed sounds when you choose, go back or change page" },
       { key: "sfxVolume", label: "Click volume", type: "cycle", value: ({ 25: "Quiet", 55: "Medium", 85: "Loud" })[s.sfxVolume ?? 55] || (s.sfxVolume + "%"), go: "CHANGE" },
       { key: "eqPerDevice", label: "EQ per device", type: "toggle", on: s.eqPerDevice !== false, value: "AirPods, speakers and headphones each remember their own EQ" },
-      { key: "aiTags", label: "AI playlist tags", type: "toggle", on: S.settings.aiTags !== false, value: Tags.reasonText() },
+      { key: "playlistTags", label: "Playlist tags", type: "toggle", on: S.settings.playlistTags !== false, value: "Genre, mood and era, from Spotify and Last.fm" },
       { key: "retag", label: "Re-tag playlists", type: "action", value: "Make fresh tags for every playlist", go: "RUN" },
+      { key: "trModels", label: "Translation languages", type: "action", value: this.trSize ? `${Math.round(this.trSize / 1048576)} MB downloaded for lyrics translation · deleted ones download again when needed` : "None downloaded yet (they download the first time you translate)", go: this.trSize ? "DELETE" : "" },
       { key: "autoplay", label: "Autoplay", type: "toggle", on: s.autoplay !== false, value: "Keep playing similar songs after a single song, album or playlist ends" },
       { key: "themedCovers", label: "Album covers", type: "toggle", on: !!s.themedCovers, value: s.themedCovers ? "In the theme's colours" : "Original artwork" },
       { key: "trueShuffle", label: "True shuffle", type: "toggle", on: s.trueShuffle !== false, value: "Cadenza shuffles playlists itself, with every order equally likely (Spotify's shuffle isn't)" },
@@ -7236,23 +7683,6 @@ views.system = {
       { key: "autoUpdate", label: "Check at launch", type: "toggle", on: s.autoUpdate !== false, value: "Look for a new release when Cadenza opens (every 6 hours at most)" },
     ];
   },
-  voiceText() {
-    const v = this.voices, cur = v && (v.voices.find((x) => x.id === v.current) || v.voices[0]);
-    if (!v) return "Loading voices…";
-    if (!cur) return "No natural voices installed: add one in System Settings → Accessibility → Spoken Content";
-    return `${cur.name} · ${cur.quality}` + (cur.quality === "Standard" ? "  (download Premium voices for a more natural sound)" : "");
-  },
-  async nextVoice() {
-    const v = this.voices;
-    if (!v || !v.voices.length) return toast("NO NATURAL VOICES INSTALLED", true);
-    const i = Math.max(0, v.voices.findIndex((x) => x.id === v.current));
-    const next = v.voices[(i + (v.current ? 1 : 1)) % v.voices.length];
-    v.current = next.id;
-    await native("speak.setVoice", { id: next.id }).catch(() => {});
-    toast("DJ VOICE: " + upper(next.name) + " · " + upper(next.quality));
-    native("speak", { text: `Hey, it's ${next.name}. I'll be your DJ tonight.` }).catch(() => {});
-    this.refresh(false);
-  },
   activityText() {
     const a = this.activity || {};
     if (a.blockedFor > 0) return "Blocked by Spotify · " + fmtWait(a.blockedFor).toLowerCase() + " left";
@@ -7276,7 +7706,7 @@ views.system = {
     try {
       const [s, e, a] = await Promise.all([native("settings.get"), native("librespot.status"), native("api.activity").catch(() => null)]);
       if (a) this.activity = a;
-      if (!this.voices) { try { this.voices = await native("speak.voices"); } catch (e) { this.voices = null; } }
+      try { const n = await native("translate.size"); this.trSize = typeof n === "number" ? n : 0; } catch (e) { this.trSize = 0; }
       await Links.load();
       if (s) S.settings = s;
       if (e) S.engine = e;
@@ -7324,7 +7754,6 @@ views.system = {
   act(o) {
     if (!o || busy || this.editing) return;
     if (o.type === "group") return this.openGroup(o.key.slice(4) || null);
-    if (o.key === "djVoiceId") return this.nextVoice();
     if (o.key === "crossfade") {                                   // Off, 3, 6, 9, 12 seconds (like Spotify's slider)
       const steps = [0, 3, 6, 9, 12], v = S.settings.crossfade ?? 6;
       const next = steps[(steps.indexOf(v) + 1) % steps.length] ?? 6;
@@ -7344,7 +7773,13 @@ views.system = {
     if (o.key === "update") return Links.update && Links.update.state === "available" && Links.update.found ? Links.offer(Links.update.found) : Links.check(true);
     if (o.key === "theme") return switchTheme();
     if (o.key === "bitrate") { const opts = [96, 160, 320]; return this.set("bitrate", opts[(opts.indexOf(S.settings.bitrate || 320) + 1) % 3]); }
-    if (o.key === "retag") { if (!Tags.enabled()) return toast(upper(Tags.reasonText()), true); return Tags.retagAll(); }
+    if (o.key === "trModels") {
+      if (!this.trSize) return;
+      Translator.loaded = []; if (Translator.engine) { Translator.engine.then((w) => w.end()).catch(() => {}); Translator.engine = null; }
+      this.trSize = 0;
+      return native("translate.clear").catch(() => {}).then(() => { toast("TRANSLATION LANGUAGES DELETED"); this.refresh(false); });
+    }
+    if (o.key === "retag") { if (!Tags.enabled()) return toast("TURN ON PLAYLIST TAGS FIRST", true); return Tags.retagAll(); }
     if (o.key === "restart") { native("librespot.restart"); toast("RESTARTING AUDIO ENGINE"); return; }
     if (o.key === "account") return this.logout();
     if (o.key === "activity") return this.copyActivity();
@@ -7880,6 +8315,11 @@ window.app = {
       if (!S.asleep) { shownImage = undefined; applyNow(); tick(true); poll(); }
     }
     else if (event === "engine.resume" && data) Resume.run(data);
+    else if (event === "translate.progress" && data && data.total) {
+      // A language model is downloading (the first time you translate from or into a language).
+      const pct = Math.floor((data.got / data.total) * 100), now = Date.now();
+      if (pct >= 100 || now - (this.trT || 0) > 1500) { this.trT = now; toast(`DOWNLOADING THE LANGUAGE (${Math.round(data.total / 1048576)} MB) · ${pct}%`); }
+    }
     else if (event === "engine.end") { S.queueEndAt = Date.now(); setTimeout(() => { Radio.checkEnd(); Radio.watch(); }, 1200); }
     else if (event === "engine.refused" && data && data.uri) {
       // One song Spotify won't unlock right now. librespot already moves on; autoplay leaves it out for a while.
@@ -8291,7 +8731,7 @@ function applyMotion() {
 }
 
 async function boot() {
-  if (!bridge) window.__dbg = { S, Taste, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
+  if (!bridge) window.__dbg = { S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); Taste.tick(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
@@ -8388,7 +8828,7 @@ const Demo = (() => {
     { uid: "dp", name: "LG UltraFine Display", transport: "display", isDefault: false },
     { uid: "ap", name: "Living Room TV", transport: "airplay", isDefault: false },
   ];
-  const settings = { theme: "tide", djVoice: true, clientId: "0123456789abcdef0123456789abcdef", manageLibrespot: true, librespotPath: "", deviceName: "Cadenza", bitrate: 320, mediaKeys: true, mediaKeysTrusted: true, globalHotkey: true, openAtLogin: false, reduceMotion: false };
+  const settings = { theme: "tide", clientId: "0123456789abcdef0123456789abcdef", manageLibrespot: true, librespotPath: "", deviceName: "Cadenza", bitrate: 320, mediaKeys: true, mediaKeysTrusted: true, globalHotkey: true, openAtLogin: false, reduceMotion: false };
   const ok = (body, status = 200) => Promise.resolve({ status, body });
   // Made-up Last.fm data: years of plays for "you", and a few friends with their own taste.
   const lfmArtists = ["Kairo Blue", "Neon Ferry", "Saya Mori", "The Static Hearts", "Lumen Drive", "Velvet Arcade", "Hana Kite", "Polar Motel", "Glass Tigers", "Midnight Office", "Coral Static", "June Satellites"];
@@ -8500,11 +8940,6 @@ const Demo = (() => {
         case "outputs.set": outputs.forEach((o) => (o.isDefault = o.uid === args.uid)); return Promise.resolve(true);
         case "settings.get": return Promise.resolve({ ...settings });
         case "settings.set": settings[args.key] = args.value; return Promise.resolve({ ...settings });
-        case "speak": return new Promise((res) => setTimeout(() => res(true), 1500));
-        case "ai.status": return Promise.resolve({ available: true, reason: "" });
-        case "ai.tags": { const g = ["Dream Pop", "City Pop", "Lo-Fi", "Indie Rock", "Jazz", "Hip-Hop", "Synthwave"], m = ["Chill", "Hype", "Dreamy", "Melancholy", "Feel-Good", "Focused"], t = ["Laid-Back", "Upbeat", "Mid-Tempo", "Fast", "Slow"];
-          const hsh = [...args.prompt].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
-          return new Promise((res) => setTimeout(() => res({ tags: { genre: g[hsh % g.length], mood: m[(hsh >> 3) % m.length], tempo: t[(hsh >> 6) % t.length] }, error: null }), 300)); }
         case "store.get": return Promise.resolve(null);
         case "history.get": {                                 // a couple of months of made-up plays
           const out = []; let seed = 7; const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
@@ -8548,7 +8983,6 @@ const Demo = (() => {
         case "update.status": return Promise.resolve({ repo: settings.updateRepo || "", current: "1.0", state: "idle", message: "", auto: true });
         case "update.check": return Promise.resolve({ repo: "Chedd4rr/Cadenza", current: "1.0", state: "available", message: "Version 1.1 is ready", auto: true, found: { version: "1.1", notes: "## What's new\n- Stage mode\n- Discord status", page: "", asset: "x" } });
         case "window.fullscreen": return Promise.resolve(true);
-        case "speak.voices": return Promise.resolve({ voices: [{ id: "zoe", name: "Zoe", quality: "Premium" }, { id: "ava", name: "Ava", quality: "Enhanced" }, { id: "sam", name: "Samantha", quality: "Standard" }], current: "" });
         case "eq.get": return Promise.resolve(window.__eq || (window.__eq = { enabled: true, preamp: 0, gains: Array(10).fill(0), preset: "Flat", freqs: [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000], engine: true }));
         case "eq.set": Object.assign(window.__eq, args); return Promise.resolve({ ...window.__eq });
         case "api.activity": return Promise.resolve({ lastMinute: (window.__calls || []).length, total: (window.__calls || []).length, uptime: 60, blockedFor: 0, lastRetryAfter: 0, log: [] });

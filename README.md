@@ -1,6 +1,6 @@
 # Cadenza
 
-A keyboard-first Spotify player for macOS with game-menu style themes, a talking DJ, synced
+A keyboard-first Spotify player for macOS with game-menu style themes, a DJ, synced
 lyrics, a real equalizer and a full-screen stage mode.
 
 Cadenza is a small native app written in Swift on top of the Mac's built-in WebKit. It controls Spotify
@@ -29,7 +29,7 @@ which it starts and manages for you.
   playing. There's one more hidden somewhere.
 - Album covers can stay as they are or take on the theme's colours (System → Preferences → Album covers).
 - A DJ that builds sets from what you've had on repeat, old favourites, forgotten Liked Songs and
-  deep cuts by your top artists, and introduces each segment out loud. With Last.fm connected it
+  deep cuts by your top artists, and introduces each segment on screen. With Last.fm connected it
   also digs up songs you used to play constantly and then dropped, and what you were playing this
   week a year ago, and it knows how many times you've played things.
 - True shuffle. When you shuffle a playlist, album or Liked Songs, Cadenza shuffles it itself using
@@ -41,7 +41,7 @@ which it starts and manages for you.
   You can turn this off in System → Preferences too. Autoplay learns your taste over time: see
   [Your taste](#your-taste) below.
 - Synced lyrics from LRCLIB, timed to what you actually hear. Press T to translate them into your
-  Mac's language (done on your Mac, macOS 15+). Search → Lyrics finds a song from a line you remember.
+  Mac's language, offline, with Firefox's translator (see [Lyrics translation](#lyrics-translation)). Search → Lyrics finds a song from a line you remember.
 - A playlist builder (N in Library, B on a playlist, or ⌘K): your playlist on the left, and on the right
   songs like the ones you've added, a search box and mood filters (chill, energy, happy, moody, focus,
   party, love). Drag songs to order them, spread out artists, shuffle, undo, and save as a new playlist
@@ -67,7 +67,8 @@ which it starts and manages for you.
 - A menu-bar mini player drawn in your theme's style. Also media keys, Control Center and song
   notifications.
 - Discord status, Last.fm stats and automatic updates from GitHub releases.
-- AI playlist tags (genre, mood, tempo), made on your Mac with Apple Intelligence (macOS 26+).
+- Playlist tags (genre, mood, era), from the artists' Spotify genres and Last.fm tags and the songs'
+  release years.
 
 ## What you need
 
@@ -166,9 +167,9 @@ The mouse and trackpad work too, and the Controls menu in the menu bar has the m
 | Page | What it does |
 |---|---|
 | Home | DJ, Lyrics, Library, Search, Queue, Stats, EQ and System, plus the now-playing panel with playback controls. Click the artist or album there to look it up in Search. |
-| DJ | Builds a set and talks you through it with your Mac's voices. A "Premium" voice from System Settings → Accessibility → Spoken Content sounds the most natural. |
+| DJ | Builds a set and introduces each segment on screen |
 | Lyrics | Synced lyrics; click a line to jump there |
-| Library | Liked Songs and your playlists, with AI tags. N starts a new playlist in the builder |
+| Library | Liked Songs and your playlists, with genre · mood · era tags. N starts a new playlist in the builder |
 | Build | The playlist builder. Tab switches between your playlist and the suggestions; ⏎ adds, P previews, drag or ⌥↑↓ to move, X removes, ← → picks a mood, R finds more ideas, D spreads artists, H shuffles, U undoes, S saves |
 | Playlist / Album / Artist | Play, queue, add, remove, reorder, edit details and cover, save, follow, share |
 | Search | Songs, albums, artists and playlists (Tab switches type) |
@@ -257,7 +258,33 @@ Autoplay keeps a taste profile that grows with you. It learns from:
 
 It keeps scores for artists, songs and styles (Last.fm tags, or Spotify genres), and for what you play
 on weekday and weekend mornings, afternoons, evenings and nights. Old marks fade, half every 90 days,
-so it follows you when your taste changes. Songs and styles you binge count for less: plays bunched
+so it follows you when your taste changes. Scores are proportional: what share of an artist, song or
+style you keep (rather than skip) compared with your usual share. A style you play all the time also gets
+skipped a lot, because you skip through it to reach other songs in it, so that counts as normal for you,
+not as a dislike. Each score is then scaled by how many plays are behind it (8 plays count half, 40
+about 85%), so a couple of plays can't put something at the top or bottom. For artists, breadth counts
+too: how many different songs of theirs you keep coming back to. One song played a lot says you like
+that song (an artist with one favourite gets a quarter of the credit); many different songs say you like
+the artist, even if you skip plenty of their others along the way. Skips count for less than finishes,
+since you skip for lots of reasons (getting to another song, not the mood right now), not only dislike.
+Time counts as well, for artists and styles. Every calendar month you keep listening to one adds to how
+long you've stuck with it (those months fade by half over a year), so an artist you've played for years
+and still play outranks one you just found. A burst of plays lately (the last couple of weeks) gives a
+boost too, which wears off once you move on. The Taste page marks these "FOR YEARS" and "LATELY".
+
+Artists and styles have separate scores. An artist's base score also gets:
+
+- a share for how many of your own playlists (and Liked Songs) have their songs: three playlists give
+  half of it. Cadenza reads your playlists slowly in the background, a little after launch and every six
+  hours, and only reads a playlist again when it has changed;
+- a small nudge (never a penalty) when they belong to styles you like.
+
+And a liking that rests on only a few songs counts for less: if you only keep coming back to one to
+three of an artist's songs, or your playlists only have one to three of their songs, their score is
+scaled down (by up to about a third for each).
+
+Press ⏎ on an artist on the Taste page to see what their score is made of: songs you keep, playlists and
+months. Songs and styles you binge count for less: plays bunched
 into one week add up slower (30 plays in a week count about like 10), and something you played five or
 more times in a week and then left alone for over a month keeps losing weight the longer you stay away.
 
@@ -269,6 +296,7 @@ keeps finding things. The Queue page says why each autoplay song is there.
 
 The Taste page (T in Stats, or ⌘K → "Your taste") shows all of it, and you can correct it:
 
+- You skip lists artists only (styles and songs you skip still count for autoplay, just not here).
 - On anything under You love, Your styles or You skip, press X (or ⏎ for options) to take it out of
   the profile. What it learned about it so far stops counting, including from your imported history;
   what you do from now on counts again.
@@ -292,6 +320,21 @@ Release builds are signed with the maintainer's certificate. If you built Cadenz
 signed with your own "Cadenza Local Signing" certificate, so Cadenza opens the release page instead of
 installing. Pull and run `./build.sh --install` to update. (This also keeps macOS from asking for the
 Accessibility permission again, which happens when the signature changes.)
+
+## Lyrics translation
+
+Press T on the Lyrics page (or ⌘K → "Translate the lyrics"). Cadenza works out which language the lyrics
+are in with Google's CLD3 and translates each line into your Mac's language with Firefox's offline
+translator. Both run inside Cadenza; the lyrics never leave your Mac.
+
+The first time you translate from (or into) a language, Cadenza downloads its model from Mozilla, the
+same one Firefox uses: about 15 to 60 MB per direction, checked against the hash Mozilla publishes. A
+language with no direct model goes through English, which needs two. After that it works offline.
+System → Preferences → Translation languages shows how much space they take and deletes them.
+
+It covers the languages Firefox translates, as long as the model works with the version of the
+translator bundled here (v0.4.5); when a newer model won't load, Cadenza tries an older one. Very short
+lyrics can be mistaken for a similar language.
 
 ## Shortcuts, Siri and links
 
@@ -363,8 +406,7 @@ The native code is in `Sources/Cadenza/`:
 | `Bridge.swift` | messages between the page and native code |
 | `SpotifyAuth.swift`, `SpotifyAPI.swift` | login (PKCE) and API calls, with rate-limit handling |
 | `Librespot.swift` | starts librespot and reads its events |
-| `EQ.swift` | the sound engine: EQ, limiter, fades, crossfade, DJ voice and the spectrum analyser |
-| `Speech.swift` | DJ voice |
+| `EQ.swift` | the sound engine: EQ, limiter, fades, crossfade and the spectrum analyser |
 | `AudioOutputs.swift` | output devices |
 | `MediaKeys.swift`, `StatusBar.swift`, `Notifier.swift` | media keys and Control Center, menu-bar player (drawn by `Resources/web/mini/`), notifications |
 | `Discord.swift`, `LastFM.swift`, `Updater.swift` | integrations |
@@ -374,8 +416,7 @@ The native code is in `Sources/Cadenza/`:
 | `Migration.swift` | brings over settings and data from when the app was called Chord |
 | `FloatingPlayer.swift` | floating mini player |
 | `CoverArt.swift` | downloads each album cover once for the menu bar, mini player, Control Center and notifications |
-| `Translate.swift` | lyrics translation (Apple Translation) |
-| `TagAI.swift` | AI playlist tags (Apple Intelligence) |
+| `TranslationModels.swift` | downloads and checks the translation models, and serves the translator's files to the page |
 | `Settings.swift`, `Store.swift` | preferences and small saved data |
 
 `Sources/ObjCSafe/` holds a small Objective-C helper that catches the audio engine's exceptions,
@@ -409,6 +450,10 @@ Your Spotify username and home folder are left out too.
 - [librespot](https://github.com/librespot-org/librespot) (MIT) plays the audio. A copy ships inside
   the app; its license is in `Cadenza.app/Contents/Resources/licenses/librespot-LICENSE.txt`.
 - Lyrics come from [LRCLIB](https://lrclib.net).
+- Lyrics translation uses [bergamot-translator](https://github.com/browsermt/bergamot-translator)
+  (Mozilla Public License 2.0), the translator inside Firefox, with Mozilla's translation models, and
+  [CLD3](https://github.com/google/cld3) (Apache 2.0) through [cld3-asm](https://github.com/kwonoj/cld3-asm)
+  (MIT) to tell which language the lyrics are in. Both are in `Resources/web/vendor`, with notices.
 - Finding songs by lyrics uses the [Genius API](https://docs.genius.com) with your own token.
 - Fonts: Anton, Barlow Condensed, Archivo Black, Abril Fatface, Bebas Neue, Chakra Petch, Rajdhani,
   Share Tech Mono, Inter, Unbounded, Space Grotesk, JetBrains Mono and Silkscreen are under the SIL

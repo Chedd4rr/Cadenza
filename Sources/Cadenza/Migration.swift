@@ -8,6 +8,7 @@ enum Migration {
 
     static func run() {
         let d = UserDefaults.standard
+        dropAppleOnlySettings(d)
         guard !d.bool(forKey: "migratedFromChord") else { return }
         defer { d.set(true, forKey: "migratedFromChord") }
 
@@ -27,5 +28,12 @@ enum Migration {
         if fm.fileExists(atPath: oldDir.path), !fm.fileExists(atPath: newDir.path) {
             do { try fm.moveItem(at: oldDir, to: newDir) } catch { NSLog("Cadenza: couldn't move Chord's data: \(error)") }
         }
+    }
+
+    /// Settings for features that are gone: the DJ's spoken voice, and playlist tags made with Apple
+    /// Intelligence (tags now come from Spotify and Last.fm; whether you had them on carries over).
+    private static func dropAppleOnlySettings(_ d: UserDefaults) {
+        if let on = d.object(forKey: "aiTags") as? Bool, d.object(forKey: "playlistTags") == nil { d.set(on, forKey: "playlistTags") }
+        for key in ["aiTags", "djVoice", "djVoiceId"] { d.removeObject(forKey: key) }
     }
 }

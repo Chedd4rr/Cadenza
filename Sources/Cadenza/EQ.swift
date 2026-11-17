@@ -19,15 +19,14 @@ final class AudioPipe {
     private var cur = 0
     private var player: AVAudioPlayerNode { players[cur] }
     private var other: AVAudioPlayerNode { players[1 - cur] }
-    /// Both players meet here before the EQ. The DJ's ducking turns this down (each player's own volume
-    /// is the crossfade).
+    /// Both players meet here before the EQ (each player's own volume is the crossfade).
     private let inMix = AVAudioMixerNode()
     private let eq = AVAudioUnitEQ(numberOfBands: 10)
     private let limiter = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
         componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
         componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
-    /// A volume stage just for soft fades on pause/play (separate from DJ ducking and skip muting).
+    /// A volume stage just for soft fades on pause/play (separate from skip muting).
     private let fader = AVAudioMixerNode()
     /// A second volume stage just for smooth transitions between songs (and the sleep timer's fade),
     /// so it never fights with the pause/play fades on `fader`.
@@ -37,15 +36,6 @@ final class AudioPipe {
     private var deviceUID = ""
     private(set) var deviceName = ""
 
-    // The DJ's voice gets its own little radio chain: rumble cut + presence boost → compressor → a touch of room.
-    private let voice = AVAudioPlayerNode()
-    private let voiceEQ = AVAudioUnitEQ(numberOfBands: 3)
-    private let voiceComp = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
-        componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_DynamicsProcessor,
-        componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
-    private let voiceRoom = AVAudioUnitReverb()
-    private let voiceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 1, interleaved: false)!
-    private var duckTimer: Timer?
     private var lastAudio = Date()
     private var handle: FileHandle?
     private var discardBytes = 0          // old-track audio still in the pipe after a skip
@@ -558,7 +548,7 @@ final class AudioPipe {
     /// engine while it's being destroyed and crash Cadenza on the way out.
     func shutdown() {
         guard !shutDown else { return }
-        idleTimer?.invalidate(); fadeTimer?.invalidate(); xfadeTimer?.invalidate(); duckTimer?.invalidate(); skipTimer?.invalidate()
+        idleTimer?.invalidate(); fadeTimer?.invalidate(); xfadeTimer?.invalidate(); skipTimer?.invalidate()
         rebindWork?.cancel()
         if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
         sleepObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }; sleepObservers = []
@@ -567,7 +557,6 @@ final class AudioPipe {
         shutDown = true
         generation += 1                                   // the reader thread stops at its next turn
         if meterOn { limiter.removeTap(onBus: 0); meterOn = false }
-        if voiceReady { voice.stop() }
         xfTimer?.invalidate()
         players.forEach { $0.stop() }                     // also wakes the reader so it can see it's over
         engine.stop()
@@ -687,14 +676,14 @@ final class AudioPipe {
     var secondsSinceAudio: TimeInterval { Date().timeIntervalSince(lastAudio) }
 
     /// Safety net, called when playback (re)starts: make sure nothing was left turned down by an
-    /// interrupted fade, skip or DJ duck, and that the engine and player are actually running.
+    /// interrupted fade or skip, and that the engine and player are actually running.
     func ensureAudible() {
         guard !asleep, !shutDown else { return }
         if !engine.isRunning { startEngine() }
         if skipTimer == nil { engine.mainMixerNode.outputVolume = 1 }
         if fadeTimer?.isValid != true { fader.outputVolume = 1 }
         if xfadeTimer?.isValid != true && !sleepFading { xfade.outputVolume = 1 }   // a finished song-end fade
-        if duckTimer?.isValid != true && !(voiceReady && voice.isPlaying) { inMix.outputVolume = 1 }
+        inMix.outputVolume = 1
         if engine.isRunning && !player.isPlaying {
             locallyPausedAt = nil
             lock.lock(); playPlayer(); if xfTimer?.isValid == true { playPlayer(other) }; lock.unlock()
@@ -704,114 +693,9 @@ final class AudioPipe {
     /// Paused for a few minutes: let the sound engine (and the AirPods) rest. Not sooner: waking it takes
     /// a moment, which made pressing play after a short pause feel slow.
     private func sleepIfIdle() {
-        guard engine.isRunning, Date().timeIntervalSince(lastAudio) > 180, !(voiceReady && voice.isPlaying) else { return }
+        guard engine.isRunning, Date().timeIntervalSince(lastAudio) > 180 else { return }
         lock.lock(); engine.pause(); lock.unlock()
         onLog?("Nothing playing: sound engine resting.")
-    }
-
-    // MARK: - DJ voice + ducking
-
-    /// True when Cadenza's engine is playing the music, so the DJ can go through it (radio sound + ducking).
-    var canVoice: Bool { engine.isRunning }
-
-    /// The voice chain is only built the first time the DJ talks (stereo throughout, so every effect accepts it).
-    private var voiceReady = false
-    private func setupVoice() {
-        guard !voiceReady else { return }
-        voiceReady = true
-        let vb = voiceEQ.bands
-        vb[0].filterType = .highPass;  vb[0].frequency = 110; vb[0].bypass = false
-        vb[1].filterType = .lowShelf;  vb[1].frequency = 220; vb[1].gain = 1.5; vb[1].bypass = false
-        vb[2].filterType = .parametric; vb[2].frequency = 3200; vb[2].bandwidth = 1.2; vb[2].gain = 3.5; vb[2].bypass = false
-        voiceRoom.loadFactoryPreset(.smallRoom)
-        voiceRoom.wetDryMix = 7
-        engine.attach(voice); engine.attach(voiceEQ); engine.attach(voiceComp); engine.attach(voiceRoom)
-        engine.connect(voice, to: voiceEQ, format: format)
-        engine.connect(voiceEQ, to: voiceComp, format: format)
-        engine.connect(voiceComp, to: voiceRoom, format: format)
-        engine.connect(voiceRoom, to: engine.mainMixerNode, format: format)
-    }
-
-    /// Plays the DJ's speech through the voice chain, dipping the music underneath it.
-    func playVoice(_ parts: [AVAudioPCMBuffer], done: @escaping () -> Void) {
-        guard engine.isRunning, let joined = AudioPipe.join(parts), let mono = convert(joined), let pcm = stereo(mono) else { return done() }
-        setupVoice()
-        if !voice.isPlaying { guard safely("start the DJ's voice", { voice.play() }) else { return done() } }
-        duck(to: 0.28, over: 0.35)
-        voice.scheduleBuffer(pcm, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.duck(to: 1, over: 0.8)
-                done()
-            }
-        }
-    }
-
-    func stopVoice() {
-        if voiceReady { voice.stop() }
-        duck(to: 1, over: 0.4)
-    }
-
-    /// Smoothly moves the music's volume (like a radio host pulling the fader down while talking).
-    private func duck(to target: Float, over seconds: Double) {
-        duckTimer?.invalidate()
-        let start = inMix.outputVolume, begin = Date()
-        // progress comes from the clock (no counters mutated inside the timer, which newer Swift rejects)
-        duckTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 40, repeats: true) { [weak self] t in
-            guard let self else { return t.invalidate() }
-            let x = Float(min(1, Date().timeIntervalSince(begin) / max(seconds, 0.01)))
-            let eased = x * x * (3 - 2 * x)
-            self.inMix.outputVolume = start + (target - start) * eased
-            if x >= 1 { t.invalidate() }
-        }
-    }
-
-    /// The speech engine hands over its audio in pieces; join them so resampling has no seams.
-    private static func join(_ list: [AVAudioPCMBuffer]) -> AVAudioPCMBuffer? {
-        guard let f = list.first?.format else { return nil }
-        let total = list.reduce(0) { $0 + Int($1.frameLength) }
-        guard total > 0, let out = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: AVAudioFrameCount(total)) else { return nil }
-        let bytesPerFrame = Int(f.streamDescription.pointee.mBytesPerFrame)
-        let dst = UnsafeMutableAudioBufferListPointer(out.mutableAudioBufferList)
-        var at = 0
-        for b in list where b.format == f {
-            let n = Int(b.frameLength)
-            let src = UnsafeMutableAudioBufferListPointer(b.mutableAudioBufferList)
-            for i in 0..<min(src.count, dst.count) {
-                if let sp = src[i].mData, let dp = dst[i].mData { memcpy(dp + at * bytesPerFrame, sp, n * bytesPerFrame) }
-            }
-            at += n
-        }
-        out.frameLength = AVAudioFrameCount(at)
-        return out
-    }
-
-    /// Speech arrives at its own rate (often 22 kHz, 16-bit); convert it to the voice chain's format.
-    private func convert(_ b: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        if b.format == voiceFormat { return b }
-        guard let conv = AVAudioConverter(from: b.format, to: voiceFormat) else { return nil }
-        let ratio = voiceFormat.sampleRate / b.format.sampleRate
-        guard let out = AVAudioPCMBuffer(pcmFormat: voiceFormat, frameCapacity: AVAudioFrameCount(Double(b.frameLength) * ratio) + 2048) else { return nil }
-        final class Flag { var fed = false }
-        let flag = Flag()
-        var error: NSError?
-        let status = conv.convert(to: out, error: &error) { _, inStatus in
-            if flag.fed { inStatus.pointee = .endOfStream; return nil }
-            flag.fed = true
-            inStatus.pointee = .haveData
-            return b
-        }
-        return status == .error ? nil : out
-    }
-
-    /// Copies a mono buffer into both channels of a stereo one.
-    private func stereo(_ m: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: m.frameLength),
-              let src = m.floatChannelData, let dst = out.floatChannelData else { return nil }
-        out.frameLength = m.frameLength
-        let n = Int(m.frameLength)
-        dst[0].update(from: src[0], count: n)
-        dst[1].update(from: src[0], count: n)
-        return out
     }
 
     // MARK: - Meter
