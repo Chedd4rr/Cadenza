@@ -41,6 +41,10 @@ which it starts and manages for you.
   You can turn this off in System → Preferences too.
 - Synced lyrics from LRCLIB, timed to what you actually hear. Press T to translate them into your
   Mac's language (done on your Mac, macOS 15+). Search → Lyrics finds a song from a line you remember.
+- A playlist builder (N in Library, B on a playlist, or ⌘K): your playlist on the left, and on the right
+  songs like the ones you've added, a search box and mood filters (chill, energy, happy, moody, focus,
+  party, love). Drag songs to order them, spread out artists, shuffle, undo, and save as a new playlist
+  or back to the one you opened. What you're building is kept if you leave the page.
 - Up Next, Cadenza's own queue: add with Q, reorder with ⌥↑/⌥↓, remove with X, clear with C.
 - Listening stats for the week, month, year or all time: top artists and songs, plays, and the hours
   you listen. Import the history Spotify sends you and they cover every play since your account
@@ -163,7 +167,8 @@ The mouse and trackpad work too, and the Controls menu in the menu bar has the m
 | Home | DJ, Lyrics, Library, Search, Queue, Stats, EQ and System, plus the now-playing panel with playback controls. Click the artist or album there to look it up in Search. |
 | DJ | Builds a set and talks you through it with your Mac's voices. A "Premium" voice from System Settings → Accessibility → Spoken Content sounds the most natural. |
 | Lyrics | Synced lyrics; click a line to jump there |
-| Library | Liked Songs and your playlists, with AI tags |
+| Library | Liked Songs and your playlists, with AI tags. N starts a new playlist in the builder |
+| Build | The playlist builder. Tab switches between your playlist and the suggestions; ⏎ adds, P previews, drag or ⌥↑↓ to move, X removes, ← → picks a mood, R finds more ideas, D spreads artists, H shuffles, U undoes, S saves |
 | Playlist / Album / Artist | Play, queue, add, remove, reorder, edit details and cover, save, follow, share |
 | Search | Songs, albums, artists and playlists (Tab switches type) |
 | Queue / History | Your Up Next, then Spotify's queue; and what you played recently |

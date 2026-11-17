@@ -37,6 +37,35 @@
   </section>
 
   <!-- PLAYLIST -->
+  <!-- PLAYLIST BUILDER: your playlist on the left, suggestions and search on the right -->
+  <section class="view" id="v-builder" hidden>
+    <h1 class="vh st"><span class="title" data-title="BUILD"></span><small id="bd-sub"></small></h1>
+    <div class="bd-cols">
+      <div class="bd-pane st" id="bd-left">
+        <div class="bd-top">
+          <label class="bd-namebox"><input id="bd-name" type="text" placeholder="Name your playlist" autocomplete="off" spellcheck="false"></label>
+          <span class="bd-stats" id="bd-stats"></span>
+        </div>
+        <div class="tracks scroller bd-list" id="bd-list"></div>
+        <div class="empty bd-empty" id="bd-empty">ADD SONGS FROM THE RIGHT</div>
+        <div class="bd-actions" id="bd-actions">
+          <button class="chip" data-a="save" data-icon="check">SAVE</button>
+          <button class="chip" data-a="spread" data-icon="artist">SPREAD ARTISTS</button>
+          <button class="chip" data-a="shuffle" data-icon="shuffle">SHUFFLE</button>
+          <button class="chip" data-a="undo" data-icon="refresh">UNDO</button>
+          <button class="chip" data-a="clear" data-icon="plus">NEW</button>
+        </div>
+      </div>
+      <div class="bd-pane st" id="bd-right">
+        <label class="bd-search"><span data-icon="search"></span><input id="bd-q" type="text" placeholder="Search songs to add…" autocomplete="off" spellcheck="false"></label>
+        <div class="s-tabs bd-moods" id="bd-moods"></div>
+        <div class="bd-h"><span id="bd-rtitle">SUGGESTED</span><button class="chip" data-icon="refresh" id="bd-more">MORE IDEAS</button></div>
+        <div class="tracks scroller bd-sugg" id="bd-sugg"></div>
+        <div class="empty bd-empty" id="bd-sempty" hidden>FINDING SONGS…</div>
+      </div>
+    </div>
+  </section>
+
   <section class="view" id="v-playlist" hidden>
     <div class="pl-hero st">
       <div class="pl-cover" id="pl-cover"></div>
@@ -50,6 +79,7 @@
           <button class="chip" id="pl-shuffle" data-icon="shuffle">SHUFFLE</button>
           <button class="chip" id="pl-rename" data-icon="edit">EDIT</button>
           <button class="chip" id="pl-share" data-icon="share">SHARE</button>
+          <button class="chip" id="pl-build" data-icon="listAdd">BUILD</button>
           <button class="chip" id="pl-tools" data-icon="tools">TOOLS</button>
           <button class="chip danger" id="pl-delete" data-icon="trash">DELETE</button>
         </div>

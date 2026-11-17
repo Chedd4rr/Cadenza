@@ -70,6 +70,7 @@ final class LastFM {
         "user.getInfo", "user.getTopArtists", "user.getTopTracks", "user.getTopAlbums", "user.getRecentTracks",
         "user.getFriends", "user.getWeeklyTrackChart", "track.getInfo", "artist.getInfo",
         "track.getSimilar", "artist.getSimilar",                                  // song radio and autoplay
+        "track.getTopTags", "artist.getTopTags", "tag.getTopTracks",              // the playlist builder's moods
     ]
     private var readQueue: [() -> Void] = []
     private var reading = false

@@ -1004,7 +1004,22 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
     if (alt) {
       const devId = dev || await ourDevice();
       const r2 = await api("PUT", devId ? `/me/player/play?device_id=${enc(devId)}` : playPath, alt.body);
-      if (r2.status >= 200 && r2.status < 300) { r = r2; alt.queue.forEach((u, i) => setTimeout(() => api("POST", `/me/player/queue?uri=${enc(u)}`).catch(() => {}), 600 + i * 350)); }
+      if (r2.status >= 200 && r2.status < 300) {
+        r = r2;
+        // Queue the rest only once Spotify says the song is playing: queued too early (while Cadenza's
+        // speaker is still waking up) Spotify answers "no active device" and drops them.
+        (async () => {
+          for (let n = 0; n < 6; n++) {
+            await wait(700);
+            const s = await api("GET", "/me/player?additional_types=track,episode");
+            if (s.status === 200 && s.body && s.body.item) {
+              for (const u of alt.queue) { await api("POST", `/me/player/queue?uri=${enc(u)}`); await wait(250); }
+              return;
+            }
+            if (n === 2) await api("PUT", devId ? `/me/player/play?device_id=${enc(devId)}` : playPath, alt.body);   // it didn't take: once more
+          }
+        })().catch(() => {});
+      }
     }
   }
   // A context Spotify won't take (or an offset it can't find): play the plain song list instead.
@@ -1059,6 +1074,15 @@ async function cmd(id) {
       if (p && p.item) Radio.skipFrom = { uri: p.item.uri, at: Date.now() };     // nothing next? autoplay takes over (Radio.ended)
       native("audio.local", { action: "skip" }).catch(() => {});
       r = Radio.active && !UpNext.items.length && !UpNext.fed ? await Radio.skip() : await api("POST", "/me/player/next");
+      // Spotify forgot which speaker was playing (it answers "no active device"): hand playback back to
+      // Cadenza's speaker, then skip there.
+      if (r && r.status === 404) {
+        const id = await ourDevice();
+        if (id && (await api("PUT", "/me/player", { device_ids: [id], play: true })).status < 300) {
+          await wait(800);
+          r = await api("POST", `/me/player/next?device_id=${enc(id)}`);
+        }
+      }
       break;
     case "previous": native("audio.local", { action: "skip" }).catch(() => {}); r = await api("POST", "/me/player/previous"); break;
     case "shuffle": {
@@ -2083,7 +2107,11 @@ views.library = {
     if (p.kind === "new") return this.create();
     go("playlist", { pl: p });
   },
+  /** New playlist: opens the playlist builder (suggestions, search, moods, drag to order). */
   async create() {
+    return go("builder", {});
+  },
+  async createEmpty() {
     const name = await Modal.open({ title: "NEW PLAYLIST", text: "Give it a name.", input: "", ok: "CREATE" });
     if (!name) return;
     const pl = await createPlaylist(name);
@@ -2123,7 +2151,7 @@ views.library = {
    ===================================================================== */
 views.playlist = {
   el: $("v-playlist"), pl: null, next: null, loading: false,
-  keys: () => [["↑↓", "SELECT"], ["⏎", "PLAY"], ["M", "MORE"], ["⌥↑↓", "MOVE"], ["X", "REMOVE"], ["P", "PLAY ALL", () => views.playlist.playAll(false)], ["ESC", "BACK", back]],
+  keys: () => [["↑↓", "SELECT"], ["⏎", "PLAY"], ["M", "MORE"], ["⌥↑↓", "MOVE"], ["X", "REMOVE"], ["P", "PLAY ALL", () => views.playlist.playAll(false)], ["B", "BUILD", () => views.builder.open(views.playlist.pl)], ["ESC", "BACK", back]],
   list: new List($("pl-tracks"), {
     render: (t, i) => { const r = renderTrack(t, i); if (views.playlist.canReorder()) r.draggable = true; return r; },
     onActivate: (t, i, act) => views.playlist.act(act || "play", t, i),
@@ -2255,6 +2283,7 @@ views.playlist = {
     if (k === "q") { this.act("queue", this.list.cur); return true; }
     if (k === "a") { this.act("add", this.list.cur); return true; }
     if (k === "p") { this.playAll(false); return true; }
+    if (k === "b") { views.builder.open(this.pl); return true; }
     if (k === "s") { this.playAll(true); return true; }
     if (k === "x") { this.removeTrack(this.list.cur, this.list.i); return true; }
     if (e.altKey && e.key === "ArrowUp") { this.move(this.list.i, this.list.i - 1); return true; }
@@ -2319,6 +2348,8 @@ $("pl-play").onclick = () => views.playlist.playAll(false);
 $("pl-rename").onclick = () => views.playlist.rename();
 $("pl-share").onclick = () => views.playlist.pl && copyLink(views.playlist.pl.uri, views.playlist.pl.name);
 $("pl-tools").onclick = () => PlaylistTools.open(views.playlist.pl);
+$("pl-build").onclick = () => views.builder.open(views.playlist.pl);
+$("bd-more").onclick = () => views.builder.suggest();
 // drag and drop to reorder
 (() => {
   const el = $("pl-tracks");
@@ -3324,6 +3355,499 @@ views.history = {
 };
 
 /* =====================================================================
+   PLAYLIST BUILDER: suggestions, search, moods, drag to order
+   ===================================================================== */
+// Your playlist on the left, songs to add on the right. Suggestions are songs like the last few you
+// added (Last.fm's "similar songs", found on Spotify), or songs for a mood when the playlist is empty.
+// Mood filters use Last.fm's tags for each song (chill, sad, party…). Drag songs (or ⌥↑↓) to order them.
+// Nothing touches Spotify until you save: a new playlist is created, or the one you opened is updated.
+const MOODS = {
+  all: { label: "ALL" },
+  chill: { label: "CHILL", tag: "chill", words: ["chill", "chillout", "mellow", "relax", "calm", "ambient", "lo-fi", "lofi", "downtempo", "soft", "dreamy", "easy listening"] },
+  energy: { label: "ENERGY", tag: "energetic", words: ["energetic", "upbeat", "hype", "workout", "gym", "fast", "rock", "punk", "metal", "drum and bass", "edm", "aggressive"] },
+  happy: { label: "HAPPY", tag: "happy", words: ["happy", "feel good", "feelgood", "fun", "uplifting", "cheerful", "summer", "sunny", "joyful", "positive"] },
+  moody: { label: "MOODY", tag: "sad", words: ["sad", "melancholy", "melancholic", "dark", "emotional", "depressing", "moody", "heartbreak", "lonely", "bittersweet", "atmospheric"] },
+  focus: { label: "FOCUS", tag: "instrumental", words: ["instrumental", "focus", "study", "concentration", "classical", "post-rock", "soundtrack", "piano", "minimal", "ambient"] },
+  party: { label: "PARTY", tag: "party", words: ["party", "dance", "club", "banger", "house", "hip-hop", "hip hop", "rap", "electronic", "disco", "dancehall"] },
+  love: { label: "LOVE", tag: "love", words: ["love", "romantic", "romance", "sexy", "slow jams", "rnb", "r&b", "soul", "sensual", "love songs"] },
+};
+
+views.builder = {
+  el: $("v-builder"), draft: [], pl: null, name: "", side: "sugg", mood: "all", sugg: [], sugToken: 0, undoStack: [],
+  tags: new Map(), tagQueue: [], tagBusy: 0, searchQ: "", searchT: 0, dragEnd: 0, saveT: 0,
+  keys() {
+    const b = views.builder;
+    return [["TAB", b.side === "draft" ? "TO SUGGESTIONS" : "TO PLAYLIST", () => b.setSide(b.side === "draft" ? "sugg" : "draft")],
+      ["/", "SEARCH", () => b.focusSearch()],
+      ...(b.side === "sugg" ? [["⏎", "ADD"], ["← →", "MOOD", () => b.cycleMood(1)], ["R", "MORE IDEAS", () => b.suggest()]]
+                            : [["⌥↑↓", "MOVE"], ["X", "REMOVE"], ["D", "SPREAD ARTISTS", () => b.spread()]]),
+      ["S", "SAVE", () => b.save()], ["ESC", "BACK", back]];        // (P previews and U undoes too: see the commands page)
+  },
+  draftList: new List($("bd-list"), {
+    render: (t, i) => views.builder.row(t, i, "draft"),
+    onActivate: (t, i, act) => { if (Date.now() - views.builder.dragEnd > 300) views.builder.act(act || "play", t, "draft"); },
+    onSelect: () => views.builder.setSide("draft", true),
+  }),
+  suggList: new List($("bd-sugg"), {
+    render: (x, i) => views.builder.row(x.t, i, "sugg"),
+    onActivate: (x, i, act) => views.builder.act(act || "add", x && x.t, "sugg"),
+    onSelect: () => views.builder.setSide("sugg", true),
+  }),
+
+  /** A song row: the usual track row, with this page's own buttons. */
+  row(t, i, where) {
+    const r = renderTrack(t, i, { thumb: true });
+    const acts = r.querySelector(".acts");
+    if (acts) {
+      acts.textContent = "";
+      const btn = (act, icon, label, title) => { const b = h("button"); setChip(b, icon, label); b.dataset.act = act; b.title = title; return b; };
+      if (where === "sugg") acts.append(btn("play", "play", "", "Preview (P)"), btn("add", "plus", "ADD", "Add to the playlist (⏎)"));
+      else acts.append(btn("play", "play", "", "Preview (P)"), btn("remove", "trash", "", "Remove (X)"));
+    }
+    if (where === "draft") r.classList.add("bd-drag");
+    const tags = this.tags.get(t.uri);
+    if (where === "sugg" && tags && this.mood !== "all") {
+      const hit = [...tags].find((g) => this.moodWords().some((w) => g.includes(w)));
+      if (hit) { const du = r.querySelector(".du"); if (du) du.textContent = upper(hit); }
+    }
+    return r;
+  },
+
+  /** Build on a playlist: your own is edited in place; one you can't edit (or Liked Songs) becomes a copy. */
+  open(pl) {
+    if (!pl) return go("builder", {});
+    go("builder", isOwned(pl) && !pl.kind ? { pl } : { copyOf: pl });
+  },
+  /** params: { pl } to edit one of your playlists, { copyOf } to start from someone else's, { seed } to
+   *  start from a song, {} to carry on with the one you were building (or a fresh one). */
+  async show(params, isBack) {
+    if (isBack) return;
+    params = params || {};
+    if (this.draft.length && (params.pl || params.copyOf || params.seed)) this.snapshot();   // U brings it back
+    if (params.pl || params.copyOf) {
+      const src = params.pl || params.copyOf;
+      this.pl = params.pl || null; this.name = params.pl ? src.name || "" : (src.name || "Playlist") + " (my mix)";
+      $("bd-name").value = this.name;
+      this.draft = [];
+      this.renderDraft();
+      setText("bd-sub", "LOADING " + upper(this.name) + "…");
+      this.draft = await this.loadPlaylist(src);
+    } else if (params.seed || !this.draft.length) {
+      this.pl = null; this.name = "";
+      $("bd-name").value = "";
+      this.draft = params.seed ? [params.seed] : [];
+    }
+    this.renderDraft();
+    this.setSide(this.draft.length ? "sugg" : "sugg");
+    this.renderMoods();
+    this.suggest();
+  },
+  leave() { $("bd-q").blur(); $("bd-name").blur(); },
+
+  async loadPlaylist(pl) {
+    // The songs already on screen, when that playlist was open and fully loaded; else every song, plainly.
+    const v = views.playlist;
+    if (v.pl && v.pl === pl && !v.next && v.list.items.length) return v.list.items.filter((t) => t && t.uri && !t.is_local);
+    const all = await PlaylistTools.all(pl);
+    return (all || []).map((x) => ({ uri: x.uri, name: x.name, artists: [{ name: x.artist }], album: { name: "", images: [] }, duration_ms: 0 }));
+  },
+
+  // ----- The playlist (left) -----
+  renderDraft(keep) {
+    const i = keep != null ? keep : this.draftList.i;
+    this.draftList.set(this.draft);
+    if (this.draft.length) this.draftList.select(Math.min(i, this.draft.length - 1), false);
+    $("bd-empty").hidden = this.draft.length > 0;
+    const ms = this.draft.reduce((a, t) => a + (t.duration_ms || 0), 0), mins = Math.round(ms / 60000);
+    const artists = new Set(this.draft.map((t) => LFM.firstArtist(t))).size;
+    setText("bd-stats", this.draft.length ? `${this.draft.length} SONG${this.draft.length === 1 ? "" : "S"}  ·  ${mins >= 60 ? Math.floor(mins / 60) + " H " + (mins % 60) + " MIN" : mins + " MIN"}  ·  ${artists} ARTIST${artists === 1 ? "" : "S"}` : "EMPTY");
+    setText("bd-sub", this.pl ? "EDITING " + upper(this.pl.name) : "NEW PLAYLIST");
+    this.remember();
+    if (this.side === "draft") this.paintSide();
+  },
+  /** Keep the playlist you're building if you leave the page (or quit), until it's saved. */
+  remember() {
+    clearTimeout(this.saveT);
+    this.saveT = setTimeout(() => {
+      const keep = this.draft.slice(0, 300).map((t) => ({ uri: t.uri, name: t.name, duration_ms: t.duration_ms || 0,
+        artists: (t.artists || []).slice(0, 3).map((a) => ({ name: a.name })), album: t.album ? { name: t.album.name || "", images: (t.album.images || []).slice(0, 1) } : null }));
+      native("store.set", { key: "builderDraft", value: { name: $("bd-name").value, pl: this.pl ? { id: this.pl.id, name: this.pl.name } : null, draft: keep } }).catch(() => {});
+    }, 800);
+  },
+  async restore() {
+    try {
+      const v = await native("store.get", { key: "builderDraft" });
+      if (v && Array.isArray(v.draft) && v.draft.length && !this.draft.length) {
+        this.draft = v.draft;
+        this.pl = v.pl ? (S.playlists || []).find((p) => p.id === v.pl.id) || v.pl : null;
+        $("bd-name").value = v.name || "";
+      }
+    } catch (e) { /* demo */ }
+  },
+  snapshot() { this.undoStack.push(this.draft.slice()); if (this.undoStack.length > 30) this.undoStack.shift(); },
+  undo() {
+    const prev = this.undoStack.pop();
+    if (!prev) return toast("NOTHING TO UNDO");
+    this.draft = prev;
+    this.renderDraft();
+    this.refreshSugg();
+    toast("UNDONE");
+  },
+  addTrack(t, at) {
+    if (!t || !t.uri) return;
+    if (this.draft.some((x) => x.uri === t.uri)) return toast("ALREADY IN THE PLAYLIST");
+    this.snapshot();
+    if (at == null) this.draft.push(t); else this.draft.splice(at, 0, t);
+    this.renderDraft(at == null ? this.draft.length - 1 : at);
+    Sfx.play("toggle");
+    // The song you just added steers the suggestions.
+    this.sugg = this.sugg.filter((x) => x.t.uri !== t.uri);
+    this.refreshSugg();
+    clearTimeout(this.reT);
+    this.reT = setTimeout(() => this.suggest(true), 900);
+  },
+  remove(i) {
+    if (i < 0 || i >= this.draft.length) return;
+    this.snapshot();
+    const [t] = this.draft.splice(i, 1);
+    this.renderDraft(Math.min(i, this.draft.length - 1));
+    toast("REMOVED " + upper(cleanTitle(t.name)) + " · U TO UNDO");
+  },
+  move(from, to) {
+    if (to < 0 || to >= this.draft.length || from === to) return;
+    this.snapshot();
+    const [t] = this.draft.splice(from, 1);
+    this.draft.splice(to, 0, t);
+    this.renderDraft(to);
+  },
+  /** Reorder so the same artist never plays twice in a row (when that's possible). */
+  spread() {
+    if (this.draft.length < 3) return;
+    this.snapshot();
+    const left = this.draft.slice(), out = [];
+    while (left.length) {
+      const last = out.length ? LFM.firstArtist(out[out.length - 1]) : null;
+      // Take the next song whose artist differs from the last one; prefer artists with the most songs left.
+      const counts = {};
+      left.forEach((t) => { const a = LFM.firstArtist(t); counts[a] = (counts[a] || 0) + 1; });
+      let pick = -1, best = -1;
+      left.forEach((t, i) => { const a = LFM.firstArtist(t); if (a !== last && counts[a] > best) { best = counts[a]; pick = i; } });
+      if (pick < 0) pick = 0;
+      out.push(left.splice(pick, 1)[0]);
+    }
+    this.draft = out;
+    this.renderDraft(0);
+    toast("ARTISTS SPREAD OUT · U TO UNDO");
+  },
+  /** Start a new, empty playlist (the one you were building can come back with U). */
+  startOver() {
+    if (this.draft.length) this.snapshot();
+    this.draft = []; this.pl = null; $("bd-name").value = "";
+    this.renderDraft(0);
+    this.suggest();
+    toast("STARTED OVER · U TO UNDO");
+  },
+  shuffle() {
+    if (this.draft.length < 2) return;
+    this.snapshot();
+    this.draft = TrueShuffle.permute(this.draft);
+    this.renderDraft(0);
+    toast("SHUFFLED · U TO UNDO");
+  },
+
+  /** Drag a song (in the playlist) to a new place. A line shows where it will land. */
+  initDrag() {
+    const el = $("bd-list");
+    let d = null;
+    const target = (y) => {
+      const rows = this.draftList.rows;
+      for (let i = 0; i < rows.length; i++) { const r = rows[i].getBoundingClientRect(); if (y < r.top + r.height / 2) return i; }
+      return rows.length;
+    };
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest("[data-act]")) return;
+      const row = e.target.closest("[data-i]");
+      if (row) d = { i: +row.dataset.i, y0: e.clientY, row, moved: false, to: +row.dataset.i };
+    });
+    addEventListener("pointermove", (e) => {
+      if (!d) return;
+      const dy = e.clientY - d.y0;
+      if (!d.moved && Math.abs(dy) < 6) return;
+      if (!d.moved) { d.moved = true; d.row.classList.add("dragging"); document.body.classList.add("bd-dragging"); }
+      d.row.style.translate = `0 ${dy}px`;
+      // near the top or bottom edge: scroll the list along
+      const box = el.getBoundingClientRect();
+      if (e.clientY < box.top + 30) el.scrollTop -= 12; else if (e.clientY > box.bottom - 30) el.scrollTop += 12;
+      d.to = target(e.clientY);
+      this.draftList.rows.forEach((r, i) => { r.classList.toggle("drop-before", i === d.to && i !== d.i && i !== d.i + 1); r.classList.toggle("drop-after", d.to === this.draftList.rows.length && i === this.draftList.rows.length - 1 && i !== d.i); });
+    });
+    addEventListener("pointerup", () => {
+      if (!d) return;
+      const { i, to, moved, row } = d;
+      d = null;
+      document.body.classList.remove("bd-dragging");
+      if (!moved) return;
+      this.dragEnd = Date.now();
+      row.style.translate = ""; row.classList.remove("dragging");
+      this.draftList.rows.forEach((r) => r.classList.remove("drop-before", "drop-after"));
+      this.move(i, to > i ? to - 1 : to);
+    });
+  },
+
+  // ----- Suggestions and search (right) -----
+  moodWords() { return (MOODS[this.mood] && MOODS[this.mood].words) || []; },
+  matches(t) {
+    if (this.mood === "all") return true;
+    const tags = this.tags.get(t.uri);
+    return !!tags && [...tags].some((g) => this.moodWords().some((w) => g.includes(w)));
+  },
+  renderMoods() {
+    const box = $("bd-moods");
+    box.textContent = "";
+    for (const [id, m] of Object.entries(MOODS)) {
+      const b = h("button", id === this.mood ? "on" : "", m.label);
+      b.dataset.mood = id;
+      box.append(b);
+    }
+  },
+  setMood(id) {
+    if (!MOODS[id] || id === this.mood) return;
+    this.mood = id;
+    this.renderMoods();
+    Sfx.play("toggle");
+    this.refreshSugg();
+    this.suggest(true);
+  },
+  cycleMood(d) { const ids = Object.keys(MOODS); this.setMood(ids[(ids.indexOf(this.mood) + d + ids.length) % ids.length]); },
+
+  /** What the right side shows: search results while there's text in the search box, else suggestions. */
+  refreshSugg() {
+    const have = new Set(this.draft.map((t) => t.uri));
+    let rows;
+    if (this.searchQ) rows = (this.found || []).filter((t) => !have.has(t.uri)).map((t) => ({ t, s: 0 }));
+    else rows = this.sugg.filter((x) => !have.has(x.t.uri) && this.matches(x.t)).sort((a, b) => b.s - a.s);
+    const keep = this.suggList.i;
+    this.suggList.set(rows);
+    if (rows.length) this.suggList.select(Math.min(keep, rows.length - 1), false);
+    const checking = this.mood !== "all" && !this.searchQ ? this.sugg.filter((x) => !this.tags.has(x.t.uri)).length : 0;
+    setText("bd-rtitle", this.searchQ ? `SEARCH · ${upper(this.searchQ)}` : this.mood === "all" ? "SUGGESTED FOR THIS PLAYLIST" : `SUGGESTED · ${MOODS[this.mood].label}` + (checking ? `  ·  CHECKING ${checking} MORE…` : ""));
+    const empty = $("bd-sempty");
+    empty.hidden = rows.length > 0;
+    empty.textContent = this.searchQ ? "NO RESULTS" : this.loading ? "FINDING SONGS…" : checking ? "CHECKING MOODS…" : "NO IDEAS YET · ADD A SONG OR PICK A MOOD";
+    if (this.side === "sugg") this.paintSide();
+  },
+
+  /** Find suggestions. `keep` keeps what's there and adds to it. */
+  async suggest(keep) {
+    const token = ++this.sugToken;
+    if (!keep) this.sugg = [];
+    this.loading = true;
+    this.refreshSugg();
+    const have = new Set(this.draft.map((t) => t.uri));
+    const found = new Map(this.sugg.map((x) => [x.t.uri, x]));
+    const add = (t, s, moodTag) => {
+      if (token !== this.sugToken || !t || !t.uri || have.has(t.uri) || t.is_local) return;
+      if (moodTag) { const set = this.tags.get(t.uri) || new Set(); set.add(moodTag); this.tags.set(t.uri, set); }
+      const cur = found.get(t.uri);
+      if (cur) { cur.s += s; return; }
+      const x = { t, s };
+      found.set(t.uri, x);
+      this.sugg.push(x);
+      this.wantTags(t);
+      clearTimeout(this.paintT);
+      this.paintT = setTimeout(() => this.refreshSugg(), 150);
+    };
+    const resolveAll = async (list, score, moodTag) => {
+      let next = 0;
+      const worker = async () => {
+        while (next < list.length && token === this.sugToken) {
+          const x = list[next++];
+          const t = await Resolve.track(x.name, x.artist);
+          add(t, score(x), moodTag);
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+    };
+    const now = S.player && S.player.item && S.player.item.raw;
+    const seeds = this.draft.length ? this.draft.slice(-3).reverse() : now ? [now] : [];
+    const mood = MOODS[this.mood];
+    try {
+      if (LFM.ready()) {
+        const jobs = [];
+        // Songs like the last few in the playlist (the newest counts most).
+        if (seeds.length) jobs.push((async () => {
+          const answers = await Promise.all(seeds.map((sd) => {
+            const artist = LFM.firstArtist(sd);
+            return artist ? LFM.get("track.getSimilar", { artist, track: cleanTitle(sd.name), limit: 30, autocorrect: 1 }, 3600000) : null;
+          }));
+          const score = new Map(), per = {};
+          answers.forEach((b, n) => LFM.arr(b && b.similartracks && b.similartracks.track).forEach((x, rank) => {
+            const a = x.artist && x.artist.name;
+            if (!a) return;
+            const k = LFM.key(a, x.name), cur = score.get(k) || { name: x.name, artist: a, s: 0 };
+            cur.s += [1, 0.7, 0.5][n] * ((+x.match || 0) + 1 / (rank + 3));
+            score.set(k, cur);
+          }));
+          const list = [...score.values()].sort((a, b) => b.s - a.s).filter((x) => (per[x.artist] = (per[x.artist] || 0) + 1) <= 2).slice(0, 24);
+          await resolveAll(list, (x) => x.s);
+        })());
+        // A mood: Last.fm's top songs for that mood's tag (a different handful each time).
+        if (mood && mood.tag) jobs.push((async () => {
+          const b = await LFM.get("tag.getTopTracks", { tag: mood.tag, limit: 60 }, 3600000);
+          const all = LFM.arr(b && b.tracks && b.tracks.track).map((x) => ({ name: x.name, artist: x.artist && x.artist.name })).filter((x) => x.artist);
+          const pick = TrueShuffle.permute(all).slice(0, seeds.length ? 8 : 18);
+          await resolveAll(pick, () => (seeds.length ? 0.4 : 1), mood.tag);
+        })());
+        // Nothing to go on: your own favourites lately.
+        if (!seeds.length && !(mood && mood.tag)) jobs.push((async () => {
+          const b = await LFM.get("user.getTopTracks", { period: "1month", limit: 40 }, 600000);
+          const list = TrueShuffle.permute(LFM.arr(b && b.toptracks && b.toptracks.track).map((x) => ({ name: x.name, artist: x.artist && x.artist.name })).filter((x) => x.artist)).slice(0, 18);
+          await resolveAll(list, () => 1);
+        })());
+        await Promise.all(jobs);
+      }
+      // Without Last.fm (or when it knew too little): more by the same artists, from Spotify's search.
+      if (token === this.sugToken && this.sugg.length < 6 && seeds.length) {
+        for (const sd of seeds) {
+          const a = LFM.firstArtist(sd);
+          if (!a) continue;
+          const r = await api("GET", `/search?type=track&limit=10&q=${enc('artist:"' + a + '"')}`);
+          ((r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || []).forEach((t, i) => add(t, 0.3 - i * 0.02));
+        }
+      }
+    } finally {
+      if (token === this.sugToken) { this.loading = false; this.refreshSugg(); }
+    }
+  },
+
+  /** Last.fm's tags for a song (falling back to its artist's), for the mood filters. A few at a time. */
+  wantTags(t) {
+    if (!LFM.ready() || this.tags.has(t.uri) || this.tagQueue.some((x) => x.uri === t.uri)) return;
+    this.tagQueue.push(t);
+    this.pumpTags();
+  },
+  async pumpTags() {
+    while (this.tagBusy < 2 && this.tagQueue.length) {
+      this.tagBusy++;
+      const t = this.tagQueue.shift();
+      (async () => {
+        const artist = LFM.firstArtist(t), set = this.tags.get(t.uri) || new Set();
+        const names = (b, key) => LFM.arr(b && b[key] && b[key].tag).slice(0, 12).map((g) => String(g.name || "").toLowerCase());
+        const tb = await LFM.get("track.getTopTags", { artist, track: cleanTitle(t.name), autocorrect: 1 }, 86400000);
+        names(tb, "toptags").forEach((g) => set.add(g));
+        if (set.size < 3) {
+          const ab = await LFM.get("artist.getTopTags", { artist, autocorrect: 1 }, 86400000);
+          names(ab, "toptags").forEach((g) => set.add(g));
+        }
+        this.tags.set(t.uri, set);
+      })().catch(() => {}).finally(() => {
+        this.tagBusy--;
+        if (this.mood !== "all") { clearTimeout(this.paintT); this.paintT = setTimeout(() => this.refreshSugg(), 250); }
+        this.pumpTags();
+      });
+    }
+  },
+
+  focusSearch() { const q = $("bd-q"); q.focus(); q.select(); },
+  searchInput() {
+    clearTimeout(this.searchT);
+    this.searchT = setTimeout(async () => {
+      const q = $("bd-q").value.trim();
+      this.searchQ = q;
+      if (!q) { this.found = []; return this.refreshSugg(); }
+      const r = await api("GET", `/search?type=track&limit=20&q=${enc(q)}`);
+      if (this.searchQ !== q) return;
+      this.found = ((r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || []).filter((t) => t && t.uri && !t.is_local);
+      this.setSide("sugg");
+      this.refreshSugg();
+    }, 260);
+  },
+
+  // ----- Shared -----
+  setSide(side, quiet) {
+    if (this.side === side && quiet) return;
+    this.side = side;
+    this.paintSide();
+    setKeys(this.keys());
+  },
+  paintSide() {
+    $("bd-left").classList.toggle("on", this.side === "draft");
+    $("bd-right").classList.toggle("on", this.side === "sugg");
+  },
+  list() { return this.side === "draft" ? this.draftList : this.suggList; },
+  act(kind, t, where) {
+    if (!t) return;
+    if (kind === "play") return playBody({ uris: [t.uri] }, "PREVIEW · " + t.name);
+    if (kind === "add") return this.addTrack(t);
+    if (kind === "remove") return this.remove(this.draft.indexOf(t));
+  },
+  async save() {
+    const name = ($("bd-name").value || "").trim() || (this.pl ? this.pl.name : "");
+    if (!this.draft.length && this.pl) return toast("ADD SOME SONGS FIRST", true);
+    const uris = this.draft.map((t) => t.uri);
+    let pl = this.pl;
+    if (!pl) {
+      const n = name || await Modal.open({ title: "NAME YOUR PLAYLIST", text: `${uris.length} songs, ready to go.`, input: "", ok: "CREATE" });
+      if (!n) return;
+      pl = await createPlaylist(n);
+      if (!pl) return;
+      const r = uris.length ? await PlaylistTools.add(pl, uris) : { status: 200 };
+      if (r.status >= 300) return toast(errMsg(r), true);
+      toast(`SAVED ${upper(n)} · ${uris.length} SONGS`);
+    } else {
+      const r = await PlaylistTools.replace(pl, uris);
+      if (r.status >= 300) return toast(errMsg(r), true);
+      if (name && name !== pl.name) { const rr = await api("PUT", `/playlists/${pl.id}`, { name }); if (rr.status < 300) pl.name = name; }
+      toast(`SAVED ${upper(pl.name)} · ${uris.length} SONGS`);
+    }
+    if (pl.items) pl.items.total = uris.length;
+    PageCache.m.clear();
+    native("store.set", { key: "builderDraft", value: null }).catch(() => {});
+    this.draft = []; this.pl = null; this.undoStack = [];
+    go("playlist", { pl });
+  },
+  onKey(e, typing) {
+    if (typing) {
+      if (e.key === "Escape" || (e.key === "ArrowDown" && e.target.id === "bd-q")) { e.target.blur(); this.setSide("sugg"); return true; }
+      if (e.key === "Enter") {
+        if (e.target.id === "bd-name") { e.target.blur(); this.remember(); return true; }
+        const t = this.suggList.cur && this.suggList.cur.t;
+        if (t) this.addTrack(t);
+        return true;
+      }
+      if (e.key === "Tab") { e.target.blur(); this.setSide(e.target.id === "bd-q" ? "draft" : "sugg"); return true; }
+      return false;
+    }
+    const k = e.key.toLowerCase(), L = this.list(), cur = L.cur, t = this.side === "sugg" ? cur && cur.t : cur;
+    if (e.key === "Tab") { this.setSide(this.side === "draft" ? "sugg" : "draft"); return true; }
+    if (this.side === "draft" && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { this.move(L.i, L.i + (e.key === "ArrowUp" ? -1 : 1)); return true; }
+    if (L.nav(e)) return true;
+    if (this.side === "sugg" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { this.cycleMood(e.key === "ArrowLeft" ? -1 : 1); return true; }
+    if (e.key === "Enter") { pop(L.rows[L.i]); this.act(this.side === "sugg" ? "add" : "play", t); return true; }
+    if (k === "p") { this.act("play", t); return true; }
+    if (k === "x" && this.side === "draft") { this.remove(L.i); return true; }
+    if (k === "d") { this.spread(); return true; }
+    if (k === "h") { this.shuffle(); return true; }
+    if (k === "u") { this.undo(); return true; }
+    if (k === "r") { this.suggest(); return true; }
+    if (k === "s") { this.save(); return true; }
+    if (k === "n") { $("bd-name").focus(); return true; }
+    return false;
+  },
+};
+$("bd-moods").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) views.builder.setMood(b.dataset.mood); });
+$("bd-q").addEventListener("input", () => views.builder.searchInput());
+$("bd-name").addEventListener("input", () => views.builder.remember());
+$("bd-actions").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const v = views.builder;
+  ({ save: () => v.save(), spread: () => v.spread(), shuffle: () => v.shuffle(), undo: () => v.undo(), more: () => v.suggest(), clear: () => v.startOver() })[b.dataset.a]?.();
+});
+views.builder.initDrag();
+views.builder.restore();
+
+/* =====================================================================
    PLAYLIST TOOLS: remove duplicates, sort, copy, save as new
    ===================================================================== */
 const PlaylistTools = {
@@ -3516,7 +4040,7 @@ const Palette = {
     if (c && c.view && c.view.keys) c.view.keys().forEach(([key, label, fn]) => { if (fn && key !== "ESC") add("THIS PAGE", "keyboard", "This page: " + label.charAt(0) + label.slice(1).toLowerCase(), fn, key); });
 
     // ----- Pages -----
-    const pages = { home: "Home", library: "Library", search: "Search", queue: "Queue & Up Next", history: "History (recently played)", stats: "Listening stats", friends: "Friends",
+    const pages = { home: "Home", library: "Library", search: "Search", builder: "Playlist builder", queue: "Queue & Up Next", history: "History (recently played)", stats: "Listening stats", friends: "Friends",
       output: "Devices", eq: "EQ", dj: "DJ", lyrics: "Lyrics", system: "System settings", commands: "Commands & shortcuts" };
     Object.entries(pages).forEach(([id, label]) => add("GO TO", "external", label, goTo(id), "PAGE", { keys: "open go page " + id }));
 
@@ -3528,7 +4052,9 @@ const Palette = {
       add("PLAYLIST", "shuffle", "Shuffle " + pl.name, () => shufflePlay(pl), "SHUFFLE", { keys: "shuffle playlist random" });
     });
     add("PLAYLIST", "heart", "Liked Songs", () => go("playlist", { pl: { kind: "liked", name: "Liked Songs", uri: null } }), "PLAYLIST", { keys: "saved favourites favorites" });
-    add("LIBRARY", "plus", "New playlist", goTo("library", () => views.library.create()), "N", { keys: "create make" });
+    add("LIBRARY", "plus", "New playlist (builder)", () => go("builder", {}), "N", { keys: "create make build helper suggestions" });
+    add("LIBRARY", "plus", "New empty playlist", goTo("library", () => views.library.createEmpty()), "LIBRARY", { keys: "create make blank" });
+    if (S.player && S.player.item && S.player.item.raw) add("LIBRARY", "plus", "Start a playlist with this song", () => go("builder", { seed: S.player.item.raw }), "BUILD", { keys: "builder seed now playing" });
     if (c && c.name === "playlist" && views.playlist.pl) {
       const pl = views.playlist.pl;
       add("THIS PLAYLIST", "play", "This playlist: Play all", () => views.playlist.playAll(false), "P");
@@ -3701,7 +4227,8 @@ const Palette = {
     if (q.length >= 2) {
       const live = this.liveQ === q ? this.live : (this.liveCache.get(q) || []);
       rows = rows.slice(0, 8).concat(live, rows.slice(8));
-      if (this.liveQ !== q) this.searchLive(raw);
+      // (Only for text with a letter or digit in it: "/?" or "???" would only be a wasted request.)
+      if (this.liveQ !== q && /[\p{L}\p{N}]/u.test(raw)) this.searchLive(raw);
     }
     if (q) rows.push({ group: "SEARCH", icon: "search", name: `Search Spotify for "${raw}"`, hint: "SEARCH",
       run: () => go("search").then(() => { views.search.input.value = raw; views.search.input.dispatchEvent(new Event("input")); }) });
@@ -5553,6 +6080,7 @@ const TrackMenu = {
       { kind: "act", icon: "queue", name: "Play next", run: () => queueTrack(t, true) },
       { kind: "act", icon: "queue", name: "Add to Up Next", run: () => queueTrack(t) },
       { kind: "act", icon: "listAdd", name: "Add to playlist", run: () => Drawer.show(t), keep: true },
+      { kind: "act", icon: "plus", name: "Start a playlist with this", hint: "Playlist builder", run: () => go("builder", { seed: t }) },
       { kind: "act", icon: "heart", name: "Like", like: true, run: () => toggleLike(t) },
       ...(t.album && t.album.id ? [{ kind: "act", icon: "album", name: "Go to album", hint: t.album.name, run: () => go("album", { id: t.album.id }) }] : []),
       ...a.slice(0, 3).map((x) => ({ kind: "act", icon: "artist", name: "Go to " + x.name, run: () => go("artist", { id: x.id }) })),
@@ -6221,7 +6749,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (!typing && c.name !== "setup") {
     if (e.key === " ") { e.preventDefault(); if (!e.repeat) cmd("toggle"); return; }
-    if (e.key === "/") { e.preventDefault(); openSearch(); return; }
+    if (e.key === "/") { e.preventDefault(); if (c.name === "builder") views.builder.focusSearch(); else openSearch(); return; }
     if (c.name !== "search" && !e.altKey) {
       const k = e.key.toLowerCase();
       const sel = c.view.list && c.view.list.cur;
@@ -6789,6 +7317,11 @@ const COMMANDS = [
   ["STAGE", "Play / pause  ·  skip  ·  like", "SPACE  ·  ⌘ ← →  ·  L"],
   ["STAGE", "Leave stage mode", "ESC  ·  F"],
   ["LYRICS", "Translate the lyrics", "T"],
+  ["BUILDER", "Playlist builder: suggestions, search, mood filters", "N IN LIBRARY", () => go("builder", {})],
+  ["BUILDER", "Switch between your playlist and the suggestions", "TAB", () => go("builder", {})],
+  ["BUILDER", "Add the selected suggestion / preview a song", "⏎ / P", () => go("builder", {})],
+  ["BUILDER", "Move a song (or drag it) / remove it", "⌥↑↓ / X", () => go("builder", {})],
+  ["BUILDER", "Mood filter / more ideas / spread artists / undo / save", "← → / R / D / U / S", () => go("builder", {})],
   ["STATS", "Week / month / year / all time", "← →", () => go("stats")],
   ["STATS", "Import Spotify listening history", "I", () => go("stats").then(() => settled()).then(() => views.stats.importHistory())],
   ["STATS", "Switch source (Spotify / Last.fm / Cadenza)", "S", () => go("stats")],
@@ -6912,7 +7445,7 @@ function applyMotion() {
 }
 
 async function boot() {
-  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach };   // demo-mode testing hook
+  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
@@ -7044,6 +7577,13 @@ const Demo = (() => {
       const list = Array.from({ length: 200 }, () => { const t = songs[Math.floor(rnd() * songs.length)], hr = rnd() < 0.55 ? 19 + Math.floor(rnd() * 5) : rnd() < 0.5 ? 9 + Math.floor(rnd() * 5) : Math.floor(rnd() * 24); const d = new Date(); d.setHours(hr % 24, Math.floor(rnd() * 60)); return { name: t.name, artist: { "#text": t.artists[0].name }, date: { uts: String(Math.floor(d.getTime() / 1000) - Math.floor(rnd() * 20) * 86400) } }; });
       return { recenttracks: { track: list } };
     }
+    // The playlist builder's moods: made-up tags (the same for a song every time) and songs for a tag.
+    if (method === "track.getTopTags" || method === "artist.getTopTags") {
+      const pool = ["chill", "mellow", "happy", "energetic", "sad", "dark", "party", "dance", "love", "instrumental", "indie", "electronic"];
+      let hsh = 0; for (const ch of String(q.track || q.artist)) hsh = (hsh * 31 + ch.charCodeAt(0)) % 9973;
+      return { toptags: { tag: [0, 1, 2].map((k) => ({ name: pool[(hsh + k * 5) % pool.length] })) } };
+    }
+    if (method === "tag.getTopTracks") return { tracks: { track: rot(tracks, String(q.tag).length).map((t) => ({ name: t.name, artist: { name: t.artists[0].name } })) } };
     if (method === "track.getSimilar") return { similartracks: { track: rot(tracks, 3).slice(0, 8).map((t, i) => ({ name: t.name, artist: { name: t.artists[0].name }, match: String(1 - i / 10) })) } };
     if (method === "artist.getSimilar") return { similarartists: { artist: lfmArtists.slice(1, 6).map((name) => ({ name })) } };
     if (method === "track.getInfo") { const i = Math.max(0, songs.findIndex((t) => t.name.toLowerCase().startsWith(String(q.track || "").toLowerCase().slice(0, 6)))); return { track: { name: q.track, userplaycount: String(Math.round(620 / (i + 1.2)) + 1) } }; }

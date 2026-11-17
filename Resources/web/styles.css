@@ -699,3 +699,37 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 
 /* ---------- Up Next rows in the queue ---------- */
 #q-list .upnext .du { color: var(--cyan); letter-spacing: .1em; font-weight: 700; }
+
+/* ============ Playlist builder ============ */
+#v-builder { width: 72vw; }              /* a bit wider than other pages: two lists side by side */
+#v-builder .vh { margin-bottom: 1.2vh; }
+.bd-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2vw; height: calc(100% - 11vh); }
+.bd-pane { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 1.2vh .8vw; border: .3vh solid rgb(var(--ice-rgb) / .15); background: rgb(var(--navy-rgb) / .35); transition: border-color .15s; }
+.bd-pane.on { border-color: var(--cyan); }
+.bd-top { display: flex; flex-wrap: wrap; align-items: center; gap: .4vh 1vw; margin-bottom: 1vh; }
+.bd-namebox { flex: 1 1 100%; min-width: 0; border-bottom: .3vh solid rgb(var(--ice-rgb) / .3); }
+.bd-namebox input { width: 100%; font: 400 3.2vh/1.3 var(--display); font-style: normal; text-transform: uppercase; color: var(--white); caret-color: var(--cyan); }
+.bd-namebox input::placeholder { color: rgb(var(--ice-rgb) / .35); }
+.bd-stats { font-weight: 700; font-size: 1.7vh; letter-spacing: .1em; color: var(--cyan); white-space: nowrap; }
+.bd-list, .bd-sugg { flex: 1; min-height: 0; height: auto; padding: .4vh .6vw 2vh .2vw; }
+.bd-empty { position: absolute; top: 45%; left: 1.5vw; font-size: 3.4vh; }
+.bd-actions { display: flex; flex-wrap: wrap; gap: .6vw; padding-top: 1vh; }
+.bd-search { display: flex; align-items: center; gap: .8vw; padding: .9vh 1vw; background: rgb(var(--navy-rgb) / .75); border: .3vh solid rgb(var(--ice-rgb) / .3); margin-bottom: 1.2vh; }
+.bd-search:focus-within { border-color: var(--cyan); }
+.bd-search .ico { width: 2.6vh; height: 2.6vh; color: var(--cyan); }
+.bd-search input { flex: 1; min-width: 0; font: 700 2.5vh/1.2 var(--text); color: var(--white); caret-color: var(--cyan); }
+.bd-search input::placeholder { color: rgb(var(--ice-rgb) / .35); }
+.bd-moods { flex-wrap: wrap; gap: .5vw; margin: 0 0 1.2vh; }
+.bd-moods button { font-size: 1.6vh; padding: .5vh .7vw; }
+.bd-h { display: flex; align-items: center; justify-content: space-between; gap: 1vw; font-weight: 800; font-size: 1.8vh; letter-spacing: .12em; color: var(--cyan); margin-bottom: .8vh; }
+.bd-h span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-h .chip { font-size: 1.5vh; padding: .4vh .7vw; flex: none; }
+#v-builder .trk .in { grid-template-columns: 5vh 1fr auto auto; }
+#v-builder .trk .acts { opacity: 1; }
+#v-builder .trk:not(.active) .acts { opacity: 0; }
+/* dragging a song: it follows the pointer, and a line shows where it will land */
+.bd-drag { cursor: grab; touch-action: none; }
+.bd-drag.dragging { position: relative; z-index: 5; opacity: .85; cursor: grabbing; }
+.bd-drag.drop-before { box-shadow: 0 -.5vh 0 var(--cyan); }
+.bd-drag.drop-after { box-shadow: 0 .5vh 0 var(--cyan); }
+body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select: none; }
