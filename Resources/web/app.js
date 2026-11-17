@@ -466,7 +466,9 @@ const Sfx = {
       },
     };
     const set = SOUNDS[theme] || SOUNDS.tide;
-    (set[kind] || set.confirm)();
+    // A sound is built from random values, and WebAudio throws on a few of them (a ramp to exactly zero,
+    // say). A click sound must never break what it accompanies, so a failed one is just skipped.
+    try { (set[kind] || set.confirm)(); } catch (e) { /* no sound this time */ }
   },
 };
 window.cadenzaSfx = (kind, theme) => Sfx.play(kind, theme);       // lets a theme play its own sounds
@@ -4437,7 +4439,10 @@ const Breach = {
    *  Returns true when the switch may go ahead. (The count starts again each time it takes over.) */
   resisted: 0,
   async gate() {
-    if (this.blocking) return false;
+    // Mid-block, further presses are ignored. (A block that somehow never finished can't lock you in:
+    // after 10 seconds it no longer counts.)
+    if (this.blocking && Date.now() - (this.blockingAt || 0) < 10000) return false;
+    this.blocking = false;
     if (this.resisted >= 2) {
       this.resisted = 0;
       const pop = document.getElementById("ogmios");
@@ -4468,8 +4473,12 @@ const Breach = {
   /** The third attempt: Ogmi.os loses its grip. The screen glitches out for a few seconds (colour
    *  breaks, tearing, blocks of corruption, its voice breaking up), then goes still and it gives in. */
   async fight() {
-    this.blocking = true;
+    this.blocking = true; this.blockingAt = Date.now();
     setBusy(true);
+    try { await this.fightInner(); }
+    finally { setBusy(false); this.blocking = false; }
+  },
+  async fightInner() {
     Sfx.play("fight", "rogue");
     const box = h("div"); box.id = "deny"; box.className = "glitch";
     const cv = h("canvas");
@@ -4536,8 +4545,6 @@ const Breach = {
     Sfx.play("whiteout", "rogue");
     await wait(350);
     this.whiteBox = box;
-    setBusy(false);
-    this.blocking = false;
   },
   whiteBox: null,
   clearWhite(id) {
@@ -4555,8 +4562,10 @@ const Breach = {
   ],
   /** The block: a red alarm frame, a slam of static bars, a shudder, and Ogmi.os saying no. */
   async block(n) {
-    this.blocking = true;
-    Sfx.play(n === 1 ? "deny" : "deny2", "rogue");
+    this.blocking = true; this.blockingAt = Date.now();
+    try { await this.blockInner(n); } finally { this.blocking = false; }
+  },
+  async blockInner(n) {
     const [title, line] = this.LINES_BLOCK[n - 1];
     const box = h("div"); box.id = "deny"; box.className = "lvl" + n;
     for (let i = 0; i < 9; i++) {
@@ -4570,12 +4579,12 @@ const Breach = {
     panel.append(h("b", "dn-tag", "OGMI.OS ›"), h("div", "dn-title", title), h("div", "dn-line", line), h("div", "dn-count", `ATTEMPT ${n} · ${n === 1 ? "WARNING" : "FINAL WARNING"}`));
     box.append(panel);
     document.body.append(box);
-    this.stagger(n === 1 ? 3.5 : 5, n === 1 ? 1300 : 2000);           // the whole screen jerks
+    Sfx.play(n === 1 ? "deny" : "deny2", "rogue");
+    try { this.stagger(n === 1 ? 3.5 : 5, n === 1 ? 1300 : 2000); } catch (e) { /* the shake is extra */ }   // the whole screen jerks
     await wait(n === 1 ? 1500 : 2200);
     box.classList.add("out");
     await wait(220);
     box.remove();
-    this.blocking = false;
   },
 };
 
