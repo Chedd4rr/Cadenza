@@ -279,10 +279,13 @@ Artists and styles have separate scores. An artist's base score also gets:
   hours, and only reads a playlist again when it has changed;
 - a small nudge (never a penalty) when they belong to styles you like.
 
-Styles only count tags that are a kind of music: countries, cities, nationalities and the like
-("germany", "french", "seen live") are left out. And a style counts for more the more artists you keep
-listening to have it: one artist gets a quarter, three get half, ten about three quarters, so one band
-you play constantly can't fill Your styles with its own tags.
+Styles are scored the same way as artists, with artists in the place of songs: the share you keep
+compared with your usual (scaled by plays), how many different artists you like in that style (one
+gets a quarter, three half, ten about three quarters), how long you've stuck with it, how many of your
+playlists have artists in it, and a boost for a lot of it lately across artists. A style that rests on
+one to three artists is scaled down, like an artist you only like a few songs by, so one band you play
+constantly can't fill Your styles with its own tags. Only tags that are a kind of music count:
+countries, cities, nationalities and the like ("germany", "french", "seen live") are left out.
 
 And a liking that rests on only a few songs counts for less: if you only keep coming back to one to
 three of an artist's songs, or your playlists only have one to three of their songs, their score is

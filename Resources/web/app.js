@@ -5349,7 +5349,7 @@ const Taste = {
    *  how many plays you kept, and above all how many *different* songs you keep coming back to. One song
    *  played a lot says you like that song; twenty different songs says you like the artist, even if you
    *  skip plenty of their others along the way. */
-  artistVal(a, c, now = Date.now()) {
+  artistVal(a, c, now = Date.now(), noStyle) {
     if (!c) c = { p: 0, n: 0, k: 0, kp: 0 };                    // never played here, but maybe in your playlists
     const [rel, k] = this.rel(c, "a", now);
     const mp = k / (k + this.PLAYS);
@@ -5361,7 +5361,7 @@ const Taste = {
     // Two more things feed the base score (not the "lately" part): how many of your playlists they're in,
     // and a little from the styles you like that they belong to. Styles keep their own scores; this is
     // only a nudge, so an artist in a style you love starts a bit higher.
-    const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * this.playlistFit(a) + this.styleBoost(a, now);
+    const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * this.playlistFit(a) + (noStyle ? 0 : this.styleBoost(a, now));
     let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + 0.3 * this.surge(c);
     if (x > 0) x *= this.fewSongs(a, songs);
     return Math.tanh(x);
@@ -5382,13 +5382,26 @@ const Taste = {
     tags.forEach((g, i) => { const c = this.get("g", g, now); if (c && this.isStyle(g)) { s += this.styleVal(c, now, g) * this.SHARE[i]; w += this.SHARE[i]; } });
     return w && s > 0 ? 0.2 * (s / w) : 0;
   },
-  /** A style's score: the proportional part, plus how long you've stuck with it and how much lately.
-   *  A liking for a style that rests on one artist counts a quarter, on three artists half, on ten about
-   *  three quarters: a style is something you like across artists, not one band's tag. */
+  /** A style's score, worked out the same way as an artist's, with artists in the place of songs:
+   *  - the share of it you keep rather than skip, compared with your usual, scaled by how many plays;
+   *  - how much of it you listen to, counted by how many *different artists* in it you like (one artist:
+   *    a quarter; three: half; ten: three quarters), more the longer you've stuck with it;
+   *  - how many of your playlists have artists in it;
+   *  - a boost for a lot of it lately (across artists), which wears off;
+   *  - and, like an artist you only like a few songs by, a style that rests on one to three artists is
+   *    scaled down (×0.65 / 0.75 / 0.85). One band you love can't make its tags "your styles". */
   styleVal(c, now = Date.now(), g) {
     if (!c || (g && !this.isStyle(g))) return 0;
-    let x = this.val(c, "g", now) + 0.25 * this.longevity(c) + 0.2 * this.surge(c);
-    if (x > 0 && g) { const n = this.breadth(now, "styles")[g] || 0; x *= Math.max(0.15, n / (n + 3)); }
+    const [rel, k] = this.rel(c, "g", now);
+    const mp = k / (k + this.PLAYS);
+    const kp = c.kp != null ? c.kp : c.p / 0.8;
+    const artists = g ? this.breadth(now, "styles")[g] || 0 : 0, mb = artists / (artists + 3);
+    const eng = (kp / (kp + this.PLAYS)) * mb;
+    const pls = g ? this.breadth(now, "plstyles")[g] || 0 : 0;
+    const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * (pls / (pls + 3));
+    // (Lately counts by breadth too: playing one artist a lot this week isn't a new favourite style.)
+    let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + 0.3 * this.surge(c) * mb;
+    if (x > 0) x *= artists >= 1 && artists <= 3 ? 0.55 + 0.1 * artists : artists === 0 ? 0.5 : 1;
     return Math.tanh(x);
   },
   /** Last.fm tags that are a kind of music, not a country, a city, a language or "seen live". */
@@ -5478,10 +5491,18 @@ const Taste = {
     if (b[what] && now - b[what].at < 60000) return b[what].v;
     const v = {};
     if (what === "styles") {
+      // Artists you like (scored without their styles, so the two don't feed each other), per style.
       for (const a of this.keys("a")) {
-        const c = this.get("a", a, now), kp = c.kp != null ? c.kp : c.p / 0.8;
-        if (kp < 3 || c.p < c.n) continue;
+        const pin = this.d.pin[a];
+        if (pin ? pin.v < 0 : this.artistVal(a, this.get("a", a, now), now, true) < 0.15) continue;
         for (const g of (this.d.at[a] || [])) v[g] = (v[g] || 0) + 1;
+      }
+    } else if (what === "plstyles") {
+      // How many of your playlists have at least one artist in each style.
+      for (const pl of Object.values(this.plCache || {})) {
+        const seen = new Set();
+        for (const a of Object.keys(pl.arts || {})) for (const g of (this.d.at[a] || [])) seen.add(g);
+        seen.forEach((g) => (v[g] = (v[g] || 0) + 1));
       }
     } else {
       for (const key of this.keys("t")) {
