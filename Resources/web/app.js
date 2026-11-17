@@ -996,6 +996,17 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
     const id = await ourDevice();
     if (id) r = await api("PUT", `/me/player/play?device_id=${enc(id)}`, body);
   }
+  // Since November 2026 Spotify sometimes refuses a plain list of songs for Cadenza's speaker
+  // ("Restriction violated") while it still takes albums and playlists. Then play the first song inside
+  // its own album (from that song on), and put the next few songs of the list in the queue.
+  if (r.status === 403 && body.uris && body.uris.length && /restriction/i.test(errMsg(r))) {
+    const alt = await asAlbumPlay(body.uris, body.position_ms);
+    if (alt) {
+      const devId = dev || await ourDevice();
+      const r2 = await api("PUT", devId ? `/me/player/play?device_id=${enc(devId)}` : playPath, alt.body);
+      if (r2.status >= 200 && r2.status < 300) { r = r2; alt.queue.forEach((u, i) => setTimeout(() => api("POST", `/me/player/queue?uri=${enc(u)}`).catch(() => {}), 600 + i * 350)); }
+    }
+  }
   // A context Spotify won't take (or an offset it can't find): play the plain song list instead.
   if ((r.status === 400 || r.status === 404) && fallback) r = await api("PUT", playPath, fallback);
   else if (r.status === 400 && body.offset && body.offset.position != null && body.context_uri) {
@@ -1008,6 +1019,19 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   }
   toast(errMsg(r), true);
   return false;
+}
+
+/** A song list as "this song, inside its album" for when Spotify refuses plain song lists: the body to
+ *  play, and up to 8 of the following songs to queue behind it. Null if the album can't be found. */
+async function asAlbumPlay(uris, positionMs) {
+  const first = uris[0], id = /^spotify:track:([A-Za-z0-9]+)$/.exec(first || "");
+  if (!id) return null;
+  const t = await api("GET", `/tracks/${id[1]}`);
+  const album = t.status === 200 && t.body && t.body.album && t.body.album.uri;
+  if (!album) return null;
+  const body = { context_uri: album, offset: { uri: first } };
+  if (positionMs > 0) body.position_ms = positionMs;
+  return { body, queue: uris.slice(1, 9).filter((u) => /^spotify:track:/.test(u)) };
 }
 
 /** Q / "Add to queue": the song goes into Cadenza's own Up Next (which you can reorder and edit). */

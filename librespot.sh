@@ -3,13 +3,13 @@
 # build.sh runs this for you:  ./librespot.sh <path to Cadenza.app>
 #
 # What it builds:
-# - librespot from source, pinned to one exact commit (below), for this Mac's chip.
-# - That commit is librespot's dev branch plus a fix that isn't in a release yet (pull request #1763):
-#   when Spotify refuses a song's key with its "try again" code (error audio key 0 2), librespot asks
-#   again up to 3 times instead of skipping the song straight away.
-# - Plus Cadenza's own small changes in patches/ (each one explains itself). Right now: when Spotify
-#   still refuses a song's key after those retries, skip the song at once, instead of downloading it
-#   anyway, failing to read it and throwing away a good cached copy (that took 5-10 s of silence).
+# - librespot from source: its dev branch, pinned to one exact commit (below), for this Mac's chip.
+#   The dev branch has fixes for changes Spotify made in late 2026 that aren't in a release yet.
+# - Plus the patches in patches/ (each one explains itself). Right now:
+#   - librespot-retry-keys: when Spotify refuses a song's key with its "try again" code
+#     (error audio key 0 2), ask again up to 3 times instead of skipping the song (librespot PR #1763);
+#   - librespot-skip-refused: when it still refuses after that, skip the song at once, instead of
+#     downloading it anyway, failing to read it and throwing away a good cached copy.
 # - Pipe output only, no speaker code: Cadenza plays all sound through its own engine.
 #
 # The source and the finished program are kept in ~/Library/Developer/Cadenza/librespot, outside this
@@ -21,9 +21,9 @@ set -euo pipefail
 APP_DIR="${1:?Usage: ./librespot.sh <path to Cadenza.app>}"
 
 REPO="https://github.com/librespot-org/librespot"
-# Pull request #1763 ("retry key requests on transient denial and timeout"), as of 21 Sep 2026.
-COMMIT="a519860cdb53bdf603f0bd647f42fcdb8a644f16"
-# If that commit can't be fetched any more (the pull request was merged or rewritten), use the last release.
+# librespot's dev branch as of 7 Nov 2026.
+COMMIT="15e02e86c72d96dd39d548e3749f00abe39ffdde"
+# If that commit can't be fetched for some reason, use the last release (the patches go on top where they fit).
 # Pinned by commit too, since a tag can be moved.
 FALLBACK="v0.8.0"
 FALLBACK_COMMIT="d36f9f1907e8cc9d68a93f8ebc6b627b1bf7267d"

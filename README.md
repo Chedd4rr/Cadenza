@@ -108,14 +108,15 @@ need your own Spotify Client ID (steps 1, 3 and 4 above).
 `librespot.sh` (run by `build.sh`) builds librespot from source and puts it inside Cadenza.app, so
 there's nothing else to install:
 
-- It's pinned to one commit: librespot's dev branch plus
-  [pull request #1763](https://github.com/librespot-org/librespot/pull/1763), which isn't in a release
-  yet. When Spotify refuses a song's key with its "try again" code (`error audio key 0 2`), that
-  version asks again instead of skipping the song. If the commit is ever gone, it builds release 0.8.0.
-- On top of that it applies Cadenza's own small changes from `patches/`. Right now there's one: when
-  Spotify still refuses a song after those retries, librespot skips it straight away. Otherwise it
-  downloads the song anyway, fails to read it and deletes a good cached copy, which meant 5-10 seconds
-  of silence per refused song. Changing a patch makes the next build rebuild librespot.
+- It's pinned to one commit of librespot's dev branch (7 Nov 2026), which has fixes for changes Spotify
+  made in late 2026 that aren't in a release yet. If that commit is ever gone, it builds release 0.8.0.
+- On top go the patches in `patches/`, each explained at its top:
+  - `librespot-retry-keys.patch`: when Spotify refuses a song's key with its "try again" code
+    (`error audio key 0 2`), librespot asks again up to 3 times instead of skipping the song (from
+    [pull request #1763](https://github.com/librespot-org/librespot/pull/1763), not merged yet).
+  - `librespot-skip-refused.patch`: when it still refuses after that, librespot skips the song straight
+    away instead of downloading it anyway, failing to read it and deleting a good cached copy.
+  Changing a patch's code makes the next build rebuild librespot.
 - It's built for your Mac's chip, with pipe output only (Cadenza plays the sound through its own engine)
   and without debug symbols, which keeps it to roughly 7-10 MB.
 - The source is fetched by exact commit (the 0.8.0 fallback too), and `cargo build --locked` uses the
