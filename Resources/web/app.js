@@ -5283,6 +5283,8 @@ const Taste = {
       if (d.w.length !== this.START.length || d.w.some((x) => typeof x !== "number" || !isFinite(x))) d.w = this.START.slice();
       if (!isFinite(d.bias)) d.bias = 0;
       for (const k of this.KINDS) if (!d.h[k] || typeof d.h[k] !== "object" || Array.isArray(d.h[k])) d.h[k] = {};
+      // Tags that aren't a kind of music (countries, cities, "seen live"…) out of artists' styles.
+      for (const a of Object.keys(d.at)) if (Array.isArray(d.at[a])) d.at[a] = d.at[a].filter((g) => this.isStyle(g)); else delete d.at[a];
       this.d = d;
       // First run with history imported earlier: learn from it once, in the background. (Also for a profile
       // from before Cadenza noted whether the history had skip details, so the Taste page can say.)
@@ -5377,14 +5379,20 @@ const Taste = {
   styleBoost(a, now = Date.now()) {
     const tags = (this.d && this.d.at[a]) || [];
     let s = 0, w = 0;
-    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c) { s += this.styleVal(c, now) * this.SHARE[i]; w += this.SHARE[i]; } });
+    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c && this.isStyle(g)) { s += this.styleVal(c, now, g) * this.SHARE[i]; w += this.SHARE[i]; } });
     return w && s > 0 ? 0.2 * (s / w) : 0;
   },
-  /** A style's score: the proportional part, plus how long you've stuck with it and how much lately. */
-  styleVal(c, now = Date.now()) {
-    if (!c) return 0;
-    return Math.tanh(this.val(c, "g", now) + 0.25 * this.longevity(c) + 0.2 * this.surge(c));
+  /** A style's score: the proportional part, plus how long you've stuck with it and how much lately.
+   *  A liking for a style that rests on one artist counts a quarter, on three artists half, on ten about
+   *  three quarters: a style is something you like across artists, not one band's tag. */
+  styleVal(c, now = Date.now(), g) {
+    if (!c || (g && !this.isStyle(g))) return 0;
+    let x = this.val(c, "g", now) + 0.25 * this.longevity(c) + 0.2 * this.surge(c);
+    if (x > 0 && g) { const n = this.breadth(now, "styles")[g] || 0; x *= Math.max(0.15, n / (n + 3)); }
+    return Math.tanh(x);
   },
+  /** Last.fm tags that are a kind of music, not a country, a city, a language or "seen live". */
+  isStyle(g) { return !!g && !this.JUNK.test(g) && !Tags.NOT_GENRE.test(g); },
 
   // ----- Your playlists -----
   inPlaylists: null,
@@ -5463,15 +5471,25 @@ const Taste = {
   /** 0 … 1: plays you kept in the last couple of weeks. 8 of them: half. */
   surge(c) { const r = c.r || 0; return r / (r + 8); },
   /** For each artist, how many of their songs you've kept at least twice (worked out at most once a minute). */
-  breadth(now = Date.now()) {
+  /** For each artist, how many of their songs you've kept at least twice; with "styles", for each style,
+   *  how many artists you keep listening to have it (worked out at most once a minute). */
+  breadth(now = Date.now(), what = "songs") {
     const b = this.baseCache || (this.baseCache = {});
-    if (b.songs && now - b.songs.at < 60000) return b.songs.v;
+    if (b[what] && now - b[what].at < 60000) return b[what].v;
     const v = {};
-    for (const key of this.keys("t")) {
-      const c = this.get("t", key, now), kp = c.kp != null ? c.kp : c.p / 0.8;
-      if (kp >= 1.5 && c.p >= c.n) { const a = key.split("|")[0]; v[a] = (v[a] || 0) + 1; }
+    if (what === "styles") {
+      for (const a of this.keys("a")) {
+        const c = this.get("a", a, now), kp = c.kp != null ? c.kp : c.p / 0.8;
+        if (kp < 3 || c.p < c.n) continue;
+        for (const g of (this.d.at[a] || [])) v[g] = (v[g] || 0) + 1;
+      }
+    } else {
+      for (const key of this.keys("t")) {
+        const c = this.get("t", key, now), kp = c.kp != null ? c.kp : c.p / 0.8;
+        if (kp >= 1.5 && c.p >= c.n) { const a = key.split("|")[0]; v[a] = (v[a] || 0) + 1; }
+      }
     }
-    b.songs = { at: now, v };
+    b[what] = { at: now, v };
     return v;
   },
   PLAYS: 8,
@@ -5570,7 +5588,7 @@ const Taste = {
     if (!d || d.at[x.a] || this.tagAsked.has(x.a)) return;
     // Spotify's genres, when another part of Cadenza already looked them up (no extra request).
     const sg = x.aid && ((Tags.genres && Tags.genres[x.aid]) || (Radio.genres && Radio.genres[x.aid]));
-    if (sg && sg.length) return this.gotTags(x, sg.slice(0, 5).map((g) => String(g).toLowerCase()));
+    if (sg && sg.length) return this.gotTags(x, sg.map((g) => String(g).toLowerCase()).filter((g) => this.isStyle(g)).slice(0, 5));
     if (!LFM.ready() || this.tagQ.length > 300) return;
     this.tagAsked.add(x.a);
     this.tagQ.push(x);
@@ -5587,7 +5605,7 @@ const Taste = {
         if (!b) continue;                                        // Last.fm unreachable: asked again another time
         const tags = LFM.arr(b.toptags && b.toptags.tag).filter((g) => g.count == null || +g.count >= 10)
           .map((g) => String(g.name || "").toLowerCase().trim())
-          .filter((g) => g && g.length < 30 && !this.JUNK.test(g) && LFM.norm(g) !== x.a).slice(0, 5);
+          .filter((g) => g && g.length < 30 && this.isStyle(g) && LFM.norm(g) !== x.a).slice(0, 5);
         this.gotTags(x, tags);
         await wait(250);                                          // there's no hurry; leave room for everything else
       }
@@ -5694,7 +5712,7 @@ const Taste = {
     const pin = d.pin[x.a];
     f[1] = pin ? pin.v : this.artistVal(x.a, ac, now);                      // you said so yourself
     let gs = 0, gw = 0;
-    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c) { gs += this.styleVal(c, now) * this.SHARE[i]; gw += this.SHARE[i]; } });
+    tags.forEach((g, i) => { const c = this.get("g", g, now); if (c && this.isStyle(g)) { gs += this.styleVal(c, now, g) * this.SHARE[i]; gw += this.SHARE[i]; } });
     f[2] = gw ? gs / gw : 0;
     f[3] = this.timeFit(x, tags, now);
     f[4] = this.val(this.get("t", x.key, now), "t", now);
@@ -5732,7 +5750,7 @@ const Taste = {
     const best = f.map((v, i) => [d.w[i] * v, i]).filter(([c, i]) => c > 0.12 && i < 5).sort((a, b) => b[0] - a[0])[0];
     switch (best ? best[1] : 0) {
       case 1: return "AN ARTIST YOU LOVE";
-      case 2: { const g = (d.at[x.a] || []).find((gg) => this.styleVal(this.get("g", gg)) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
+      case 2: { const g = (d.at[x.a] || []).find((gg) => this.styleVal(this.get("g", gg), Date.now(), gg) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
       case 3: return "YOUR " + this.bucketName(this.bucket(Date.now())).split(" ")[1] + " SOUND";
       case 4: return "A SONG YOU LOVE";
       default: { const s = t._seed && Radio.order.find((o) => o.uri === t._seed); return s ? "LIKE " + upper(cleanTitle(s.name)) : "SIMILAR"; }
@@ -5915,7 +5933,7 @@ const Taste = {
   /** `min`: how many plays it needs behind it to be listed. */
   top(kind, n, dir = 1, min = 5) {
     const now = Date.now();
-    return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: kind === "a" ? this.artistVal(k, c, now) : kind === "g" ? this.styleVal(c, now) : this.val(c, kind, now), m: c.k,
+    return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: kind === "a" ? this.artistVal(k, c, now) : kind === "g" ? this.styleVal(c, now, k) : this.val(c, kind, now), m: c.k,
       years: this.longevity(c) >= 0.6, lately: this.surge(c) >= 0.6 }))
       .filter((e) => e.m >= min && e.v * dir > 0.05 && !(kind === "a" && this.d.pin[e.k])).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
   },
@@ -5937,7 +5955,7 @@ const Taste = {
         const ref = this.get(kind === "a" ? "a" : "g", id, now), den = this.pos(ref, now);
         if (den < 3) continue;
         const lift = (num / den) / base;
-        if (lift > 1.3) names.push({ nm: kind === "a" ? ((ref && ref.nm) || id) : id, s: lift * Math.log2(1 + num), style: kind === "g" });
+        if (lift > 1.3 && (kind === "a" || this.isStyle(id))) names.push({ nm: kind === "a" ? ((ref && ref.nm) || id) : id, s: lift * Math.log2(1 + num), style: kind === "g" });
       }
       names.sort((x, y) => y.s - x.s);
       out.push({ bk, share: here / tot, names: names.slice(0, perBucket) });
@@ -7405,7 +7423,7 @@ const Tags = {
     Angry: ["angry", "rage", "anger", "furious"],
   },
   // Tags that aren't a genre (and aren't a mood either).
-  NOT_GENRE: /^(seen live|favou?rites?|favorite songs|my |albums i own|check out|spotify|awesome|amazing|beautiful|cool|good|great|best|love at first listen|under \d|all|male vocalists?|female vocalists?|vocalists?|singer-songwriter|\d{2,4}s?|american|british|english|uk|usa|us|canadian|australian|swedish|german|french|irish|scottish|korean|japanese|chinese|brazilian|spanish|italian|dutch|norwegian|finnish|danish|russian|polish|mexican|argentinian|icelandic|belgian|new zealand|.*\b(albums?|songs?)$)$/,
+  NOT_GENRE: /^(seen live|favou?rites?|favorite songs|my |albums i own|check out|spotify|awesome|amazing|beautiful|cool|good|great|best|love at first listen|under \d|all|male vocalists?|female vocalists?|vocalists?|singer-songwriter|\d{2,4}s?|american|british|english|uk|usa|us|canadian|australian|swedish|german|french|irish|scottish|korean|japanese|chinese|brazilian|spanish|italian|dutch|norwegian|finnish|danish|russian|polish|mexican|argentinian|icelandic|belgian|new zealand|austrian|swiss|ukrainian|czech|turkish|indian|taiwanese|filipino|portuguese|greek|hungarian|israeli|nigerian|south african|colombian|chilean|puerto rican|cuban|jamaican|germany|deutschland|deutsch|france|japan|england|britain|united kingdom|united states|america|sweden|korea|south korea|canada|australia|brazil|russia|italy|spain|netherlands|holland|norway|finland|denmark|poland|mexico|argentina|iceland|belgium|ireland|scotland|wales|china|taiwan|ukraine|turkey|india|austria|switzerland|portugal|greece|nigeria|colombia|chile|jamaica|berlin|london|new york|los angeles|tokyo|paris|seoul|.*\b(albums?|songs?)$)$/,
   /** "indie rock" → "Indie Rock", with the usual spellings for the few that need them. */
   label(g) {
     const special = { "hip hop": "Hip-Hop", "hip-hop": "Hip-Hop", rnb: "R&B", "r&b": "R&B", "r and b": "R&B", edm: "EDM", "j-pop": "J-Pop", jpop: "J-Pop",

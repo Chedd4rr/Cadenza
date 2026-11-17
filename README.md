@@ -279,6 +279,11 @@ Artists and styles have separate scores. An artist's base score also gets:
   hours, and only reads a playlist again when it has changed;
 - a small nudge (never a penalty) when they belong to styles you like.
 
+Styles only count tags that are a kind of music: countries, cities, nationalities and the like
+("germany", "french", "seen live") are left out. And a style counts for more the more artists you keep
+listening to have it: one artist gets a quarter, three get half, ten about three quarters, so one band
+you play constantly can't fill Your styles with its own tags.
+
 And a liking that rests on only a few songs counts for less: if you only keep coming back to one to
 three of an artist's songs, or your playlists only have one to three of their songs, their score is
 scaled down (by up to about a third for each).
