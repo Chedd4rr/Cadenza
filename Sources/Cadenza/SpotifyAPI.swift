@@ -121,7 +121,14 @@ final class SpotifyAPI {
                 let retryAfter = Double(http?.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 1
                 DispatchQueue.main.async {
                     let short = path.replacingOccurrences(of: "https://api.spotify.com/v1", with: "")
-                    self.note("\(method) \(short.prefix(90)) → \(status)" + (status == 429 ? "  (Spotify says wait \(Int(retryAfter)) s)" : ""))
+                    // For a refusal, add Spotify's own reason ("Player command failed: Restriction violated",
+                    // "PREMIUM_REQUIRED" and so on): the status alone doesn't say why.
+                    var why = ""
+                    if status >= 400, status != 429, let err = (json as? [String: Any])?["error"] as? [String: Any] {
+                        let parts = [err["message"] as? String, err["reason"] as? String].compactMap { $0 }.filter { !$0.isEmpty }
+                        if !parts.isEmpty { why = "  (" + String(parts.joined(separator: " · ").prefix(120)) + ")" }
+                    }
+                    self.note("\(method) \(short.prefix(90)) → \(status)" + (status == 429 ? "  (Spotify says wait \(Int(retryAfter)) s)" : why))
                     if status == 429 {
                         self.lastRetryAfter = retryAfter
                         if retryAfter > 5 {
