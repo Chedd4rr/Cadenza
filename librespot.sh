@@ -71,6 +71,8 @@ build() (
   fi
   # Throw away the patches applied by the last build first, or switching versions refuses to run
   # ("Your local changes … would be overwritten by checkout").
+  # (Only inside librespot's own checkout: never let a missing .git make these act on a folder above it.)
+  [ -d "${SRC}/.git" ] || exit 1
   git -C "${SRC}" reset -q --hard 2>/dev/null || true
   git -C "${SRC}" clean -qfd 2>/dev/null || true
   VERSION="${COMMIT}" WANT="${COMMIT}"
@@ -98,7 +100,7 @@ build() (
   # The build folder is 1-2 GB and isn't needed again for this version.
   rm -rf "${SRC}/target"
   # Put the source back as it was fetched, so the next build starts clean.
-  git -C "${SRC}" reset -q --hard
+  [ -d "${SRC}/.git" ] && git -C "${SRC}" reset -q --hard
   echo "OK: Built $(basename "${OUT}") ($(du -h "${OUT}" | cut -f1 | tr -d ' '))"
 )
 

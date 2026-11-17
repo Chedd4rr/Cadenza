@@ -697,6 +697,7 @@ const UI_ICONS = {
   heart: "M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z",
   artist: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   plus: "M12 5v14M5 12h14",
+  minus: "M5 12h14",
   check: "M20 6 9 17l-5-5",
   queue: "M4 6h16M4 12h10M4 18h7M16 15l5 3-5 3z",
   listAdd: "M3 6h12M3 12h12M3 18h8M18 13v8M14 17h8",
@@ -988,11 +989,17 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   if (!fromRadio) Radio.stop();
   if (!fromShuffle) TrueShuffle.stop();
   Radio.firstUri = body.uris ? body.uris[0] : null;   // where a song list "wraps" back to when it ends
+  // A song you chose yourself (not autoplay, the DJ or shuffle moving on): the taste profile counts it as a pick.
+  if (!fromRadio && !fromDJ && !fromShuffle) {
+    const u = (body.uris && body.uris[0]) || (body.offset && body.offset.uri);
+    S.userPick = u ? { uri: u, at: Date.now() } : null;
+  }
   native("audio.local", { action: "skip" }).catch(() => {});      // the old song goes quiet right away
   const fallback = body.fallback; if (fallback) { body = { ...body }; delete body.fallback; }
   // A specific speaker (after the engine restarts, Spotify may still point at the old, dead session).
   const dev = body.device_id; if (dev) { body = { ...body }; delete body.device_id; }
   const playPath = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
+  S.altContext = null;
   let r = await api("PUT", playPath, body);
   if (r.status === 404) {
     const id = await ourDevice();
@@ -1008,6 +1015,7 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
       const r2 = await api("PUT", devId ? `/me/player/play?device_id=${enc(devId)}` : playPath, alt.body);
       if (r2.status >= 200 && r2.status < 300) {
         r = r2;
+        S.altContext = alt.body.context_uri;                     // (autoplay knows this album isn't your choice)
         // Queue the rest only once Spotify says the song is playing: queued too early (while Cadenza's
         // speaker is still waking up) Spotify answers "no active device" and drops them.
         (async () => {
@@ -1235,6 +1243,7 @@ function setPlayer(p) {
     if (p && p.item) Radio.heard(p.item);
     Radio.refreshQueue();                                       // the Queue page follows skips and song changes
     const fromUpNext = UpNext.onTrack(uri);
+    Taste.onTrack(p && p.item, fromUpNext);                     // before autoplay moves on, so it knows which songs were its picks
     views.playlist.markPlaying(); views.album.markPlaying(); DJ.onTrack(uri, fromUpNext); Radio.onTrack(uri, fromUpNext); TrueShuffle.onTrack(uri, fromUpNext);
     checkLiked(uri);
     if (p && p.item) PlayCounts.exactFor(p.item);
@@ -1305,6 +1314,7 @@ async function toggleLike(t) {
   if (!(await setSaved(it.uri, !was))) return;
   if (nowPlaying) { S.liked = !was; renderLike(); sendNowPlaying(); }
   if (S.likedTotal != null) S.likedTotal += was ? -1 : 1;
+  Taste.signal(it, was ? -1 : 2);
   toast(was ? "REMOVED FROM LIKED SONGS" : "♥ ADDED TO LIKED SONGS");
   pop($("np-like"));
 }
@@ -2520,7 +2530,14 @@ views.queue = {
         r.classList.add("upnext");
         const du = r.querySelector(".du"); if (du) du.textContent = t._fed ? "NEXT ▸" : "UP NEXT";
       }
-      if (t._radio) { const du = r.querySelector(".du"); if (du) du.textContent = "AUTOPLAY"; }
+      // Autoplay's picks (the next few already sit in Spotify's queue): say why each one is there.
+      const pick = t._radio ? t : !t._up && Radio.active ? Radio.order.find((o, k) => k > Radio.at && o.uri === t.uri) : null;
+      if (pick) {
+        const du = r.querySelector(".du"); if (du) du.textContent = pick._explore ? "DISCOVER" : "AUTOPLAY";
+        // The reason takes the place of the album and play count, which would push it out of sight.
+        const why = Taste.why(pick), ln = r.querySelector(".ti i");
+        if (why && ln) { r.__t = null; ln.textContent = artistNames(pick); ln.append(h("em", "why", "  ·  " + why)); }
+      }
       return r;
     },
     onActivate: (t, i, act) => views.queue.act(act || "play", t),
@@ -2751,7 +2768,7 @@ views.stats = {
   keys: () => [["← →", "WEEK / MONTH / YEAR / ALL"], ["↑↓", "SONGS"], ["⏎", "PLAY"], ["Q", "UP NEXT"], ["A", "ADD"],
     ["I", "IMPORT SPOTIFY HISTORY", () => views.stats.importHistory()],
     ...(views.stats.sources().length > 1 ? [["S", "SOURCE", () => views.stats.nextSource()]] : []),
-    ["F", "FRIENDS", () => go("friends")], ["ESC", "BACK", back]],
+    ["F", "FRIENDS", () => go("friends")], ["T", "YOUR TASTE", () => go("taste")], ["ESC", "BACK", back]],
   list: new List($("st-songs"), {
     render: (x, i) => {
       const r = renderTrack(x.t, i, { thumb: true, noCount: true });
@@ -2803,11 +2820,11 @@ views.stats = {
     let d = null;
     try { d = await native("spotifyHistory.get"); } catch (e) { d = null; }
     const tracks = (d && Array.isArray(d.tracks)) ? d.tracks : [], plays = (d && Array.isArray(d.plays)) ? d.plays : [];
-    // Each play is [end time in seconds, song number, ms played]. Entries use the start time, like Cadenza's own log.
+    // Each play is [end time in seconds, song number, ms played, skip flags]. Entries use the start time, like Cadenza's own log.
     this.spot = plays.map(([end, i, ms]) => {
       const t = tracks[i] || [];
       return { uri: t[0] || "", name: t[1] || "", artists: t[2] || "", album: t[3] || "", one: true, ms, at: end * 1000 - ms };
-    }).filter((e) => e.name);
+    }).filter((e) => e.name && e.ms >= 30000);                  // shorter plays are kept for the taste profile, as skips
     this.spotPlays = this.spot.length;
     this.spotEnd = plays.length ? plays[plays.length - 1][0] * 1000 : 0;
     this.spotLoaded = true;
@@ -2823,8 +2840,9 @@ views.stats = {
     if (!r) { this.renderActs(); return; }                      // cancelled
     if (!r.files) { this.renderActs(); return toast("NO SPOTIFY HISTORY IN THOSE FILES. LOOK FOR STREAMING_HISTORY_AUDIO_….JSON", true); }
     const n = (x) => Number(x || 0).toLocaleString();
-    toast(r.added ? `ADDED ${n(r.added)} PLAYS` + (r.duplicates ? ` · ${n(r.duplicates)} WERE ALREADY THERE` : "") : `NOTHING NEW · ALL ${n(r.duplicates)} PLAYS WERE ALREADY THERE`);
+    toast(r.added ? `ADDED ${n(r.added)} PLAYS` + (r.skips ? ` AND ${n(r.skips)} SKIPS` : "") + (r.duplicates ? ` · ${n(r.duplicates)} WERE ALREADY THERE` : "") : `NOTHING NEW · ALL ${n(r.duplicates)} PLAYS WERE ALREADY THERE`);
     await this.loadSpotify(true);
+    if (r.added || r.skips) setTimeout(() => Taste.seed(false), 1500);      // the taste profile learns from them too
     if (r.added) { this.source = "all"; this.picked = true; this.range = 0; $("st-tabs").querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.r === 0)); }
     if (current() && current().name === "stats") this.show();
   },
@@ -3081,6 +3099,7 @@ views.stats = {
     if (k === "q") { this.act("queue", x && x.t); return true; }
     if (k === "a") { this.act("add", x && x.t); return true; }
     if (k === "f") { go("friends"); return true; }
+    if (k === "t") { go("taste"); return true; }
     if (k === "i") { this.importHistory(); return true; }
     if (k === "s") { this.nextSource(); return true; }
     return false;
@@ -3499,6 +3518,7 @@ views.builder = {
     if (!t || !t.uri) return;
     if (this.draft.some((x) => x.uri === t.uri)) return toast("ALREADY IN THE PLAYLIST");
     this.snapshot();
+    Taste.signal(t, 1);
     if (at == null) this.draft.push(t); else this.draft.splice(at, 0, t);
     this.renderDraft(at == null ? this.draft.length - 1 : at);
     Sfx.play("toggle");
@@ -4089,6 +4109,9 @@ const Palette = {
     add("STATS", "plus", "Import Spotify listening history", goTo("stats", () => views.stats.importHistory()), "I", { keys: "extended streaming history json zip data download" });
     if (views.stats.sources().length > 1) add("STATS", "stats", "Stats: switch source", goTo("stats", () => views.stats.nextSource()), "S", { keys: "spotify last.fm cadenza all" });
     if (views.stats.spotPlays) add("STATS", "trash", "Remove imported Spotify history", () => views.stats.clearHistory(), "STATS", { keys: "delete forget extended streaming" });
+    add("TASTE", "heart", "Your taste: what autoplay has learned", () => go("taste"), "TASTE", { keys: "profile recommendations learn skip autoplay algorithm" });
+    add("TASTE", "refresh", "Learn your taste from your history", () => Taste.seed(true), "TASTE", { keys: "seed import spotify last.fm" });
+    add("TASTE", "trash", "Forget your taste profile", () => Taste.forget(), "TASTE", { keys: "reset clear" });
     add("FRIENDS", "plus", "Add a friend (Last.fm username)", goTo("friends", () => views.friends.add()), "+", { keys: "follow" });
     (views.friends.list.items || []).filter((f) => f && !f.add).forEach((f) => {
       add("FRIENDS", "artist", "Friend: " + f.name, goTo("friends", () => this.pickFriend(f.name)), f.match != null ? f.match + "% MATCH" : "FRIEND", { keys: (f.realname || "") + " compare taste" });
@@ -4986,6 +5009,557 @@ function refusedLately(uri) {
   return !!at && Date.now() - at < 10 * 60 * 1000;
 }
 
+/* =====================================================================
+   TASTE: what Cadenza learns about you over weeks and months, for autoplay.
+
+   Every song you play leaves a mark: finished it, skipped it fast, skipped it halfway, played it
+   again the next day, liked it, put it in a playlist. Those marks add up per artist, per song, per
+   style (Last.fm tags, or Spotify genres when Cadenza already has them) and per time of day.
+   Old marks fade: something you did three months ago counts half as much as today, so the profile
+   follows you when your taste moves on.
+
+   Autoplay scores each song it finds with seven things it knows (how close a match it is, how you
+   treat the artist, the style, whether it fits this time of day, whether you love that exact song,
+   whether you've heard the artist a lot in the last couple of hours, whether the artist is new to
+   you) and learns, from what you finish and skip, how much each of those matters to you.
+   Every sixth song is a new artist, so it keeps finding things instead of looping your favourites.
+
+   It all stays on this Mac (taste.json, private to your account). The Taste page shows what it has
+   learned and lets you correct it.
+   ===================================================================== */
+const Taste = {
+  HALF: 90 * 86400e3,            // a mark loses half its weight every 90 days
+  PRIOR: 3,                      // how much evidence it takes before a score moves far from "don't know"
+  MAX: { a: 3000, t: 6000, g: 800, b: 6000, bt: 8 },
+  SHARE: [1, 0.8, 0.6, 0.5, 0.4], // how much an artist's first, second… tag counts
+  BUCKETS: ["wd0", "wd1", "wd2", "wd3", "we0", "we1", "we2", "we3"],
+  FEATS: ["How close a match", "The artist", "The style", "Time of day", "Songs you love", "Heard a lot lately", "New artists"],
+  START: [1, 1.2, 0.8, 0.4, 0.2, -1, 0],
+  EXPLORE: 6,
+  JUNK: /^(seen live|favou?rites?|my |albums i own|check out|spotify|awesome|love at first listen|under \d|all$|\d+$)/,
+  d: null, ready: null, saveT: 0, saves: 0, cur: null, tagQ: [], tagBusy: false, tagAsked: new Set(), seeding: false,
+
+  fresh() {
+    return { v: 1, born: Date.now(), seededTo: 0, seedTried: 0, seededTop: 0,
+      a: {}, t: {}, g: {}, b: {}, bt: {}, at: {}, rec: [], ban: {}, banA: {}, fs: {},
+      w: this.START.slice(), bias: 0, n: 0, plays: 0, auto: 0, hits: 0, explored: 0, exploredHits: 0 };
+  },
+  load() {
+    return this.ready || (this.ready = (async () => {
+      let v = null;
+      try { v = await native("taste.get"); } catch (e) { v = null; }
+      const d = this.fresh();
+      // Only what's expected, of the expected kind: a damaged file just means starting fresh in places.
+      if (v && v.v === 1) for (const k of Object.keys(d)) if (v[k] != null && typeof v[k] === typeof d[k] && Array.isArray(v[k]) === Array.isArray(d[k])) d[k] = v[k];
+      if (d.w.length !== this.START.length || d.w.some((x) => typeof x !== "number" || !isFinite(x))) d.w = this.START.slice();
+      if (!isFinite(d.bias)) d.bias = 0;
+      this.d = d;
+      // First run with history imported earlier: learn from it once, in the background.
+      if (!d.seedTried) setTimeout(() => this.seed(false), 20000);
+    })());
+  },
+  save(now) {
+    clearTimeout(this.saveT);
+    const write = () => {
+      if (!this.d) return;
+      if (this.saves++ % 20 === 0) this.prune();
+      native("taste.set", { value: this.d }).catch(() => {});
+    };
+    if (now) write(); else this.saveT = setTimeout(write, 4000);
+  },
+
+  // ----- Counters that fade with time: { p: liked, n: not liked, t: as of when } -----
+  fade(dt) { return dt > 0 ? Math.pow(0.5, dt / this.HALF) : 1; },
+  bump(map, key, w, when, nm) {
+    if (!key || !w || !isFinite(w)) return null;
+    const c = map[key] || (map[key] = { p: 0, n: 0, t: when });
+    if (when >= c.t) { const f = this.fade(when - c.t); c.p *= f; c.n *= f; c.t = when; }
+    else w *= this.fade(c.t - when);                           // an old play (from imported history) counts for less
+    if (w > 0) c.p += w; else c.n -= w;
+    if (nm) c.nm = nm;
+    return c;
+  },
+  /** −1 (you skip it) … +1 (you love it), near 0 when there's little to go on. */
+  val(c, now = Date.now()) {
+    if (!c) return 0;
+    const f = this.fade(now - c.t);
+    return ((c.p - c.n) * f) / ((c.p + c.n) * f + this.PRIOR);
+  },
+  mass(c, now = Date.now()) { return c ? (c.p + c.n) * this.fade(now - c.t) : 0; },
+  pos(c, now = Date.now()) { return c ? c.p * this.fade(now - c.t) : 0; },
+
+  /** Weekday or weekend, and night / morning / afternoon / evening. */
+  bucket(when) { const d = new Date(when), day = d.getDay(); return (day === 0 || day === 6 ? "we" : "wd") + Math.floor(d.getHours() / 6); },
+  bucketName(bk) { return (bk.startsWith("we") ? "WEEKEND " : "WEEKDAY ") + ["NIGHT", "MORNING", "AFTERNOON", "EVENING"][+bk[2]]; },
+
+  /** The bits of a song the profile keys on, from any of the shapes songs come in. */
+  info(t) {
+    if (!t) return null;
+    const list = (t.raw && t.raw.artists) || (Array.isArray(t.artists) ? t.artists : null);
+    const an = list ? ((list[0] && list[0].name) || "") : String(t.artists || t.artist || "").split(", ")[0];
+    const name = cleanTitle(t.name || "");
+    if (!an || !name) return null;
+    return { a: LFM.norm(an), an, name, key: LFM.key(an, name), uri: t.uri || "", aid: (list && list[0] && list[0].id) || "" };
+  },
+
+  // ----- Learning -----
+  /** One mark: w > 0 for liked, w < 0 for not. `when` for a play from your imported history. */
+  signal(t, w, opts = {}) {
+    const d = this.d, x = this.info(t);
+    if (!d || !x || !w) return;
+    const when = opts.when || Date.now(), bk = this.bucket(when);
+    this.bump(d.a, x.a, w, when, x.an);
+    if (!opts.artistOnly) this.bump(d.t, x.key, w, when, x.name + " · " + x.an);
+    const timed = w > 0 && !opts.noTime;
+    if (timed) { this.bump(d.b, bk + "|a:" + x.a, w, when); this.bump(d.bt, bk, w, when); }
+    const tags = d.at[x.a];
+    if (tags) tags.forEach((g, i) => {
+      this.bump(d.g, g, w * this.SHARE[i], when);
+      if (timed) this.bump(d.b, bk + "|g:" + g, w * this.SHARE[i], when);
+    });
+    else if (!opts.when) this.needTags(x);
+    if (!opts.quiet) this.save();
+  },
+  /** An artist's styles arrived: what you've done with the artist so far counts for those styles too. */
+  gotTags(x, tags) {
+    const d = this.d;
+    if (!d || d.at[x.a]) return;
+    d.at[x.a] = tags;
+    const c = d.a[x.a];
+    if (c) tags.forEach((g, i) => {
+      const s = this.SHARE[i];
+      this.bump(d.g, g, c.p * s, c.t); this.bump(d.g, g, -c.n * s, c.t);
+      for (const bk of this.BUCKETS) { const bc = d.b[bk + "|a:" + x.a]; if (bc) this.bump(d.b, bk + "|g:" + g, bc.p * s, bc.t); }
+    });
+    this.save();
+  },
+  needTags(x) {
+    const d = this.d;
+    if (!d || d.at[x.a] || this.tagAsked.has(x.a)) return;
+    // Spotify's genres, when another part of Cadenza already looked them up (no extra request).
+    const sg = x.aid && ((Tags.genres && Tags.genres[x.aid]) || (Radio.genres && Radio.genres[x.aid]));
+    if (sg && sg.length) return this.gotTags(x, sg.slice(0, 5).map((g) => String(g).toLowerCase()));
+    if (!LFM.ready() || this.tagQ.length > 300) return;
+    this.tagAsked.add(x.a);
+    this.tagQ.push(x);
+    this.pumpTags();
+  },
+  async pumpTags() {
+    if (this.tagBusy) return;
+    this.tagBusy = true;
+    try {
+      while (this.tagQ.length) {
+        const x = this.tagQ.shift();
+        if (this.d && this.d.at[x.a]) continue;
+        const b = await LFM.get("artist.getTopTags", { artist: x.an, autocorrect: 1 }, 7 * 86400e3);
+        if (!b) continue;                                        // Last.fm unreachable: asked again another time
+        const tags = LFM.arr(b.toptags && b.toptags.tag).filter((g) => g.count == null || +g.count >= 10)
+          .map((g) => String(g.name || "").toLowerCase().trim())
+          .filter((g) => g && g.length < 30 && !this.JUNK.test(g) && LFM.norm(g) !== x.a).slice(0, 5);
+        this.gotTags(x, tags);
+        await wait(250);                                          // there's no hurry; leave room for everything else
+      }
+    } finally { this.tagBusy = false; }
+  },
+
+  // ----- Following what you play -----
+  /** Once a second: how far into the song you are, and how long you've actually listened. */
+  tick() {
+    const p = S.player, it = p && p.item, c = this.cur;
+    if (!c || !it || it.uri !== c.uri || !p.is_playing) return;
+    const dur = it.duration_ms || c.dur;
+    if (dur > 1000) c.max = Math.max(c.max, Math.min(1, progressNow() / dur));
+    c.heard += 1000;
+  },
+  /** The song changed: settle the one before, and start following the new one. */
+  onTrack(it, fromUpNext) {
+    const prev = this.cur;
+    this.cur = null;
+    if (prev) { try { this.finish(prev); } catch (e) { console.error(e); } }
+    if (!it || !/^spotify:track:/.test(it.uri || "")) return;
+    const ri = Radio.active ? Radio.order.findIndex((x) => x.uri === it.uri) : -1;
+    const pick = fromUpNext || !!(S.userPick && S.userPick.uri === it.uri && Date.now() - S.userPick.at < 30000);
+    const item = ri > 0 && !pick ? Radio.order[ri] : null;
+    this.cur = { uri: it.uri, t: it, dur: it.duration_ms || 0, max: 0, heard: 0, src: item ? "auto" : pick ? "pick" : "list",
+      feat: item && item._feat, explore: !!(item && item._explore) };
+  },
+  /** What a play says about you. Autoplay's own picks count the most when skipped: you didn't choose them. */
+  finish(c) {
+    const d = this.d, now = Date.now();
+    if (!d || refusedLately(c.uri)) return;                    // Spotify wouldn't play it: that says nothing about you
+    const sk = Radio.skipFrom, pressed = !!(sk && sk.uri === c.uri && now - sk.at < 8000);
+    if (c.heard < 2000 && !pressed) return;                     // flickered past
+    const x = this.info(c.t);
+    if (!x) return;
+    const auto = c.src === "auto", pick = c.src === "pick", frac = c.max;
+    let w = 0, y = null, done = false;
+    if (frac >= 0.9 || (frac >= 0.75 && !pressed)) {
+      done = true; y = 1;
+      const again = d.rec.some((r) => r[0] === x.key && r[3] && now - r[2] < 86400e3);
+      w = (again ? 1.5 : 1) + (pick ? 0.5 : 0);                // played it again within a day: a strong yes
+    } else if (frac >= 0.5) {
+      w = 0.2; if (frac >= 0.75) y = 1;
+    } else if (c.heard < 30000 || frac < 0.25) {
+      w = auto ? -1.5 : pick ? -0.3 : -0.4; y = 0;
+      if (!pressed) w /= 2;                                     // you moved on to something else, not necessarily away from this
+      if (auto && pressed) {
+        // Skipped fast twice when autoplay offered it: it stops offering that song for a month.
+        const f = d.fs[x.key] || [0, now];
+        f[0]++; f[1] = now; d.fs[x.key] = f;
+        if (f[0] >= 2) { d.ban[x.key] = now + 30 * 86400e3; delete d.fs[x.key]; }
+      }
+    } else { w = auto ? -0.7 : -0.2; y = 0; }
+    this.signal(c.t, w, { quiet: true });
+    if (auto) {
+      d.auto++; if (y === 1) d.hits++;
+      if (c.explore) { d.explored++; if (y === 1) d.exploredHits++; }
+      if (c.feat && y != null) this.learn(c.feat, y);
+    }
+    d.rec.unshift([x.key, x.a, now, done ? 1 : 0]);
+    if (d.rec.length > 80) d.rec.length = 80;
+    d.plays++;
+    this.save();
+  },
+  /** A small step of online logistic regression: weights that would have predicted this better move a little
+   *  that way. Each weight is pulled gently back towards its starting value, so a few odd days can't wreck it. */
+  learn(f, y) {
+    const d = this.d;
+    if (!d || !Array.isArray(f) || f.length !== d.w.length) return;
+    let z = d.bias;
+    f.forEach((v, i) => (z += d.w[i] * v));
+    const p = 1 / (1 + Math.exp(-z)), err = y - p;
+    const lr = Math.max(0.02, 0.15 / Math.sqrt(1 + d.n / 25));
+    d.w = d.w.map((w, i) => Math.max(-3, Math.min(3, w + lr * (err * f[i] - 0.01 * (w - this.START[i])))));
+    d.bias = Math.max(-2, Math.min(2, d.bias + lr * err * 0.5));
+    d.n++;
+  },
+
+  // ----- Scoring (for autoplay) -----
+  /** How much more (or less) you play this artist or style at this time of day than usual. */
+  timeFit(x, tags, now) {
+    const d = this.d, bk = this.bucket(now);
+    let tot = 0;
+    for (const k of this.BUCKETS) tot += this.pos(d.bt[k], now);
+    const here = this.pos(d.bt[bk], now);
+    if (tot < 20 || here < 1) return 0;
+    const base = here / tot, out = [];
+    const lift = (num, den) => {
+      if (den < 2) return;
+      const v = Math.log2((num / den + 0.01) / base) / 2;
+      out.push(Math.max(-1, Math.min(1, v)) * (den / (den + 5)));
+    };
+    lift(this.pos(d.b[bk + "|a:" + x.a], now), this.pos(d.a[x.a], now));
+    tags.slice(0, 3).forEach((g) => lift(this.pos(d.b[bk + "|g:" + g], now), this.pos(d.g[g], now)));
+    return out.length ? out.reduce((s, v) => s + v, 0) / out.length : 0;
+  },
+  feats(t, sim) {
+    const d = this.d, x = this.info(t), now = Date.now();
+    const f = [Math.max(0, Math.min(1, (sim || 0) / 1.5)), 0, 0, 0, 0, 0, 0];
+    if (!d || !x) return f;
+    const ac = d.a[x.a], tags = d.at[x.a] || [];
+    f[1] = this.val(ac, now);
+    let gs = 0, gw = 0;
+    tags.forEach((g, i) => { const c = d.g[g]; if (c) { gs += this.val(c, now) * this.SHARE[i]; gw += this.SHARE[i]; } });
+    f[2] = gw ? gs / gw : 0;
+    f[3] = this.timeFit(x, tags, now);
+    f[4] = this.val(d.t[x.key], now);
+    let same = 0, artist = 0;
+    for (const r of d.rec) {
+      if (now - r[2] > 6 * 3600e3) break;                       // newest first
+      if (r[0] === x.key) same = 1;
+      if (r[1] === x.a && now - r[2] < 2 * 3600e3) artist++;
+    }
+    f[5] = Math.min(1, same + Math.min(1, artist / 3) * 0.5);
+    f[6] = this.mass(ac, now) < 0.5 ? 1 : 0;
+    return f;
+  },
+  /** Autoplay's score for a song. Also remembers what it was based on, to learn from how it goes. */
+  score(t, sim) {
+    const f = this.feats(t, sim), d = this.d;
+    t._feat = f;
+    t._new = f[6] === 1 && f[2] > -0.3;                          // a new artist, in a style you don't avoid
+    if (!d) return f[0];
+    let z = d.bias;
+    for (let i = 0; i < f.length; i++) z += d.w[i] * f[i];
+    return z;
+  },
+  /** Songs and artists you've told it (or shown it) to leave out. */
+  blocked(t) {
+    const d = this.d, x = this.info(t);
+    if (!d || !x) return false;
+    return !!d.banA[x.a] || (d.ban[x.key] || 0) > Date.now();
+  },
+  /** Why autoplay picked a song, in a few words (for the Queue page). */
+  why(t) {
+    const d = this.d, f = t && t._feat, x = this.info(t);
+    if (!d || !f || !x) return "";
+    if (t._explore) { const g = (d.at[x.a] || [])[0]; return "NEW TO YOU" + (g ? " · " + upper(g) : ""); }
+    const best = f.map((v, i) => [d.w[i] * v, i]).filter(([c, i]) => c > 0.12 && i < 5).sort((a, b) => b[0] - a[0])[0];
+    switch (best ? best[1] : 0) {
+      case 1: return "AN ARTIST YOU LOVE";
+      case 2: { const g = (d.at[x.a] || []).find((gg) => this.val(d.g[gg]) > 0.1); return g ? "YOU LIKE " + upper(g) : "YOUR KIND OF THING"; }
+      case 3: return "YOUR " + this.bucketName(this.bucket(Date.now())).split(" ")[1] + " SOUND";
+      case 4: return "A SONG YOU LOVE";
+      default: { const s = t._seed && Radio.order.find((o) => o.uri === t._seed); return s ? "LIKE " + upper(cleanTitle(s.name)) : "SIMILAR"; }
+    }
+  },
+
+  // ----- Things you tell it directly -----
+  more(t) {
+    this.signal(t, 2);
+    toast("GOT IT · MORE LIKE " + upper(cleanTitle(t.name)));
+    if (Radio.active) { Radio.rerank(); Radio.extend(t, 1.2); }
+  },
+  less(t) {
+    const x = this.info(t);
+    if (!x || !this.d) return;
+    this.signal(t, -2);
+    this.d.ban[x.key] = Date.now() + 90 * 86400e3;
+    const item = Radio.active && Radio.order.find((o) => o.uri === t.uri);
+    if (item && item._feat) this.learn(item._feat, 0);
+    if (Radio.active) { Radio.remove(t.uri); Radio.rerank(); Radio.refreshQueue(); }
+    toast("GOT IT · LESS LIKE " + upper(cleanTitle(t.name)));
+  },
+  banArtist(t) {
+    const x = this.info(t);
+    if (!x || !this.d) return;
+    this.d.banA[x.a] = { nm: x.an, at: Date.now() };
+    if (Radio.active) {
+      const start = Radio.at + 1 + Radio.qd.length;
+      Radio.order = Radio.order.slice(0, start).concat(Radio.order.slice(start).filter((o) => this.info(o)?.a !== x.a));
+      Radio.refreshQueue();
+    }
+    this.save();
+    toast("AUTOPLAY WON'T PLAY " + upper(x.an) + " · UNDO ON THE TASTE PAGE");
+  },
+  unban(a) { if (this.d && this.d.banA[a]) { delete this.d.banA[a]; this.save(); } },
+  async forget() {
+    let ok = false;
+    try { ok = await native("taste.clear"); } catch (e) { ok = false; }
+    if (!ok) return false;
+    this.d = this.fresh(); this.d.seedTried = 1; this.tagAsked.clear(); this.tagQ = [];
+    toast("TASTE PROFILE CLEARED · AUTOPLAY STARTS FRESH");
+    return true;
+  },
+
+  // ----- Learning from your past -----
+  /** Your imported Spotify history (with what you skipped), then Last.fm scrobbles after it. Only plays from
+   *  before the profile started following you live, and only once each. With neither, Last.fm's top lists. */
+  async seed(manual) {
+    await this.load();
+    if (!Links.lastfm) { try { await Links.load(); } catch (e) { /* no Last.fm: styles wait */ } }
+    const d = this.d;
+    if (this.seeding) return 0;
+    this.seeding = true;
+    d.seedTried = 1;
+    let n = 0, newest = d.seededTo;
+    try {
+      let h = null, sc = null;
+      try { h = await native("spotifyHistory.get"); } catch (e) { h = null; }
+      try { sc = LFM.ready() ? await native("lastfmPlays.get") : null; } catch (e) { sc = null; }
+      const tracks = (h && Array.isArray(h.tracks)) ? h.tracks : [], plays = (h && Array.isArray(h.plays)) ? h.plays : [];
+      const upTo = d.born, from = d.seededTo;
+      let spotEnd = 0, k = 0;
+      for (const p of plays) {
+        if (++k % 5000 === 0) await wait(0);                      // stay responsive on a big history
+        const [end, i, ms, flags] = p, at = end * 1000, t = tracks[i];
+        spotEnd = Math.max(spotEnd, at);
+        if (at <= from || at >= upTo || !t) continue;
+        let w;
+        if (flags == null) w = 0.6;                               // imported before skips were kept: a listen
+        else if (flags & 1) w = ms < 30000 ? ((flags & 4) ? -0.2 : -0.4) : 0.1;
+        else if (flags & 2) w = (flags & 4) ? 1.2 : 1;
+        else w = 0.6;
+        this.signal({ name: t[1], artists: [{ name: t[2] }] }, w, { when: at, quiet: true });
+        newest = Math.max(newest, at); n++;
+      }
+      const scrobs = (sc && sc.user === LFM.user() && Array.isArray(sc.plays)) ? sc.plays : [];
+      for (const [uts, name, artist] of scrobs) {
+        const at = uts * 1000;
+        if (at <= Math.max(from, spotEnd) || at >= upTo || !name || !artist) continue;
+        this.signal({ name, artists: [{ name: artist }] }, 0.6, { when: at, quiet: true });
+        newest = Math.max(newest, at); n++;
+      }
+      if (!n && !d.seededTop && LFM.ready() && !plays.length) {
+        // Nothing with dates: your Last.fm top artists and songs of the past year, as a starting point.
+        const when = Date.now() - 60 * 86400e3;
+        const [ba, bt] = await Promise.all([LFM.get("user.getTopArtists", { period: "12month", limit: 200 }, 0), LFM.get("user.getTopTracks", { period: "12month", limit: 300 }, 0)]);
+        LFM.arr(ba && ba.topartists && ba.topartists.artist).forEach((a) => {
+          this.signal({ name: "-", artists: [{ name: a.name }] }, Math.log2(1 + (+a.playcount || 0) / 5), { when, quiet: true, artistOnly: true, noTime: true }); n++;
+        });
+        LFM.arr(bt && bt.toptracks && bt.toptracks.track).forEach((x) => {
+          this.signal({ name: x.name, artists: [{ name: x.artist && x.artist.name }] }, Math.min(3, Math.log2(1 + (+x.playcount || 0) / 3)), { when, quiet: true, noTime: true }); n++;
+        });
+        if (n) d.seededTop = 1;
+      }
+      d.seededTo = newest;
+      this.prune();
+      // Look up the styles of the artists that matter most, a few a second in the background.
+      Object.entries(d.a).filter(([a]) => !d.at[a]).sort((x, y) => this.mass(y[1]) - this.mass(x[1])).slice(0, 150)
+        .forEach(([a, c]) => this.needTags({ a, an: c.nm || a, aid: "" }));
+      this.save(true);
+    } finally { this.seeding = false; }
+    if (manual || n) toast(n ? `TASTE PROFILE: LEARNED FROM ${n.toLocaleString()} PLAYS` : "NOTHING NEW TO LEARN FROM · IMPORT YOUR SPOTIFY HISTORY IN STATS", !n);
+    if (current() && current().name === "taste") views.taste.render();
+    return n;
+  },
+  prune() {
+    const d = this.d, now = Date.now();
+    if (!d) return;
+    for (const k of ["a", "t", "g", "b", "bt"]) {
+      const m = d[k];
+      for (const key of Object.keys(m)) {
+        const c = m[key], f = this.fade(now - c.t);
+        c.p = Math.round(c.p * f * 1000) / 1000; c.n = Math.round(c.n * f * 1000) / 1000; c.t = now;
+        if (c.p + c.n < 0.02) delete m[key];
+      }
+      const left = Object.keys(m);
+      if (left.length > this.MAX[k]) left.sort((x, y) => (m[y].p + m[y].n) - (m[x].p + m[x].n)).slice(this.MAX[k]).forEach((key) => delete m[key]);
+    }
+    for (const a of Object.keys(d.at)) if (!d.a[a]) delete d.at[a];
+    for (const k of Object.keys(d.ban)) if (d.ban[k] < now) delete d.ban[k];
+    for (const k of Object.keys(d.fs)) if (now - d.fs[k][1] > 30 * 86400e3) delete d.fs[k];
+    d.w = d.w.map((w) => Math.round(w * 1000) / 1000); d.bias = Math.round(d.bias * 1000) / 1000;
+  },
+
+  // ----- For the Taste page -----
+  /** The best (dir 1) or worst (dir −1) entries of one kind, with enough behind them to mean something. */
+  top(map, n, dir = 1, min = 1.5) {
+    const now = Date.now();
+    return Object.entries(map).map(([k, c]) => ({ k, nm: c.nm || k, v: this.val(c, now), m: this.mass(c, now) }))
+      .filter((e) => e.m >= min && e.v * dir > 0.05).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
+  },
+  /** What stands out at each time of day: artists and styles you play there more than usual. */
+  patterns(perBucket = 3) {
+    const d = this.d, now = Date.now(), out = [];
+    let tot = 0;
+    for (const k of this.BUCKETS) tot += this.pos(d.bt[k], now);
+    if (tot < 20) return out;
+    for (const bk of this.BUCKETS) {
+      const here = this.pos(d.bt[bk], now);
+      if (here < 3) continue;
+      const base = here / tot, names = [];
+      for (const [key, c] of Object.entries(d.b)) {
+        if (!key.startsWith(bk + "|")) continue;
+        const kind = key[4], id = key.slice(6), num = this.pos(c, now);
+        if (num < 2) continue;
+        const den = kind === "a" ? this.pos(d.a[id], now) : this.pos(d.g[id], now);
+        if (den < 3) continue;
+        const lift = (num / den) / base;
+        if (lift > 1.3) names.push({ nm: kind === "a" ? ((d.a[id] && d.a[id].nm) || id) : id, s: lift * Math.log2(1 + num), style: kind === "g" });
+      }
+      names.sort((x, y) => y.s - x.s);
+      out.push({ bk, share: here / tot, names: names.slice(0, perBucket) });
+    }
+    return out;
+  },
+};
+
+/* =====================================================================
+   TASTE PAGE: what autoplay has learned about you, and the controls to correct it.
+   ===================================================================== */
+views.taste = {
+  el: $("v-taste"),
+  keys: () => [["↑↓", "SELECT"], ["⏎", "RUN"], ["X", "LET THIS ARTIST BACK"], ["H", "LEARN FROM HISTORY", () => Taste.seed(true)],
+    ["R", "FORGET EVERYTHING", () => views.taste.forget()], ["ESC", "BACK", back]],
+  list: new List($("tz-list"), {
+    render: (x) => {
+      const r = h("div", "trk media tz-row" + (x.ban ? " tz-ban" : ""));
+      const inn = h("div", "in"), th = h("span", "thumb"), ti = h("span", "ti");
+      th.append(h("b", null, x.ban ? "×" : x.icon || "▸"));
+      ti.append(h("b", null, x.name), h("i", null, x.sub || ""));
+      inn.append(th, ti, h("span", "acts"), h("span", "du", x.tag || ""));
+      r.append(inn);
+      return r;
+    },
+    onActivate: (x) => views.taste.act(x),
+    // The list sits inside a column that scrolls as a whole: keep the selected row in sight.
+    onSelect: () => { const r = views.taste.list.rows[views.taste.list.i]; if (r) r.scrollIntoView({ block: "nearest" }); },
+  }),
+  async show() {
+    await Taste.load();
+    this.render();
+  },
+  render() {
+    const d = Taste.d;
+    if (!d) return;
+    const known = Object.keys(d.a).length;
+    setText("tz-sub", d.plays || known ? `FOLLOWING YOU SINCE ${new Date(d.born).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }).toUpperCase()}` : "PLAY SOME MUSIC, OR LEARN FROM YOUR HISTORY (H)");
+    const pct = (a, b) => (b >= 5 ? Math.round((a / b) * 100) + "%" : "–");
+    const tiles = $("tz-tiles");
+    tiles.textContent = "";
+    [[known.toLocaleString(), "ARTISTS KNOWN"], [d.plays.toLocaleString(), "PLAYS FOLLOWED"], [pct(d.hits, d.auto), "AUTOPLAY PICKS YOU KEPT"], [pct(d.exploredHits, d.explored), "NEW ARTISTS YOU KEPT"]]
+      .forEach(([v, l]) => { const t = h("div", "st-tile"); t.append(h("b", null, String(v)), h("span", null, l)); tiles.append(t); });
+    this.bars($("tz-love"), Taste.top(d.a, 6, 1), "Play some music and this fills in.");
+    this.bars($("tz-styles"), Taste.top(d.g, 5, 1), LFM.ready() ? "Styles come from Last.fm tags as you listen." : "Connect Last.fm in System → Connections to learn styles.");
+    this.bars($("tz-skip"), [...Taste.top(d.a, 3, -1), ...Taste.top(d.g, 2, -1)], "Nothing you skip a lot yet.");
+    this.renderTimes();
+    this.renderWeights();
+    // The list: controls, then artists you've banned from autoplay.
+    const bans = Object.entries(d.banA).sort((a, b) => b[1].at - a[1].at)
+      .map(([a, b]) => ({ ban: a, name: b.nm || a, sub: "Never autoplayed · ⏎ or X lets them back", tag: ago(b.at) }));
+    const songBans = Object.keys(d.ban).length;
+    this.list.set([
+      { run: () => Taste.seed(true), icon: "↺", name: "Learn from your history", sub: "Imported Spotify history (with skips) and Last.fm scrobbles", tag: "H" },
+      { run: () => go("stats").then(() => settled()).then(() => views.stats.importHistory()), icon: "+", name: "Import Spotify listening history", sub: "Every play since you joined, including what you skipped", tag: "STATS" },
+      { run: () => this.forget(), icon: "!", name: "Forget everything", sub: "Autoplay starts learning from scratch", tag: "R" },
+      ...(songBans ? [{ run: () => { d.ban = {}; Taste.save(); this.render(); toast("SONGS LET BACK INTO AUTOPLAY"); }, icon: "×", name: `${songBans} song${songBans === 1 ? "" : "s"} left out of autoplay for now`, sub: "Skipped twice in a row, or 'Less like this' · ⏎ lets them all back", tag: "CLEAR" }] : []),
+      ...bans,
+    ]);
+    this.list.select(Math.min(this.list.i || 0, this.list.items.length - 1), false);
+  },
+  bars(box, rows, empty) {
+    box.textContent = "";
+    if (!rows.length) { box.append(h("div", "fr-hint", empty)); return; }
+    rows.forEach((e, i) => {
+      const r = h("div", "st-artist" + (e.v < 0 ? " tz-neg" : ""));
+      const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${Math.min(1, Math.abs(e.v)).toFixed(3)})`;
+      r.append(h("em", null, String(i + 1)), h("span", null, upper(e.nm)), h("small", null, (e.v > 0 ? "+" : "") + Math.round(e.v * 100)), bar);
+      box.append(r);
+    });
+  },
+  renderTimes() {
+    const box = $("tz-times"), pats = Taste.patterns(3), now = Taste.bucket(Date.now());
+    box.textContent = "";
+    // Only the times where something stands out (and now, for comparison).
+    const shown = pats.filter((p) => p.names.length || p.bk === now);
+    if (!shown.some((p) => p.names.length)) { box.append(h("div", "fr-hint", pats.length ? "Nothing stands out yet: you play much the same things all week." : "After a few days of listening, this shows what you play at different times.")); return; }
+    for (const p of shown) {
+      const r = h("div", "tz-time" + (p.bk === now ? " now" : ""));
+      r.append(h("b", null, Taste.bucketName(p.bk) + (p.bk === now ? " · NOW" : "")),
+        h("span", null, p.names.length ? p.names.map((x) => (x.style ? "#" : "") + x.nm).join("  ·  ") : "Much like the rest of the week"));
+      box.append(r);
+    }
+  },
+  renderWeights() {
+    const d = Taste.d, box = $("tz-weights");
+    box.textContent = "";
+    Taste.FEATS.forEach((name, i) => {
+      const w = d.w[i], r = h("div", "st-artist tz-w" + (w < 0 ? " tz-neg" : ""));
+      const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${Math.min(1, Math.abs(w) / 3).toFixed(3)})`;
+      const moved = w - Taste.START[i];
+      r.append(h("em", null, w >= 0 ? "+" : "−"), h("span", null, upper(name)), h("small", null, (w >= 0 ? "+" : "") + w.toFixed(2) + (Math.abs(moved) >= 0.05 ? (moved > 0 ? " ↑" : " ↓") : "")), bar);
+      box.append(r);
+    });
+    setText("tz-wh", d.n ? `WHAT MATTERS TO YOU · LEARNED FROM ${d.n.toLocaleString()} AUTOPLAY PICKS` : "WHAT MATTERS TO YOU · LEARNS AS AUTOPLAY PLAYS");
+  },
+  act(x) {
+    if (!x) return;
+    if (x.ban) { Taste.unban(x.ban); toast("AUTOPLAY CAN PLAY " + upper(x.name) + " AGAIN"); return this.render(); }
+    if (x.run) return x.run();
+  },
+  async forget() { if (await Taste.forget()) this.render(); },
+  onKey(e) {
+    if (this.list.nav(e)) return true;
+    const k = e.key.toLowerCase(), x = this.list.cur;
+    if (e.key === "Enter") { pop(this.list.rows[this.list.i]); this.act(x); return true; }
+    if (k === "x" && x && x.ban) { this.act(x); return true; }
+    if (k === "h") { Taste.seed(true); return true; }
+    if (k === "r") { this.forget(); return true; }
+    return false;
+  },
+};
+
 const Radio = {
   active: false, order: [], at: 0, qd: [], stray: null, timer: 0, grace: 0, building: false,
   used: new Set(), genres: {}, endTimer: 0, skipFrom: null,
@@ -5001,6 +5575,7 @@ const Radio = {
   /** Play `t` now and line up similar songs behind it. */
   async start(t, announce) {
     if (!t || !t.uri) return;
+    S.userPick = { uri: t.uri, at: Date.now() };
     const ok = await playBody({ uris: [t.uri] }, t.name, false, true);
     if (!ok) return;
     this.begin(t);
@@ -5016,23 +5591,36 @@ const Radio = {
   },
   /** The songs lined up after the one playing. */
   upcoming() { return this.active ? this.order.slice(this.at + 1) : []; },
-  /** How much autoplay thinks you'll like a song: how close a match it is, how you've treated its artist
-   *  this session, and whether it came from a song you listened to the end. */
+  /** How much autoplay thinks you'll like a song: your taste profile's score (how close a match it is, and
+   *  everything learned about you over time, see Taste), how you've treated its artist this session, and
+   *  whether it came from a song you listened to the end. */
   value(t) {
-    return (t._score || 0) + 0.5 * (this.taste.get(t._artist) || 0) + (t._seed && this.likedUris.has(t._seed) ? 0.4 : 0);
+    return Taste.score(t, t._score || 0) + 0.5 * (this.taste.get(t._artist) || 0) + (t._seed && this.likedUris.has(t._seed) ? 0.4 : 0);
   },
-  /** Re-sort what's lined up by value. The song already handed to Spotify's queue stays where it is. */
+  /** Re-sort what's lined up by value. The songs already handed to Spotify's queue stay where they are.
+   *  Every sixth place goes to the best new artist on the list (if there is one), so autoplay keeps
+   *  discovering things instead of only playing what it already knows you like. */
   rerank() {
-    const start = this.at + 1 + this.qd.length;
-    const head = this.order.slice(0, start), tail = this.order.slice(start);
-    tail.sort((a, b) => this.value(b) - this.value(a));
-    this.order = head.concat(tail);
+    const start = this.at + 1 + this.qd.length, E = Taste.EXPLORE;
+    const head = this.order.slice(0, start);
+    const pool = this.order.slice(start).map((t) => ({ t, v: this.value(t) })).sort((a, b) => b.v - a.v);
+    const out = [];
+    while (pool.length) {
+      const explore = (start + out.length) % E === E - 1;
+      let k = explore ? pool.findIndex((p) => p.t._new) : 0;
+      if (k < 0) k = 0;
+      const [p] = pool.splice(k, 1);
+      p.t._explore = explore && !!p.t._new;
+      out.push(p.t);
+    }
+    this.order = head.concat(out);
   },
   /** One more song for the line-up (from a lookup that's still running). */
   add(t, score, seed) {
     if (!this.active || !t || !t.uri || this.used.has(t.uri) || refusedLately(t.uri)) return false;
     const artist = (t.artists && t.artists[0] && t.artists[0].name) || "";
     if ((this.taste.get(LFM.norm(artist)) || 0) <= -2.5) return false;      // an artist you've skipped again and again
+    if (Taste.blocked(t)) return false;                                       // left out on purpose (see the Taste page)
     this.used.add(t.uri);
     this.order.push({ ...t, _score: score, _seed: seed && seed.uri, _artist: LFM.norm(artist) });
     this.rerank();
@@ -5071,6 +5659,7 @@ const Radio = {
     if (i < 0) return;
     this.dropQueued();
     this.at = i; this.grace = Date.now() + 6000;
+    S.userPick = { uri, at: Date.now() };
     await playBody({ uris: [uri] }, this.order[i].name, false, true);
   },
   /** "Not this one" from the Queue page: take it out, and count it like a skip. */
@@ -5228,7 +5817,14 @@ const Radio = {
         const next = this.order[this.at + 1 + this.qd.length];
         if (!next) break;
         const r = await api("POST", `/me/player/queue?uri=${enc(next.uri)}`);
-        if (r.status >= 300 || !this.active) break;
+        if (!this.active) break;
+        if (r.status >= 300) {
+          // Usually "no active device" while Cadenza's speaker is still starting the song: try again shortly,
+          // or the album the song was played from carries on instead of autoplay's picks.
+          clearTimeout(this.requeueT);
+          if (r.status !== 429) this.requeueT = setTimeout(() => this.queueNext(), 2500);
+          break;
+        }
         this.qd.push(next.uri);
       }
     } finally { this.queueing = false; }
@@ -5268,6 +5864,11 @@ const Radio = {
       // Queued songs up to this one have played (or been skipped past): they're out of Spotify's queue.
       this.qd = this.qd.filter((u) => this.order.findIndex((t) => t.uri === u) > i);
       this.queueNext();
+    } else if (S.altContext && S.player && S.player.context === S.altContext) {
+      // Spotify refused the song list, so the song was played from its album (see playBody), and autoplay's
+      // queue ran dry: the album is carrying on. That isn't you choosing something else: move on to
+      // autoplay's next pick instead of stopping.
+      if (Date.now() - (this.albumSkipAt || 0) > 4000) { this.albumSkipAt = Date.now(); this.qd = []; this.advance(); }
     } else if (Date.now() > this.grace) this.stop();             // something else is playing now (your phone, say)
   },
   /** Safety net, once a second: if a song has ended and nothing came next, move on ourselves. */
@@ -6091,6 +6692,9 @@ const TrackMenu = {
       { kind: "act", icon: "listAdd", name: "Add to playlist", run: () => Drawer.show(t), keep: true },
       { kind: "act", icon: "plus", name: "Start a playlist with this", hint: "Playlist builder", run: () => go("builder", { seed: t }) },
       { kind: "act", icon: "heart", name: "Like", like: true, run: () => toggleLike(t) },
+      { kind: "act", icon: "plus", name: "More like this", hint: "Taste profile", run: () => Taste.more(t) },
+      { kind: "act", icon: "minus", name: "Less like this", hint: "Taste profile", run: () => Taste.less(t) },
+      ...(Taste.info(t) ? [{ kind: "act", icon: "stop", name: "Never autoplay " + Taste.info(t).an, hint: "Taste profile", run: () => Taste.banArtist(t) }] : []),
       ...(t.album && t.album.id ? [{ kind: "act", icon: "album", name: "Go to album", hint: t.album.name, run: () => go("album", { id: t.album.id }) }] : []),
       ...a.slice(0, 3).map((x) => ({ kind: "act", icon: "artist", name: "Go to " + x.name, run: () => go("artist", { id: x.id }) })),
       { kind: "act", icon: "link", name: "Copy link", run: () => copyLink(t.uri, t.name) },
@@ -6661,6 +7265,7 @@ const Drawer = {
     const r = await api("POST", `/playlists/${p.id}/items`, { uris: [this.track.uri] });
     if (r.status < 300) {
       toast("ADDED TO " + upper(p.name));
+      Taste.signal(this.track, 2);
       if (p.items && p.items.total != null) p.items.total++;
       else if (p.tracks && p.tracks.total != null) p.tracks.total++;
       if (r.body && r.body.snapshot_id) p.snapshot_id = r.body.snapshot_id;
@@ -7335,6 +7940,9 @@ const COMMANDS = [
   ["STATS", "Import Spotify listening history", "I", () => go("stats").then(() => settled()).then(() => views.stats.importHistory())],
   ["STATS", "Switch source (Spotify / Last.fm / Cadenza)", "S", () => go("stats")],
   ["STATS", "Friends", "F", () => go("friends")],
+  ["STATS", "Your taste: what autoplay has learned about you", "T", () => go("taste")],
+  ["TASTE", "Learn from your history  ·  forget everything", "H  ·  R", () => go("taste")],
+  ["TASTE", "Let a banned artist back into autoplay", "X", () => go("taste")],
   ["FRIENDS", "Play their song  ·  blend  ·  profile", "⏎  ·  B  ·  O", () => go("friends")],
   ["FRIENDS", "Add  ·  remove a friend", "+  ·  X"],
   ["ANYWHERE", "Floating mini player", "⇧ ⌘ M", () => native("mini.toggle").catch(() => {})],
@@ -7454,14 +8062,15 @@ function applyMotion() {
 }
 
 async function boot() {
-  if (!bridge) window.__dbg = { S, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
+  if (!bridge) window.__dbg = { S, Taste, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
-  setInterval(() => { tick(false); Radio.note(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
+  setInterval(() => { tick(false); Radio.note(); Taste.tick(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
   Controls.init();
   try { const s = await native("settings.get"); if (s) S.settings = s; } catch (e) { /* defaults */ }
   applyMotion();
   Tags.init();
+  Taste.load();
   EQ.load().then(() => views.home.update());
   Viz.init();
   // The login check (which can refresh the token over the network) runs while the theme loads.
@@ -7688,19 +8297,24 @@ const Demo = (() => {
             const end = Math.floor((Date.now() - 20 * 86400e3) / 1000);
             for (let d = 730; d >= 0; d--) for (let k = 0, n = Math.floor(rnd() * 12); k < n; k++) {
               const i = Math.floor(Math.pow(rnd(), 1.5) * ts.length);
-              plays.push([end - d * 86400 - Math.floor(rnd() * 86400), i, 60000 + Math.floor(rnd() * 150000)]);
+              // Some skipped in the first seconds, some played to the end (the flags Spotify's files carry).
+              const r = rnd(), ms = r < 0.15 ? 2000 + Math.floor(rnd() * 25000) : 60000 + Math.floor(rnd() * 150000);
+              plays.push([end - d * 86400 - Math.floor(rnd() * 86400), i, ms, r < 0.15 ? 1 : r > 0.5 ? 2 | (rnd() < 0.3 ? 4 : 0) : 0]);
             }
             plays.sort((a, b) => a[0] - b[0]);
             window.__demoSpot = { tracks: ts, plays };
           }
           const total = window.__demoSpot.plays.length;
-          return new Promise((res) => setTimeout(() => res({ files: 3, read: total + 400, added: total - had, duplicates: had, skipped: 400, total }), 600));
+          return new Promise((res) => setTimeout(() => res({ files: 3, read: total + 400, added: window.__demoSpot.plays.filter((p) => p[2] >= 30000).length - (had ? window.__demoSpot.plays.filter((p) => p[2] >= 30000).length : 0), skips: had ? 0 : window.__demoSpot.plays.filter((p) => p[2] < 30000).length, duplicates: had, skipped: 400, total }), 600));
         }
         case "translate": return new Promise((res) => setTimeout(() => res({ lines: args.lines.map((l) => l && l !== "♪" ? "(ES) " + l.split(" ").reverse().join(" ") : ""), error: null, target: "es" }), 400));
         case "genius.search": return Promise.resolve({ hits: [{ title: "Midnight Tide (Full Moon Mix)", artist: "Kairo Blue" }, { title: "Undertow", artist: "Kairo Blue" }], error: null });
         case "diagnostics": return Promise.resolve("Cadenza 1.2 (demo)\nmacOS (browser)");
         case "discord.status": return Promise.resolve({ enabled: !!settings.discord, status: settings.discordAppId ? "connected" : "needs an application ID", hasId: !!settings.discordAppId });
         case "lastfm.status": return Promise.resolve({ user: "chedd4rr", hasKeys: true, loggedIn: true, error: "" });
+        case "taste.get": return Promise.resolve(window.__demoTaste ? JSON.parse(window.__demoTaste) : null);
+        case "taste.set": window.__demoTaste = JSON.stringify(args.value); return Promise.resolve(true);
+        case "taste.clear": window.__demoTaste = null; return Promise.resolve(true);
         case "lastfm.get": return new Promise((res) => setTimeout(() => res({ status: 200, body: demoLastfm(args.method, args.params || {}) }), 80));
         case "update.status": return Promise.resolve({ repo: settings.updateRepo || "", current: "1.0", state: "idle", message: "", auto: true });
         case "update.check": return Promise.resolve({ repo: "Chedd4rr/Cadenza", current: "1.0", state: "available", message: "Version 1.1 is ready", auto: true, found: { version: "1.1", notes: "## What's new\n- Stage mode\n- Discord status", page: "", asset: "x" } });

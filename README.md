@@ -38,7 +38,8 @@ which it starts and manages for you.
   System → Preferences.
 - Autoplay and song radio. Play a song from Search (or pick "Song radio" from a song's menu) and
   similar songs keep coming after it. When an album or playlist ends, it carries on the same way.
-  You can turn this off in System → Preferences too.
+  You can turn this off in System → Preferences too. Autoplay learns your taste over time: see
+  [Your taste](#your-taste) below.
 - Synced lyrics from LRCLIB, timed to what you actually hear. Press T to translate them into your
   Mac's language (done on your Mac, macOS 15+). Search → Lyrics finds a song from a line you remember.
 - A playlist builder (N in Library, B on a playlist, or ⌘K): your playlist on the left, and on the right
@@ -173,6 +174,7 @@ The mouse and trackpad work too, and the Controls menu in the menu bar has the m
 | Search | Songs, albums, artists and playlists (Tab switches type) |
 | Queue / History | Your Up Next, then Spotify's queue; and what you played recently |
 | Stats | Top artists and songs, plays, when you listen: your imported Spotify history, Last.fm and Cadenza together, or Last.fm's charts or Cadenza's own log on their own (S switches). I imports Spotify history |
+| Your taste | What autoplay has learned about you: artists and styles you love or skip, what you play at different times, what matters most when it picks, and artists you've banned (T in Stats, or ⌘K). H learns from your history, R forgets it all |
 | Friends | Your Last.fm friends: what they're playing, taste match, artists in common, blends (F in Stats, or ⌘K) |
 | Devices | This Mac's outputs (speakers, AirPods, Bluetooth) and Spotify Connect devices (System → Devices, or ⌘K) |
 | EQ | Ten bands (32 Hz to 16 kHz), presets, boost |
@@ -226,11 +228,39 @@ counts once.
 - No play is counted twice. A play is matched by the minute it ended and the song's name and artist,
   so importing the same files again, or a newer download that overlaps an older one, only adds what's
   new. It also works across the two kinds of download.
-- A play counts once you listened for 30 seconds, like on Spotify. Podcasts and audiobooks are left out.
-- Only the time, length, song, artist, album and song link are kept, in
+- A play counts in Stats once you listened for 30 seconds, like on Spotify. Shorter plays are kept too,
+  as skips, along with whether you skipped, finished or picked each song: your taste profile learns from
+  them (Stats leaves them out). Plays under a second, podcasts and audiobooks are left out.
+- Only the time, length, song, artist, album, song link and those three skip/finish/pick facts are kept, in
   `~/Library/Application Support/Cadenza/spotify-history.json` (readable only by you). The rest of
   Spotify's files (IP addresses, countries, devices) is never saved. Nothing is uploaded anywhere.
 - ⌘K → "Remove imported Spotify history" deletes it again.
+
+### Your taste
+
+Autoplay keeps a taste profile that grows with you. It learns from:
+
+- what you finish and what you skip, and how fast. Skipping a song autoplay picked counts the most,
+  since you didn't choose it; a song autoplay offered and you skipped fast twice is left out for a month;
+- playing a song again within a day, choosing a song yourself, liking it, adding it to a playlist or
+  to the playlist builder;
+- "More like this", "Less like this" and "Never autoplay this artist" in any song's menu (M);
+- your imported Spotify history, with its skips, and Last.fm scrobbles after it (with neither, your
+  Last.fm top artists and songs). That happens once after an import, or on the Taste page with H.
+
+It keeps scores for artists, songs and styles (Last.fm tags, or Spotify genres), and for what you play
+on weekday and weekend mornings, afternoons, evenings and nights. Old marks fade, half every 90 days,
+so it follows you when your taste changes.
+
+When autoplay picks the next songs, it weighs how close a match each one is, how you treat the artist
+and the style, whether it fits this time of day, whether you love that exact song, whether you've heard
+the artist a lot in the last couple of hours, and whether the artist is new to you. It learns how much
+each of those matters to you from which of its picks you keep. Every sixth song is a new artist, so it
+keeps finding things. The Queue page says why each autoplay song is there.
+
+The Taste page (T in Stats, or ⌘K → "Your taste") shows all of it and lets you let banned artists back or
+forget everything. The profile is kept in `~/Library/Application Support/Cadenza/taste.json`, readable
+only by you, and never leaves your Mac.
 
 Cadenza checks this repository's releases at launch (at most every 6 hours) and offers to install new
 versions. To follow a fork instead, set System → Preferences → GitHub repository (Cadenza asks you to

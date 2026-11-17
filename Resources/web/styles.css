@@ -680,6 +680,24 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 .st-hours b { position: absolute; bottom: 0; font: 600 1.2vh/1 var(--text); color: var(--ice); letter-spacing: .06em; transform: translateX(-50%); }
 #st-songs { flex: 1; height: auto; min-height: 0; padding: 0 1vw 2vh 0; }
 #st-empty { position: static; margin-top: 4vh; font-size: 3.2vh; white-space: normal; }
+/* Your taste uses the Stats layout too. */
+#v-taste { display: flex; flex-direction: column; }
+#v-taste[hidden] { display: none; }
+.tz-scroll { overflow-y: auto; padding-right: .6vw; scrollbar-width: none; }
+.tz-scroll::-webkit-scrollbar { display: none; }
+.st-artist.tz-neg i { background: var(--ice); opacity: .45; }
+.st-artist.tz-neg em { color: var(--ice); }
+.tz-times { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8vh 1vw; margin-bottom: 2.4vh; }
+.tz-time { padding: .8vh .8vw; border: 1px solid rgb(var(--cyan-rgb) / .25); min-width: 0; }
+.tz-time.now { border-color: var(--cyan); background: rgb(var(--cyan-rgb) / .08); }
+.tz-time b { display: block; font: 700 1.3vh/1 var(--text); letter-spacing: .14em; color: var(--cyan); margin-bottom: .6vh; }
+.tz-time span { display: block; font: 600 1.6vh/1.3 var(--text); color: var(--white); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tz-list { flex: none; height: auto; padding-bottom: 2vh; }
+.trk.tz-row .thumb { display: grid; place-items: center; }
+.trk.tz-row .thumb b { font: 400 2.6vh/1 var(--display); color: var(--cyan); }
+.trk.tz-ban .thumb b { color: var(--ice); }
+.trk .ti .why { font-style: normal; color: var(--cyan); opacity: .9; }
+
 /* Friends uses the Stats layout. */
 #v-friends { display: flex; flex-direction: column; }
 #v-friends[hidden] { display: none; }
@@ -733,3 +751,4 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 .bd-drag.drop-before { box-shadow: 0 -.5vh 0 var(--cyan); }
 .bd-drag.drop-after { box-shadow: 0 .5vh 0 var(--cyan); }
 body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select: none; }
+.tz-times .fr-hint { grid-column: 1 / -1; }

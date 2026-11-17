@@ -36,6 +36,11 @@ enum CoverArt {
     /// The cover as a data: URL, for a theme that reads its colours (the page can't read the pixels of
     /// a picture from another site). Only JPEG and PNG, which is what Spotify serves.
     static func dataURL(_ url: String, _ done: @escaping (String?) -> Void) {
+        // Only Spotify's and Last.fm's picture servers: this hands the page raw bytes from the web, so it
+        // mustn't become a way for the page to read anything else.
+        let host = URL(string: url)?.host?.lowercased() ?? ""
+        let allowed = ["scdn.co", "spotifycdn.com", "spotify.com", "fastly.net", "last.fm", "lst.fm"]
+        guard allowed.contains(where: { host == $0 || host.hasSuffix("." + $0) }) else { return done(nil) }
         data(url) { d in
             guard let d, d.count > 8 else { return done(nil) }
             let mime: String

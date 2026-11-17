@@ -182,6 +182,18 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "spotifyHistory.import":
             // You pick the files in a macOS dialog, so the page never chooses what gets read.
             app.spotifyHistory.pickAndImport(window: app.window) { result in reply(result) }
+        case "taste.get":
+            app.taste.get { reply($0) }
+        case "taste.set":
+            app.taste.set(args["value"]) { reply($0) }
+        case "taste.clear":
+            ask("Forget your taste profile?",
+                "Autoplay starts learning from scratch. Your history, likes and playlists aren't touched, and you can rebuild it from your imported history any time.",
+                ok: "Forget") { [weak self] yes in
+                guard yes, let self else { return reply(false) }
+                self.app.taste.clear()
+                reply(true)
+            }
         case "lastfmPlays.get":
             app.lastfmPlays.get { reply($0) }
         case "lastfmPlays.set":

@@ -13,14 +13,17 @@ import UniformTypeIdentifiers
 ///
 /// Only what Stats needs is kept: when each song was played, for how long, and the song's name, artist,
 /// album and link. The rest of each line (IP address, country, device and so on) is never saved.
-/// A play counts once you heard 30 seconds of it, the same rule Spotify uses.
+/// A play counts (in Stats) once you heard 30 seconds of it, the same rule Spotify uses. Shorter plays
+/// are kept too, marked as skips: your taste profile learns from what you skipped as well as what you
+/// finished. Each play also keeps three yes/no facts from Spotify's files, as bits: 1 = you skipped it,
+/// 2 = it played to the end, 4 = you picked it yourself (clicked it, rather than it coming up next).
 ///
 /// No play is counted twice. Each one is keyed by the minute it ended plus the song's name and artist,
 /// so importing the same files again, both kinds of download, or two downloads that overlap, only adds
 /// plays that aren't there yet.
 ///
 /// Saved in ~/Library/Application Support/Cadenza/spotify-history.json (readable only by you) as two lists:
-/// songs [[link, name, artist, album]] and plays [[end time in seconds, song number, ms played]].
+/// songs [[link, name, artist, album]] and plays [[end time in seconds, song number, ms played, flags]].
 final class SpotifyHistory {
     private let file = Settings.supportDir.appendingPathComponent("spotify-history.json")
     private let queue = DispatchQueue(label: "cadenza.spotify-history", qos: .userInitiated)
@@ -32,6 +35,7 @@ final class SpotifyHistory {
     private var loaded = false
 
     private static let minimumMs = 30_000
+    private var flagFixes: [String: Int] = [:]          // plays imported before flags were kept: their flags
     private static let maxFileBytes = 300 * 1024 * 1024     // one history file is ~10-20 MB
 
     // MARK: - Picking files
@@ -78,8 +82,9 @@ final class SpotifyHistory {
             }
         }
 
-        var used = 0, read = 0, added = 0, duplicates = 0, short = 0
+        var used = 0, read = 0, added = 0, duplicates = 0, short = 0, skips = 0
         let before = plays.count
+        flagFixes = [:]
         for url in jsonFiles {
             guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize), size <= Self.maxFileBytes,
                   let data = try? Data(contentsOf: url),
@@ -90,17 +95,26 @@ final class SpotifyHistory {
                 read += 1
                 switch add(row) {
                 case .added: added += 1
+                case .addedSkip: skips += 1
                 case .duplicate: duplicates += 1
                 case .skipped: short += 1
                 }
             }
         }
-        if plays.count != before {
+        // Plays that were already here from an older import, without flags: add them now.
+        var fixed = 0
+        if !flagFixes.isEmpty {
+            for i in plays.indices where plays[i].count == 3 {
+                let t = tracks[plays[i][1]]
+                if let f = flagFixes["\(plays[i][0] / 60)|" + (t[1] + "\u{1}" + t[2]).lowercased()] { plays[i].append(f); fixed += 1 }
+            }
+        }
+        if plays.count != before || fixed > 0 {
             plays.sort { $0[0] < $1[0] }
             save()
         }
         return [
-            "files": used, "read": read, "added": added, "duplicates": duplicates, "skipped": short,
+            "files": used, "read": read, "added": added, "skips": skips, "duplicates": duplicates, "skipped": short,
             "total": plays.count, "first": (plays.first?[0] ?? 0) * 1000, "last": (plays.last?[0] ?? 0) * 1000,
         ]
     }
@@ -109,7 +123,7 @@ final class SpotifyHistory {
         (row["ts"] != nil && row["ms_played"] != nil) || (row["endTime"] != nil && row["msPlayed"] != nil)
     }
 
-    private enum Outcome { case added, duplicate, skipped }
+    private enum Outcome { case added, addedSkip, duplicate, skipped }
 
     private static let isoParser: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -126,6 +140,7 @@ final class SpotifyHistory {
 
     private func add(_ row: [String: Any]) -> Outcome {
         let name: String, artist: String, album: String, uri: String, ms: Int, end: Date?
+        var flags = 0
         if let ts = row["ts"] as? String {
             // Extended history. Podcasts and audiobooks have no song name: Stats is about music.
             name = (row["master_metadata_track_name"] as? String) ?? ""
@@ -135,6 +150,10 @@ final class SpotifyHistory {
             uri = link.hasPrefix("spotify:track:") ? link : ""
             ms = Self.int(row["ms_played"])
             end = Self.isoParser.date(from: ts)
+            let endReason = (row["reason_end"] as? String) ?? "", startReason = (row["reason_start"] as? String) ?? ""
+            if (row["skipped"] as? Bool) == true || endReason == "fwdbtn" { flags |= 1 }
+            if endReason == "trackdone" { flags |= 2 }
+            if startReason == "clickrow" { flags |= 4 }
         } else {
             name = (row["trackName"] as? String) ?? ""
             artist = (row["artistName"] as? String) ?? ""
@@ -143,12 +162,14 @@ final class SpotifyHistory {
             ms = Self.int(row["msPlayed"])
             end = (row["endTime"] as? String).flatMap { Self.minuteParser.date(from: $0) }
         }
-        guard !name.isEmpty, !artist.isEmpty, ms >= Self.minimumMs, let end else { return .skipped }
+        // Under a second is a misclick or an autoplay flicker, not a choice either way.
+        guard !name.isEmpty, !artist.isEmpty, ms >= 1000, let end else { return .skipped }
+        if ms < Self.minimumMs { flags |= 1 }                            // a short play is a skip
 
         let id = (name + "\u{1}" + artist).lowercased()
         let endSec = Int(end.timeIntervalSince1970)
         let key = "\(endSec / 60)|\(id)"
-        guard !seen.contains(key) else { return .duplicate }
+        guard !seen.contains(key) else { if flags != 0 { flagFixes[key] = flags }; return .duplicate }
         seen.insert(key)
 
         let index: Int
@@ -162,8 +183,8 @@ final class SpotifyHistory {
             tracks.append([uri, name, artist, album])
             trackIndex[id] = index
         }
-        plays.append([endSec, index, ms])
-        return .added
+        plays.append([endSec, index, ms, flags])
+        return ms >= Self.minimumMs ? .added : .addedSkip
     }
 
     private static func int(_ v: Any?) -> Int {
@@ -188,8 +209,11 @@ final class SpotifyHistory {
         return out.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    /// Unpack a .zip into a private temporary folder (removed after the import).
+    /// Unpack a .zip into a private temporary folder (removed after the import). The zip's list of files is
+    /// checked first: anything that would land outside that folder ("../", absolute paths), or a zip that
+    /// would unpack to more than 2 GB, is refused.
     private func unzip(_ zip: URL) -> URL? {
+        guard zipLooksSafe(zip) else { return nil }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cadenza-history-\(UUID().uuidString)", isDirectory: true)
         guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                         attributes: [.posixPermissions: 0o700])) != nil else { return nil }
@@ -203,6 +227,27 @@ final class SpotifyHistory {
         if p.terminationStatus == 0 { return dir }
         try? FileManager.default.removeItem(at: dir)
         return nil
+    }
+
+    private func zipLooksSafe(_ zip: URL) -> Bool {
+        let run = { (args: [String]) -> String? in
+            let p = Process(), pipe = Pipe()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/zipinfo")
+            p.arguments = args + [zip.path]
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return p.terminationStatus == 0 ? String(data: data, encoding: .utf8) : nil
+        }
+        guard let names = run(["-1"]) else { return false }
+        let list = names.split(separator: "\n").map(String.init)
+        guard list.count <= 5000, !list.contains(where: { $0.hasPrefix("/") || $0.split(separator: "/").contains("..") }) else { return false }
+        // The totals line: "N files, X bytes uncompressed, Y bytes compressed: Z%"
+        if let totals = run(["-t"]), let r = totals.range(of: #"([0-9]+) bytes uncompressed"#, options: .regularExpression),
+           let bytes = Int(totals[r].split(separator: " ")[0]), bytes > 2_000_000_000 { return false }
+        return true
     }
 
     // MARK: - Saved copy
@@ -219,7 +264,7 @@ final class SpotifyHistory {
         }
         plays = ((obj["plays"] as? [[Any]]) ?? []).compactMap { p in
             let n = p.map { Self.int($0) }
-            return n.count == 3 && n[1] >= 0 && n[1] < tracks.count ? n : nil
+            return (n.count == 3 || n.count == 4) && n[1] >= 0 && n[1] < tracks.count ? n : nil
         }
         for (i, t) in tracks.enumerated() { trackIndex[(t[1] + "\u{1}" + t[2]).lowercased()] = i }
         for p in plays { seen.insert("\(p[0] / 60)|" + (tracks[p[1]][1] + "\u{1}" + tracks[p[1]][2]).lowercased()) }
@@ -271,6 +316,34 @@ final class LastfmPlays {
     /// Only the expected shape is saved, and nothing huge.
     func set(_ value: Any?, done: @escaping (Bool) -> Void) {
         guard let v = value as? [String: Any], v["user"] is String, v["upTo"] is NSNumber, v["plays"] is [[Any]],
+              JSONSerialization.isValidJSONObject(v), let data = try? JSONSerialization.data(withJSONObject: v),
+              data.count <= Self.maxBytes else { return done(false) }
+        queue.async {
+            let ok = Settings.writePrivately(data, to: self.file)
+            DispatchQueue.main.async { done(ok) }
+        }
+    }
+
+    func clear() { queue.async { try? FileManager.default.removeItem(at: self.file) } }
+}
+
+/// Your taste profile: what autoplay has learned about you (artists, songs and styles you like or skip,
+/// what you play at different times of day, and how much each of those matters to you). The web side
+/// works it all out; this only keeps the file, private to your account, and refuses anything odd.
+final class TasteFile {
+    private let file = Settings.supportDir.appendingPathComponent("taste.json")
+    private let queue = DispatchQueue(label: "cadenza.taste", qos: .utility)
+    private static let maxBytes = 8 * 1024 * 1024
+
+    func get(done: @escaping (Any?) -> Void) {
+        queue.async {
+            let obj = (try? Data(contentsOf: self.file)).flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            DispatchQueue.main.async { done(obj as? [String: Any]) }
+        }
+    }
+
+    func set(_ value: Any?, done: @escaping (Bool) -> Void) {
+        guard let v = value as? [String: Any], v["v"] is NSNumber,
               JSONSerialization.isValidJSONObject(v), let data = try? JSONSerialization.data(withJSONObject: v),
               data.count <= Self.maxBytes else { return done(false) }
         queue.async {
