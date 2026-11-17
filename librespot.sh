@@ -62,26 +62,25 @@ for want in "${COMMIT}" "${FALLBACK}"; do
   if [ -x "${CACHE}/librespot-${want}-${PATCHES}-${ARCH}" ]; then BUILT="${CACHE}/librespot-${want}-${PATCHES}-${ARCH}"; break; fi
 done
 
-if [ -z "${BUILT}" ]; then
-  echo "> Building librespot (first time only, takes a few minutes)..."
+# (Each step that matters ends in "|| exit 1": inside "if build", bash ignores set -e.)
+build() (
   if [ ! -d "${SRC}/.git" ]; then
     rm -rf "${SRC}"
-    git init -q "${SRC}"
-    git -C "${SRC}" remote add origin "${REPO}"
+    git init -q "${SRC}" || exit 1
+    git -C "${SRC}" remote add origin "${REPO}" || exit 1
   fi
-  VERSION="${COMMIT}"
+  # Throw away the patches applied by the last build first, or switching versions refuses to run
+  # ("Your local changes … would be overwritten by checkout").
+  git -C "${SRC}" reset -q --hard 2>/dev/null || true
+  git -C "${SRC}" clean -qfd 2>/dev/null || true
+  VERSION="${COMMIT}" WANT="${COMMIT}"
   if ! git -C "${SRC}" fetch -q --depth 1 origin "${COMMIT}" 2>/dev/null; then
     echo "!  The pinned librespot commit isn't available any more; building release ${FALLBACK} instead."
-    VERSION="${FALLBACK}"
-    git -C "${SRC}" fetch -q --depth 1 origin "${FALLBACK_COMMIT}"
+    VERSION="${FALLBACK}" WANT="${FALLBACK_COMMIT}"
+    git -C "${SRC}" fetch -q --depth 1 origin "${FALLBACK_COMMIT}" || exit 1
   fi
-  if [ "${VERSION}" = "${COMMIT}" ]; then
-    git -C "${SRC}" -c advice.detachedHead=false checkout -q "${COMMIT}"
-  else
-    git -C "${SRC}" -c advice.detachedHead=false checkout -q "${FALLBACK_COMMIT}"
-  fi
-  # Start from clean source, then apply Cadenza's patches. One that doesn't fit this version is left out.
-  git -C "${SRC}" checkout -q -- .
+  git -C "${SRC}" -c advice.detachedHead=false checkout -q -f "${WANT}" || exit 1
+  # Then apply Cadenza's patches. One that doesn't fit this version is left out.
   for patch in "${HERE}"/patches/*.patch; do
     [ -f "${patch}" ] || continue
     if git -C "${SRC}" apply "${patch}"; then echo "   + $(basename "${patch}")"
@@ -89,15 +88,34 @@ if [ -z "${BUILT}" ]; then
   done
 
   # Strip debug symbols at build time: about half the size, no difference when running.
+  rm -f "${SRC}/target/release/librespot"
   ( cd "${SRC}" && CARGO_PROFILE_RELEASE_STRIP=symbols \
-      cargo build --release --locked --no-default-features --features "native-tls,with-libmdns" )
+      cargo build --release --locked --no-default-features --features "native-tls,with-libmdns" ) || exit 1
 
-  BUILT="${CACHE}/librespot-${VERSION}-${PATCHES}-${ARCH}"
-  cp "${SRC}/target/release/librespot" "${BUILT}"
+  OUT="${CACHE}/librespot-${VERSION}-${PATCHES}-${ARCH}"
+  cp "${SRC}/target/release/librespot" "${OUT}" || exit 1
   cp "${SRC}/LICENSE" "${CACHE}/LICENSE"
   # The build folder is 1-2 GB and isn't needed again for this version.
   rm -rf "${SRC}/target"
-  echo "OK: Built $(basename "${BUILT}") ($(du -h "${BUILT}" | cut -f1 | tr -d ' '))"
+  # Put the source back as it was fetched, so the next build starts clean.
+  git -C "${SRC}" reset -q --hard
+  echo "OK: Built $(basename "${OUT}") ($(du -h "${OUT}" | cut -f1 | tr -d ' '))"
+)
+
+if [ -z "${BUILT}" ]; then
+  echo "> Building librespot (first time only, takes a few minutes)..."
+  if build; then
+    for want in "${COMMIT}" "${FALLBACK}"; do
+      if [ -x "${CACHE}/librespot-${want}-${PATCHES}-${ARCH}" ]; then BUILT="${CACHE}/librespot-${want}-${PATCHES}-${ARCH}"; break; fi
+    done
+  fi
+  # If this build failed, an earlier one is still better than none: without it the app has no speaker
+  # unless librespot is also installed with Homebrew.
+  if [ -z "${BUILT}" ]; then
+    BUILT="$(ls -t "${CACHE}"/librespot-*-"${ARCH}" 2>/dev/null | head -1 || true)"
+    if [ -n "${BUILT}" ]; then echo "!  Couldn't build the new librespot; using the last one that built: $(basename "${BUILT}")"
+    else echo "!  Couldn't build librespot." >&2; exit 1; fi
+  fi
 fi
 
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources/licenses"
