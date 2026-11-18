@@ -72,6 +72,20 @@ impl Api {
         })
     }
 
+    /// Uploads a raw body (a playlist cover: base64 JPEG sent as image/jpeg). Returns the status.
+    pub async fn upload(&self, method: &str, path: &str, body: Vec<u8>, content_type: &str) -> u16 {
+        let Some(token) = self.auth.token().await else { return 401 };
+        let Ok(url) = url::Url::parse(&format!("{BASE}{path}")) else { return 400 };
+        if url.host_str() != Some("api.spotify.com") { return 400; }
+        let m = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::PUT);
+        let res = self.http.request(m, url).timeout(Duration::from_secs(30)).bearer_auth(token)
+            .header("Content-Type", content_type).body(body).send().await;
+        let status = res.map(|r| r.status().as_u16()).unwrap_or(0);
+        let mut g = self.guard.lock().unwrap();
+        self.note(&mut g, format!("{method} {path} (upload) → {status}"));
+        status
+    }
+
     /// `path` is relative to https://api.spotify.com/v1 ("/me/player") or a full api.spotify.com URL.
     /// Returns (status, body). Status 0 means Spotify couldn't be reached.
     pub async fn request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {

@@ -1,8 +1,9 @@
 //! The page's one way into the app: `native(cmd, args)` in app.js arrives here as the `native` command,
 //! and answers with the same data Bridge.swift sends, so the page can't tell which app it's running in.
 //!
-//! Commands that aren't ported yet answer the way demo mode does (an empty list, "not connected"),
-//! so the page keeps working around them. Each is marked with the phase that brings it.
+//! Commands that aren't ported yet (the sound engine, system parts, updates) answer the way demo mode
+//! does (an empty list, "not connected"), so the page keeps working around them. Each is marked with the
+//! phase that brings it.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -95,17 +96,34 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
             json!(yes)
         }
         "lastfmPlays.get" => files::read_json("lastfm-plays.json").unwrap_or(Value::Null),
-        "lastfmPlays.set" => json!(save_capped("lastfm-plays.json", args.get("value"), 64 << 20, false)),
+        "lastfmPlays.set" => {
+            // Only the expected shape: {user, upTo, plays: [[time, song, artist, album]]}.
+            let v = args.get("value");
+            let shaped = v.map_or(false, |v| v.get("user").map_or(false, Value::is_string)
+                && v.get("upTo").map_or(false, Value::is_number) && v.get("plays").map_or(false, Value::is_array));
+            json!(shaped && save_capped("lastfm-plays.json", v, 64 << 20, false))
+        }
         "history.get" => {
             let since = args.get("since").and_then(Value::as_f64).unwrap_or(0.0);
-            tauri::async_runtime::spawn_blocking(move || history_since(since)).await.unwrap_or(json!([]))
+            tauri::async_runtime::spawn_blocking(move || crate::history::entries(since)).await.unwrap_or(json!([]))
         }
         "spotifyHistory.get" => {
-            // Phase 2 brings the import itself; an import made by the Mac app is read as it is.
-            match files::read_json("spotify-history.json") {
-                Some(v) if v.get("tracks").is_some() && v.get("plays").is_some() => json!({"tracks": v["tracks"], "plays": v["plays"]}),
-                _ => json!({"tracks": [], "plays": []}),
-            }
+            let h = Arc::clone(&core.spotify_history);
+            tauri::async_runtime::spawn_blocking(move || h.snapshot()).await.unwrap_or(json!({"tracks": [], "plays": []}))
+        }
+        "spotifyHistory.import" => {
+            // You pick the files in a dialog, so the page never chooses what gets read.
+            let picked = pick_history_files(window).await;
+            if picked.is_empty() { return Ok(Value::Null); }
+            let h = Arc::clone(&core.spotify_history);
+            tauri::async_runtime::spawn_blocking(move || h.import(&picked)).await.unwrap_or(Value::Null)
+        }
+        "spotifyHistory.clear" => {
+            let yes = ask(window, "Remove your imported Spotify history?",
+                "Stats goes back to Last.fm or Cadenza's own history. Your Spotify account and the files you imported aren't touched, and you can import them again any time.",
+                Some("Remove")).await;
+            if yes { let h = Arc::clone(&core.spotify_history); let _ = tauri::async_runtime::spawn_blocking(move || h.clear()).await; }
+            json!(yes)
         }
 
         // MARK: the window and the system
@@ -131,6 +149,51 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         }
         "cover.dataURL" => cover_data_url(core, &s(args, "url")).await.map(Value::String).unwrap_or(Value::Null),
 
+        // MARK: Last.fm, lyrics, Genius, translation
+        "lastfm.status" => core.lastfm.status(),
+        "lastfm.login" => {
+            let r = core.lastfm.login().await;
+            (core.emit)("lastfm", core.lastfm.status());
+            match r {
+                Ok(user) => { let _ = window.set_focus(); json!({"ok": true, "message": user}) }
+                Err(m) => json!({"ok": false, "message": m}),
+            }
+        }
+        "lastfm.get" => {
+            let params = args.get("params").and_then(Value::as_object).cloned().unwrap_or_default();
+            let (status, body) = core.lastfm.read(&s(args, "method"), &params).await;
+            json!({"status": status, "body": body})
+        }
+        "lastfm.logout" => {
+            core.lastfm.logout();
+            let _ = std::fs::remove_file(files::path("lastfm-plays.json"));
+            (core.emit)("lastfm", core.lastfm.status());
+            json!(true)
+        }
+        "lyrics" => {
+            let secs = args.get("seconds").and_then(Value::as_i64).unwrap_or(0);
+            crate::lastfm::lyrics(&core.http, &s(args, "track"), &s(args, "artist"), &s(args, "album"), secs).await
+        }
+        "genius.search" => crate::lastfm::genius_search(&core.http, &core.settings.secret("geniusToken"), &s(args, "q")).await,
+        "translate.models" => {
+            let emit = core.emit.clone();
+            let below = args.get("below").and_then(Value::as_str).map(String::from);
+            crate::translation::prepare(&core.http, &s(args, "from"), &s(args, "to"), below.as_deref(), crate::files_base(),
+                move |got, total| emit("translate.progress", json!({"got": got, "total": total}))).await
+        }
+        "translate.size" => json!(crate::translation::disk_usage()),
+        "translate.clear" => { crate::translation::clear(); json!(true) }
+
+        "cover.upload" => {
+            let id = s(args, "playlistId");
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) { return Ok(json!({"status": 0})); }
+            let Some(path) = pick_image(window).await else { return Ok(json!({"status": 0})) };
+            let Ok(Some(b64)) = tauri::async_runtime::spawn_blocking(move || crate::cover::jpeg_base64(&path)).await else {
+                return Ok(json!({"status": 0}));
+            };
+            json!({"status": core.api.upload("PUT", &format!("/playlists/{id}/images"), b64.into_bytes(), "image/jpeg").await})
+        }
+
         // MARK: not ported yet, answered like demo mode
         "nowplaying" => json!(true),                                                      // phase 4: media keys, tray, notifications
         "outputs.list" => json!([]),                                                      // phase 3
@@ -153,19 +216,10 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
             st
         }
         "eq.engine" | "eq.meter" | "audio.local" | "mini.toggle" => json!(true),          // phases 3–4
-        "lastfm.status" => json!({"user": "", "hasKeys": false, "loggedIn": false, "error": ""}),   // phase 2
-        "lastfm.get" => json!({"status": 0, "body": null}),
-        "lastfm.login" => json!({"ok": false, "message": "Last.fm comes in the next step of the port."}),
-        "lastfm.logout" => json!(true),
+
         "discord.status" => json!({"enabled": false, "status": "not available yet", "hasId": false}),   // phase 4
         "update.status" | "update.check" => json!({"repo": core.settings.string("updateRepo"), "current": env!("CARGO_PKG_VERSION"), "state": "idle", "message": "", "auto": false}),   // phase 7
         "update.install" => json!({"ok": false, "message": "Updates come in phase 7 of the port."}),
-        "translate.size" => json!(0),                                                     // phase 2
-        "translate.models" => json!({"models": null, "error": "Translation comes in the next step of the port."}),
-        "translate.clear" => json!(true),
-        "genius.search" => json!({"hits": [], "error": "Not available yet"}),
-        "lyrics" => json!({"synced": "", "plain": "", "instrumental": false}),
-        "spotifyHistory.import" | "spotifyHistory.clear" | "cover.upload" => json!(false),
 
         _ => { log::info!("unknown command {cmd} {args}"); return Err(format!("Unknown command: {cmd}")) }
     })
@@ -186,13 +240,22 @@ fn save_capped(name: &str, value: Option<&Value>, max: usize, needs_version: boo
 }
 
 /// Cadenza's own listening log, one JSON play per line.
-fn history_since(since: f64) -> Value {
-    let Ok(text) = std::fs::read_to_string(files::path("history.jsonl")) else { return json!([]) };
-    let out: Vec<Value> = text.lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|o| since <= 0.0 || o.get("at").and_then(Value::as_f64).map_or(true, |at| at >= since))
-        .collect();
-    Value::Array(out)
+/// The Spotify history files to import: the .zip Spotify sends, or the .json files from it.
+async fn pick_history_files(window: &WebviewWindow) -> Vec<std::path::PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window.dialog().file().set_parent(window).set_title("Import your Spotify listening history")
+        .add_filter("Spotify history (.zip or .json)", &["zip", "json"])
+        .pick_files(move |paths| { let _ = tx.send(paths); });
+    rx.await.ok().flatten().unwrap_or_default().into_iter().filter_map(|p| p.into_path().ok()).collect()
+}
+
+/// A picture for a playlist cover.
+async fn pick_image(window: &WebviewWindow) -> Option<std::path::PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window.dialog().file().set_parent(window).set_title("Choose a cover image for this playlist")
+        .add_filter("Images", &["jpg", "jpeg", "png", "webp", "gif", "bmp"])
+        .pick_file(move |path| { let _ = tx.send(path); });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
 /// A dialog on the main window. With `ok` None it's just a notice (answers false).

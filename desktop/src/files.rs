@@ -25,6 +25,18 @@ pub fn support_dir() -> &'static Path {
     })
 }
 
+/// Tests keep their files in a throwaway folder, never in your real one.
+#[cfg(test)]
+pub fn use_test_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let d = std::env::temp_dir().join(format!("cadenza-test-data-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::env::set_var("XDG_DATA_HOME", &d);
+        std::env::set_var("HOME", &d);
+    });
+}
+
 pub fn path(name: &str) -> PathBuf {
     support_dir().join(name)
 }

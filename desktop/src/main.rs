@@ -6,11 +6,16 @@
 mod api;
 mod auth;
 mod bridge;
+mod cover;
 mod files;
+mod history;
+mod lastfm;
 mod librespot;
 mod settings;
 mod sound;
+mod spotify_history;
 mod store;
+mod translation;
 
 use serde_json::Value;
 use std::sync::Arc;
@@ -23,7 +28,11 @@ pub struct Core {
     pub api: Arc<api::Api>,
     pub sound: Arc<sound::Sound>,
     pub librespot: Arc<librespot::Librespot>,
+    pub lastfm: Arc<lastfm::LastFm>,
+    pub spotify_history: Arc<spotify_history::SpotifyHistory>,
     pub http: reqwest::Client,
+    /// Sends an event to the page (app.onNative).
+    pub emit: librespot::Emit,
 }
 
 /// Runs before the page's own scripts. app.js looks for `window.cadenzaNative` and sends every
@@ -54,6 +63,7 @@ const SHIM: &str = r#"
 /// Sends an event to the page: `app.onNative(event, data)`, as Bridge.swift's emit does.
 fn emit_to(app: &tauri::AppHandle, event: &str, data: &Value) {
     let safe: String = event.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_').collect();
+    if !matches!(safe.as_str(), "player" | "eq.levels" | "librespot") { log::info!("to the page: {safe} {}", data.to_string().chars().take(160).collect::<String>()); }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(format!("window.app && app.onNative('{safe}', {data})"));
     }
@@ -61,7 +71,7 @@ fn emit_to(app: &tauri::AppHandle, event: &str, data: &Value) {
 
 /// The address the page uses for `cadenza-files://`: the translator's code and language models.
 /// Windows's web view can't use a custom scheme directly and reaches it through http://<scheme>.localhost.
-fn files_base() -> &'static str {
+pub fn files_base() -> &'static str {
     if cfg!(windows) { "http://cadenza-files.localhost/" } else { "cadenza-files://" }
 }
 
@@ -84,8 +94,13 @@ fn main() {
             let sound = sound::Sound::start();
             let emitter = handle.clone();
             let emit: librespot::Emit = Arc::new(move |event: &str, data: Value| emit_to(&emitter, event, &data));
-            let librespot = librespot::Librespot::new(settings.clone(), api.clone(), sound.clone(), emit);
-            let core = Arc::new(Core { settings: settings.clone(), store, auth, api, sound, librespot: librespot.clone(), http });
+            let history = Arc::new(history::History::default());
+            let librespot = librespot::Librespot::new(settings.clone(), api.clone(), sound.clone(), history, emit.clone());
+            let lastfm = Arc::new(lastfm::LastFm::new(settings.clone(), http.clone()));
+            let core = Arc::new(Core {
+                settings: settings.clone(), store, auth, api, sound, librespot: librespot.clone(), lastfm,
+                spotify_history: Arc::new(spotify_history::SpotifyHistory::default()), http, emit,
+            });
             app.manage(core);
 
             let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base());

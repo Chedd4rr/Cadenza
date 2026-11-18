@@ -28,7 +28,10 @@ open = "5"
 cpal = "0.15"
 ringbuf = "0.4"
 log = "0.4"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+md-5 = "0.10"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
 # Development builds (./build.sh --run) still optimise Cadenza's own code and the audio libraries, so the
 # sound plays smoothly. Everything else stays quick to compile.
