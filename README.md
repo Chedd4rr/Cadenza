@@ -270,7 +270,8 @@ since you skip for lots of reasons (getting to another song, not the mood right 
 Time counts as well, for artists and styles. Every calendar month you keep listening to one adds to how
 long you've stuck with it (those months fade by half over a year), so an artist you've played for years
 and still play outranks one you just found. A burst of plays lately (the last couple of weeks) gives a
-boost too, which wears off once you move on. The Taste page marks these "FOR YEARS" and "LATELY".
+boost too, which wears off once you move on. On the Taste page each bar shows the two apart: the part
+built up over time in the theme's colour, and the part from lately as a lighter, dashed end.
 
 Artists and styles have separate scores. An artist's base score also gets:
 

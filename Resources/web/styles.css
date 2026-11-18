@@ -761,3 +761,12 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 .st-artist.tz-item.active { background: rgb(var(--cyan-rgb) / .16); box-shadow: inset 3px 0 0 var(--cyan); }
 .tz-off .active { background: none !important; box-shadow: none !important; }
 .tz-off .trk.active .in { filter: saturate(.4) opacity(.75); }
+/* Taste bars: the part built up over time in the theme's colour, the part from lately in a lighter one. */
+.tz-item i { height: 3px; overflow: hidden; }
+.tz-item i .tz-lately { position: absolute; right: 0; top: 0; bottom: 0; background: var(--white);
+  background-image: repeating-linear-gradient(90deg, transparent 0 3px, rgb(0 0 0 / .35) 3px 4px); }
+.tz-head { display: flex; align-items: center; gap: .5vw; }
+.tz-head > span:first-child { flex: 1; }
+.tz-key { width: 1.4vw; height: 3px; background: var(--cyan); opacity: .85; }
+.tz-key.lately { background: var(--white); margin-left: .6vw; }
+.tz-legend { font: 600 1.15vh/1 var(--text); letter-spacing: .12em; color: var(--ice); }

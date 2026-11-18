@@ -5349,7 +5349,7 @@ const Taste = {
    *  how many plays you kept, and above all how many *different* songs you keep coming back to. One song
    *  played a lot says you like that song; twenty different songs says you like the artist, even if you
    *  skip plenty of their others along the way. */
-  artistVal(a, c, now = Date.now(), noStyle) {
+  artistVal(a, c, now = Date.now(), noStyle, noLately) {
     if (!c) c = { p: 0, n: 0, k: 0, kp: 0 };                    // never played here, but maybe in your playlists
     const [rel, k] = this.rel(c, "a", now);
     const mp = k / (k + this.PLAYS);
@@ -5362,7 +5362,7 @@ const Taste = {
     // and a little from the styles you like that they belong to. Styles keep their own scores; this is
     // only a nudge, so an artist in a style you love starts a bit higher.
     const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * this.playlistFit(a) + (noStyle ? 0 : this.styleBoost(a, now));
-    let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + 0.3 * this.surge(c);
+    let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + (noLately ? 0 : 0.3 * this.surge(c));
     if (x > 0) x *= this.fewSongs(a, songs);
     return Math.tanh(x);
   },
@@ -5390,7 +5390,7 @@ const Taste = {
    *  - a boost for a lot of it lately (across artists), which wears off;
    *  - and, like an artist you only like a few songs by, a style that rests on one to three artists is
    *    scaled down (×0.65 / 0.75 / 0.85). One band you love can't make its tags "your styles". */
-  styleVal(c, now = Date.now(), g) {
+  styleVal(c, now = Date.now(), g, noLately) {
     if (!c || (g && !this.isStyle(g))) return 0;
     const [rel, k] = this.rel(c, "g", now);
     const mp = k / (k + this.PLAYS);
@@ -5400,7 +5400,7 @@ const Taste = {
     const pls = g ? this.breadth(now, "plstyles")[g] || 0 : 0;
     const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * (pls / (pls + 3));
     // (Lately counts by breadth too: playing one artist a lot this week isn't a new favourite style.)
-    let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + 0.3 * this.surge(c) * mb;
+    let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + (noLately ? 0 : 0.3 * this.surge(c) * mb);
     if (x > 0) x *= artists >= 1 && artists <= 3 ? 0.55 + 0.1 * artists : artists === 0 ? 0.5 : 1;
     return Math.tanh(x);
   },
@@ -5955,7 +5955,9 @@ const Taste = {
   top(kind, n, dir = 1, min = 5) {
     const now = Date.now();
     return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: kind === "a" ? this.artistVal(k, c, now) : kind === "g" ? this.styleVal(c, now, k) : this.val(c, kind, now), m: c.k,
-      years: this.longevity(c) >= 0.6, lately: this.surge(c) >= 0.6 }))
+      // How much of the score is "lately" (the rest is built up over time): the bar shows the two apart.
+      lately: kind === "a" ? this.artistVal(k, c, now, false, true) : kind === "g" ? this.styleVal(c, now, k, true) : null }))
+      .map((e) => ({ ...e, lately: e.lately == null || e.v <= 0 ? 0 : Math.max(0, e.v - e.lately) }))
       .filter((e) => e.m >= min && e.v * dir > 0.05 && !(kind === "a" && this.d.pin[e.k])).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
   },
   /** What stands out at each time of day: artists and styles you play there more than usual. */
@@ -6003,13 +6005,22 @@ views.taste = {
   // Left: what it has learned (and what you marked), each row something you can correct.
   left: new List($("tz-left"), {
     render: (x) => {
-      if (x.head) { const r = h("div", "st-h tz-head"); r.textContent = x.head; return r; }
+      if (x.head) {
+        const r = h("div", "st-h tz-head");
+        r.append(h("span", null, x.head));
+        // What the two parts of the bars mean.
+        if (x.legend) r.append(h("span", "tz-key"), h("small", "tz-legend", "OVER TIME"), h("span", "tz-key lately"), h("small", "tz-legend", "LATELY"));
+        return r;
+      }
       if (x.hint) return h("div", "fr-hint tz-hint", x.hint);
       const r = h("div", "st-artist tz-item" + (x.v < 0 ? " tz-neg" : ""));
-      const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${Math.min(1, Math.abs(x.v)).toFixed(3)})`;
+      const v = Math.min(1, Math.abs(x.v));
+      const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${v.toFixed(3)})`;
+      // The end of the bar that comes from playing them a lot lately, in a second colour.
+      if (x.lately > 0.005 && x.v > 0) { const l = h("b", "tz-lately"); l.style.width = Math.min(100, (x.lately / x.v) * 100).toFixed(1) + "%"; bar.append(l); }
       const mark = x.pin ? (x.pin > 0 ? "♥" : "✕") : String(x.n);
       r.append(h("em", null, mark), h("span", null, upper(x.nm)),
-        h("small", null, x.pin ? (x.pin > 0 ? "YOU LOVE" : "YOU HATE") : (x.v > 0 ? (x.years && x.lately ? "YEARS + LATELY · " : x.years ? "FOR YEARS · " : x.lately ? "LATELY · " : "") : "") + (x.v > 0 ? "+" : "") + Math.round(x.v * 100) + (x.kind === "t" ? " · SONG" : x.kind === "g" ? " · STYLE" : "")), bar);
+        h("small", null, x.pin ? (x.pin > 0 ? "YOU LOVE" : "YOU HATE") : (x.v > 0 ? "+" : "") + Math.round(x.v * 100) + (x.kind === "t" ? " · SONG" : x.kind === "g" ? " · STYLE" : "")), bar);
       return r;
     },
     onActivate: (x) => views.taste.options(x),
@@ -6073,7 +6084,7 @@ views.taste = {
   renderLeft() {
     const d = Taste.d, rows = [], keep = this.left.cur;
     const add = (head, list, hint) => {
-      rows.push({ head });
+      rows.push({ head, legend: head === "YOU LOVE" && list.some((e) => e.lately > 0.005) });
       if (!list.length) { rows.push({ hint }); return; }
       list.forEach((e, i) => rows.push({ ...e, n: i + 1 }));
     };
