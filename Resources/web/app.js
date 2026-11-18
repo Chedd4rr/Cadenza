@@ -2541,6 +2541,9 @@ views.queue = {
     const q = ((r.body && r.body.queue) || []).filter(Boolean);
     // The Up Next song already handed to Spotify shows up in its queue too: list it once, as Up Next.
     if (UpNext.fed) { const k = q.findIndex((t) => t.uri === UpNext.fed); if (k >= 0) q.splice(k, 1); }
+    // With autoplay on, Spotify lists the rest of the album (or playlist) the song was started from after
+    // autoplay's picks. That isn't what plays next (autoplay keeps its own picks coming), so leave it out.
+    if (Radio.active) { const cut = q.findIndex((t) => !Radio.order.some((o) => o.uri === t.uri)); if (cut >= 0) q.splice(cut); }
     const ups = UpNext.items.map((t, i) => ({ ...t, _up: i + 1, _fed: i === 0 && UpNext.fed === t.uri }));
     setBg($("q-art"), now ? pickImage((now.album && now.album.images) || now.images, true) : null);
     $("q-title").textContent = now ? now.name : "NOTHING PLAYING";
@@ -6262,7 +6265,8 @@ const Radio = {
     this.active = true; this.order = [t]; this.at = 0; this.qd = []; this.stray = null;
     this.used = new Set([t.uri, ...this.recent.map((x) => x.uri)]); this.grace = Date.now() + 6000;      // nothing you just heard
     this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
-    this.sent = new Set(); this.played = new Set([t.uri]);
+    this.sent = new Set(); this.played = new Set([t.uri]); this.failedSend = new Set();
+    this.readyAt = Date.now() + 2000;                              // give Spotify a moment to register the new song
     clearInterval(this.timer); this.timer = setInterval(() => this.watch(), 1000);
     this.prog = { uri: t.uri, max: 0, item: t };
     // Songs are added (and the first one handed to Spotify) as each is found, not after the whole batch.
@@ -6308,7 +6312,7 @@ const Radio = {
   /** One more song for the line-up (from a lookup that's still running). */
   /** One key per song whatever the version: the single, the album cut and a remaster are the same song. */
   songKey(t) { const a = LFM.firstArtist(t); return a && t.name ? LFM.key(a, t.name) : ""; },
-  usedKeys: new Set(), sent: new Set(), played: new Set(),
+  usedKeys: new Set(), sent: new Set(), played: new Set(), failedSend: new Set(), readyAt: 0,
   add(t, score, seed) {
     if (!this.active || !t || !t.uri || this.used.has(t.uri) || refusedLately(t.uri)) return false;
     const key = this.songKey(t);
@@ -6511,6 +6515,14 @@ const Radio = {
     if (UpNext.items.length || UpNext.fed) return;               // your Up Next goes first; radio resumes after
     // Running low: look for more like what's on now (in the background; it doesn't hold anything up).
     if (this.upcoming().length < this.LOW && !this.building) { const cur = this.order[this.at]; if (cur) this.extend(cur); }
+    // Not until Spotify says the song is actually playing here. Queued earlier, Spotify answers "no active
+    // device" but sometimes queues it anyway, and the retry then puts it in twice.
+    const p = S.player;
+    if (!(p && p.item && p.is_playing) || Date.now() < (this.readyAt || 0)) {
+      clearTimeout(this.requeueT);
+      this.requeueT = setTimeout(() => this.queueNext(), 1200);
+      return;
+    }
     this.queueing = true;
     try {
       // Top Spotify's queue up to AHEAD songs, in line-up order. (add() calls back here as songs are found.)
@@ -6520,6 +6532,11 @@ const Radio = {
         // Already handed to Spotify earlier this session (and Spotify can't take a song back out of its
         // queue): it's still there, so count it instead of sending it a second time.
         if (this.sent.has(next.uri)) { this.qd.push(next.uri); continue; }
+        // Sending this one failed before: it may have gone in anyway, so look first.
+        if (this.failedSend.has(next.uri)) {
+          const q = await api("GET", "/me/player/queue");
+          if (q.status === 200 && q.body && (q.body.queue || []).some((t) => t && t.uri === next.uri)) { this.sent.add(next.uri); this.qd.push(next.uri); continue; }
+        }
         const r = await api("POST", `/me/player/queue?uri=${enc(next.uri)}`);
         if (!this.active) break;
         if (r.status >= 300 && r.status !== 429) {
@@ -6529,6 +6546,7 @@ const Radio = {
           if (q.status === 200 && q.body && (q.body.queue || []).some((t) => t && t.uri === next.uri)) { this.sent.add(next.uri); this.qd.push(next.uri); continue; }
         }
         if (r.status >= 300) {
+          this.failedSend.add(next.uri);
           // Usually "no active device" while Cadenza's speaker is still starting the song: try again shortly,
           // or the album the song was played from carries on instead of autoplay's picks.
           clearTimeout(this.requeueT);
