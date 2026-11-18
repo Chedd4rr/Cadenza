@@ -36,6 +36,8 @@ struct Shared {
     called: AtomicU64,          // the output asked for
     played: AtomicU64,          // the output played from librespot's sound
     peak: AtomicU64,            // the loudest sample, as f32 bits
+    /// When the output last asked for sound (ms since 1970), for the watchdog.
+    last_callback: AtomicU64,
 }
 
 pub struct Sound {
@@ -54,6 +56,7 @@ impl Sound {
             output: Mutex::new("none yet".into()),
             log: Mutex::new(vec![]),
             received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
+            last_callback: AtomicU64::new(0),
         });
         let r = shared.clone();
         std::thread::Builder::new().name("cadenza-sound-report".into()).spawn(move || report(r)).ok();
@@ -127,14 +130,35 @@ fn note(shared: &Shared, line: String) {
 /// Keeps an output open. With no output at all (a server, a test machine) the sound is taken at real-time
 /// speed anyway, so librespot keeps playing and the position keeps moving.
 fn output_thread(shared: Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) {
+    let mut reopens: Vec<std::time::Instant> = vec![];
     loop {
         shared.broken.store(false, Ordering::SeqCst);
         match open_output(&shared, consumer.clone()) {
             Ok(stream) => {
-                while !shared.broken.load(Ordering::SeqCst) { std::thread::sleep(Duration::from_millis(250)); }
+                // Watchdog: an output that stops asking for sound without reporting an error (it happens
+                // after a computer or virtual machine wakes up, or when the sound server hiccups) is
+                // opened again, so the music doesn't just stop.
+                let opened = std::time::Instant::now();
+                shared.last_callback.store(now_ms(), Ordering::Relaxed);
+                let mut stalled = false;
+                while !shared.broken.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(250));
+                    let since = now_ms().saturating_sub(shared.last_callback.load(Ordering::Relaxed));
+                    if opened.elapsed() > Duration::from_secs(3) && since > 2000 { stalled = true; break; }
+                }
                 drop(stream);
-                note(&shared, "The sound output stopped working: opening it again.".into());
-                std::thread::sleep(Duration::from_millis(500));
+                if stalled {
+                    reopens.retain(|t: &std::time::Instant| t.elapsed() < Duration::from_secs(60));
+                    reopens.push(std::time::Instant::now());
+                    // Wait longer each time it keeps stalling (1 s, 2 s, 4 s… up to 30 s), so a broken
+                    // output isn't reopened over and over.
+                    let wait = (1u64 << (reopens.len() - 1).min(5)).min(30);
+                    note(&shared, format!("The sound output stopped asking for sound: opening it again in {wait} s."));
+                    std::thread::sleep(Duration::from_secs(wait));
+                } else {
+                    note(&shared, "The sound output stopped working: opening it again.".into());
+                    std::thread::sleep(Duration::from_millis(500));
+                }
             }
             Err(e) => {
                 note(&shared, format!("No sound output ({e}). Playing silently and trying again in 5 s."));
@@ -257,6 +281,7 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
                 frac += step;
             }
             counts.called.fetch_add(frames as u64, Ordering::Relaxed);
+            counts.last_callback.store(now_ms(), Ordering::Relaxed);
             counts.played.fetch_add(played, Ordering::Relaxed);
             let was = f32::from_bits(counts.peak.load(Ordering::Relaxed) as u32);
             if peak > was { counts.peak.store(peak.to_bits() as u64, Ordering::Relaxed); }
