@@ -1,6 +1,14 @@
-# Screenshots
+# Docs
 
-The pictures used in the main README.
+Longer explanations behind the main [README](../README.md):
+
+| File | About |
+|---|---|
+| [`taste.md`](taste.md) | How autoplay finds and ranks songs, and how the taste profile scores artists, songs and styles |
+| [`stats.md`](stats.md) | Where Stats gets its plays, and how the Spotify history import works |
+| [`librespot.md`](librespot.md) | How the audio engine inside the app is built and patched |
+
+And the screenshots the README uses:
 
 | File | Shows |
 |---|---|

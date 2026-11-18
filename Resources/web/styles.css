@@ -328,7 +328,9 @@ body.playing #v-dj.live .vinyl { animation-play-state: running; }
 #sweep .cover { width: 150vw; left: -5vw; }
 
 /* ============ Key hints & toast ============ */
-#keys { position: fixed; right: 3vw; bottom: 3.5vh; z-index: 20; display: flex; gap: .8vw; }
+#keys { position: fixed; right: 3vw; bottom: 3.5vh; z-index: 20; display: flex; gap: .8vw; max-width: 94vw; overflow: hidden; }
+#keys > .key { flex: none; }
+#keys.tight .key b, #keys.tight .key span { font-size: 1.6vh; }
 .key { display: flex; align-items: center; gap: .5vw; transform: skewX(var(--skew)); background: rgb(var(--navy-rgb) / .9); padding: .6vh .8vw .6vh .6vw; }
 .key b { background: var(--white); color: var(--deep); font-weight: 900; font-style: normal; font-size: 1.9vh; line-height: 1; padding: .4vh .5vw; min-width: 1.8vw; text-align: center; }
 .key span { font-weight: 700; font-size: 1.9vh; line-height: 1; letter-spacing: .1em; color: var(--ice); }

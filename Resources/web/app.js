@@ -677,13 +677,28 @@ function toast(msg, isError) {
 function setKeys(list) {
   const k = $("keys");
   k.textContent = "";
+  k.classList.remove("tight");
   for (const [key, label, action] of list) {
     const d = h("div", "key");
     d.append(h("b", null, key), h("span", null, label));
     if (action) { d.style.cursor = "pointer"; d.onclick = action; }
     k.append(d);
   }
+  fitKeys();
 }
+/** When a page has more key hints than fit (they'd run under the now-playing panel in some themes), make
+ *  them a little smaller, then leave out the obvious ones (arrows), then the least important (from the
+ *  end, keeping ESC). Every key still works; the Keyboard page lists them all. */
+function fitKeys() {
+  const k = $("keys");
+  const over = () => k.scrollWidth > k.clientWidth + 1;
+  if (!k.children.length || !over()) return;
+  k.classList.add("tight");
+  const items = [...k.children];
+  for (const d of items) { if (!over()) return; if (/^[↑↓←→⌥]/.test(d.querySelector("b").textContent)) d.remove(); }
+  for (let i = k.children.length - 2; i > 0 && over(); i--) k.children[i].remove();
+}
+addEventListener("resize", () => { clearTimeout(fitKeys.t); fitKeys.t = setTimeout(refreshKeys, 200); });
 
 /* =====================================================================
    Icons: small line icons drawn with SVG, so they look the same on every Mac and in every theme
@@ -8219,6 +8234,9 @@ function openSearch() {
 
 document.addEventListener("keydown", (e) => {
   const typing = !!(e.target && e.target.matches && e.target.matches("input, textarea"));
+  // ⇧⌘D copies the diagnostics from anywhere (even mid-palette or in stage mode), for a bug report.
+  // (Not ⌥⌘D: macOS uses that to hide the Dock.)
+  if (e.metaKey && e.shiftKey && !e.altKey && e.code === "KeyD") { e.preventDefault(); copyDiagnostics(); return; }
   if (Palette.isOpen) { if (Palette.onKey(e)) e.preventDefault(); return; }
   if (Stage.isOpen && !Modal.isOpen) { if (Stage.onKey(e)) e.preventDefault(); return; }
   if (Modal.isOpen) { if (Modal.onKey(e)) e.preventDefault(); return; }
@@ -8791,6 +8809,7 @@ const COMMANDS = [
   ["ANYWHERE", "Stage mode (full screen)", "F  ·  ⌘ ⇧ F", () => Stage.open()],
   ["ANYWHERE", "Search Spotify", "⌘ F  ·  /", () => openSearch()],
   ["ANYWHERE", "Switch theme", "⌘ T", () => switchTheme()],
+  ["ANYWHERE", "Copy diagnostics (for a bug report)", "⇧ ⌘ D", () => copyDiagnostics()],
   ["ANYWHERE", "Back", "ESC  ·  ⌫"],
   ["ANYWHERE", "System settings", "⌘ ,", () => go("system")],
   ["ANYWHERE", "This list", "⌘ /"],
