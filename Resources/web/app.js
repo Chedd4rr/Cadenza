@@ -3402,8 +3402,8 @@ views.builder = {
     onSelect: () => views.builder.setSide("draft", true),
   }),
   suggList: new List($("bd-sugg"), {
-    render: (x, i) => views.builder.row(x.t, i, "sugg"),
-    onActivate: (x, i, act) => views.builder.act(act || "add", x && x.t, "sugg"),
+    render: (x, i) => (x.artist ? views.builder.artistRow(x.artist) : views.builder.row(x.t, i, "sugg")),
+    onActivate: (x, i, act) => (x && x.artist ? views.builder.openArtist(x.artist) : views.builder.act(act || "add", x && x.t, "sugg")),
     onSelect: () => views.builder.setSide("sugg", true),
   }),
 
@@ -3426,6 +3426,16 @@ views.builder = {
     return r;
   },
 
+  /** An artist in the search results: ⏎ shows their songs to pick from. */
+  artistRow(a) {
+    const r = h("div", "trk media artist bd-artist");
+    const inn = h("div", "in"), th = h("span", "thumb"), ti = h("span", "ti");
+    setBg(th, pickImage(a.images));
+    ti.append(h("b", null, a.name), h("i", null, "Artist" + (a.genres && a.genres.length ? "  ·  " + a.genres.slice(0, 3).join(", ") : "") + "  ·  ⏎ for their songs"));
+    inn.append(th, ti, h("span", "acts"), h("span", "du", "ARTIST ›"));
+    r.append(inn);
+    return r;
+  },
   /** Build on a playlist: your own is edited in place; one you can't edit (or Liked Songs) becomes a copy. */
   open(pl) {
     if (!pl) return go("builder", {});
@@ -3514,11 +3524,11 @@ views.builder = {
     if (at == null) this.draft.push(t); else this.draft.splice(at, 0, t);
     this.renderDraft(at == null ? this.draft.length - 1 : at);
     Sfx.play("toggle");
-    // The song you just added steers the suggestions.
+    // The suggestions follow the playlist: worked out again from its songs (the newest count most).
     this.sugg = this.sugg.filter((x) => x.t.uri !== t.uri);
     this.refreshSugg();
     clearTimeout(this.reT);
-    this.reT = setTimeout(() => this.suggest(true), 900);
+    this.reT = setTimeout(() => this.suggest(false, true), 900);
   },
   remove(i) {
     if (i < 0 || i >= this.draft.length) return;
@@ -3526,6 +3536,8 @@ views.builder = {
     const [t] = this.draft.splice(i, 1);
     this.renderDraft(Math.min(i, this.draft.length - 1));
     toast("REMOVED " + upper(cleanTitle(t.name)) + " · U TO UNDO");
+    clearTimeout(this.reT);
+    this.reT = setTimeout(() => this.suggest(false, true), 900);      // the suggestions follow what's left
   },
   move(from, to) {
     if (to < 0 || to >= this.draft.length || from === to) return;
@@ -3638,36 +3650,46 @@ views.builder = {
   refreshSugg() {
     const have = new Set(this.draft.map((t) => t.uri));
     let rows;
-    if (this.searchQ) rows = (this.found || []).filter((t) => !have.has(t.uri)).map((t) => ({ t, s: 0 }));
+    if (this.searchQ) {
+      const songs = (this.found || []).filter((t) => !have.has(t.uri)).map((t) => ({ t, s: 0 }));
+      rows = this.artistView ? songs : [...(this.foundArtists || []).map((artist) => ({ artist })), ...songs];
+    }
     else rows = this.sugg.filter((x) => !have.has(x.t.uri) && this.matches(x.t)).sort((a, b) => b.s - a.s);
     const keep = this.suggList.i;
     this.suggList.set(rows);
     if (rows.length) this.suggList.select(Math.min(keep, rows.length - 1), false);
     const checking = this.mood !== "all" && !this.searchQ ? this.sugg.filter((x) => !this.tags.has(x.t.uri)).length : 0;
-    setText("bd-rtitle", this.searchQ ? `SEARCH · ${upper(this.searchQ)}` : this.mood === "all" ? "SUGGESTED FOR THIS PLAYLIST" : `SUGGESTED · ${MOODS[this.mood].label}` + (checking ? `  ·  CHECKING ${checking} MORE…` : ""));
+    setText("bd-rtitle", this.artistView ? `SONGS BY ${upper(this.artistView.name)} · ESC FOR THE SEARCH` : this.searchQ ? `SEARCH · ${upper(this.searchQ)}` : this.mood === "all" ? "SUGGESTED FOR THIS PLAYLIST" : `SUGGESTED · ${MOODS[this.mood].label}` + (checking ? `  ·  CHECKING ${checking} MORE…` : ""));
     const empty = $("bd-sempty");
     empty.hidden = rows.length > 0;
-    empty.textContent = this.searchQ ? "NO RESULTS" : this.loading ? "FINDING SONGS…" : checking ? "CHECKING MOODS…" : "NO IDEAS YET · ADD A SONG OR PICK A MOOD";
+    empty.textContent = this.searchLoading ? "SEARCHING…" : this.searchQ ? "NO RESULTS" : this.loading ? "FINDING SONGS…" : checking ? "CHECKING MOODS…" : "NO IDEAS YET · ADD A SONG OR PICK A MOOD";
     if (this.side === "sugg") this.paintSide();
   },
 
-  /** Find suggestions. `keep` keeps what's there and adds to it. */
-  async suggest(keep) {
+  /** Find suggestions from the whole playlist so far. `keep` adds to what's there (more ideas, a mood);
+   *  `soft` (after adding or removing a song) keeps showing the old ones until enough new ones are in. */
+  async suggest(keep, soft) {
     const token = ++this.sugToken;
-    if (!keep) this.sugg = [];
+    if (!keep && !soft) this.sugg = [];
+    let list = keep ? this.sugg : soft ? [] : this.sugg;
     this.loading = true;
     this.refreshSugg();
     const have = new Set(this.draft.map((t) => t.uri));
-    const found = new Map(this.sugg.map((x) => [x.t.uri, x]));
+    const haveSongs = new Set(this.draft.map((t) => LFM.key(LFM.firstArtist(t), t.name)));
+    const found = new Map(list.map((x) => [x.t.uri, x]));
+    const foundSongs = new Map(list.map((x) => [LFM.key(LFM.firstArtist(x.t), x.t.name), x]));
     const add = (t, s, moodTag) => {
       if (token !== this.sugToken || !t || !t.uri || have.has(t.uri) || t.is_local) return;
+      const song = LFM.key(LFM.firstArtist(t), t.name);
+      if (haveSongs.has(song)) return;                                     // another version of a song already in
       if (moodTag) { const set = this.tags.get(t.uri) || new Set(); set.add(moodTag); this.tags.set(t.uri, set); }
-      const cur = found.get(t.uri);
+      const cur = found.get(t.uri) || foundSongs.get(song);
       if (cur) { cur.s += s; return; }
       const x = { t, s };
-      found.set(t.uri, x);
-      this.sugg.push(x);
+      found.set(t.uri, x); foundSongs.set(song, x);
+      list.push(x);
       this.wantTags(t);
+      if (list !== this.sugg && list.length >= 8) this.sugg = list;        // enough new ideas: show them
       clearTimeout(this.paintT);
       this.paintT = setTimeout(() => this.refreshSugg(), 150);
     };
@@ -3683,7 +3705,18 @@ views.builder = {
       await Promise.all([worker(), worker(), worker()]);
     };
     const now = S.player && S.player.item && S.player.item.raw;
-    const seeds = this.draft.length ? this.draft.slice(-3).reverse() : now ? [now] : [];
+    // Up to six songs from the playlist, newest first (the newest count most), spread across its artists.
+    const seeds = [];
+    for (const t of this.draft.slice().reverse()) {
+      if (seeds.length >= 6) break;
+      if (seeds.filter((x) => LFM.firstArtist(x) === LFM.firstArtist(t)).length < 2) seeds.push(t);
+    }
+    if (!seeds.length && now) seeds.push(now);
+    const W = [1, 0.85, 0.7, 0.6, 0.5, 0.4];
+    // The playlist's main artists, for artists like them.
+    const artistCount = {};
+    this.draft.forEach((t) => { const a = LFM.firstArtist(t); if (a) artistCount[a] = (artistCount[a] || 0) + 1; });
+    const mainArtists = Object.entries(artistCount).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([a]) => a);
     const mood = MOODS[this.mood];
     try {
       if (LFM.ready()) {
@@ -3695,15 +3728,26 @@ views.builder = {
             return artist ? LFM.get("track.getSimilar", { artist, track: cleanTitle(sd.name), limit: 30, autocorrect: 1 }, 3600000) : null;
           }));
           const score = new Map(), per = {};
+          // A song that's similar to several songs in the playlist adds up, so it fits the whole thing.
           answers.forEach((b, n) => LFM.arr(b && b.similartracks && b.similartracks.track).forEach((x, rank) => {
             const a = x.artist && x.artist.name;
             if (!a) return;
             const k = LFM.key(a, x.name), cur = score.get(k) || { name: x.name, artist: a, s: 0 };
-            cur.s += [1, 0.7, 0.5][n] * ((+x.match || 0) + 1 / (rank + 3));
+            cur.s += W[n] * ((+x.match || 0) + 1 / (rank + 3));
             score.set(k, cur);
           }));
-          const list = [...score.values()].sort((a, b) => b.s - a.s).filter((x) => (per[x.artist] = (per[x.artist] || 0) + 1) <= 2).slice(0, 24);
-          await resolveAll(list, (x) => x.s);
+          const ranked = [...score.values()].filter((x) => !haveSongs.has(LFM.key(x.artist, x.name)))
+            .sort((a, b) => b.s - a.s).filter((x) => (per[x.artist] = (per[x.artist] || 0) + 1) <= 2).slice(0, 30);
+          await resolveAll(ranked, (x) => x.s);
+        })());
+        // Artists like the playlist's main ones: a popular song each.
+        if (mainArtists.length) jobs.push((async () => {
+          const sims = await Promise.all(mainArtists.map((a) => LFM.get("artist.getSimilar", { artist: a, limit: 10, autocorrect: 1 }, 3600000)));
+          const names = [...new Set(sims.flatMap((b) => LFM.arr(b && b.similarartists && b.similarartists.artist).slice(0, 6).map((x) => x.name)))].filter((n) => n && !artistCount[n]).slice(0, 8);
+          const picks = (await Promise.all(names.map((a) => LFM.get("artist.getTopTracks", { artist: a, limit: 5, autocorrect: 1 }, 86400000))))
+            .map((b, i) => { const list = LFM.arr(b && b.toptracks && b.toptracks.track); const x = list[Math.floor(Math.random() * Math.min(3, list.length))]; return x ? { name: x.name, artist: names[i] } : null; })
+            .filter(Boolean);
+          await resolveAll(picks, () => 0.6);
         })());
         // A mood: Last.fm's top songs for that mood's tag (a different handful each time).
         if (mood && mood.tag) jobs.push((async () => {
@@ -3730,7 +3774,10 @@ views.builder = {
         }
       }
     } finally {
-      if (token === this.sugToken) { this.loading = false; this.refreshSugg(); }
+      if (token === this.sugToken) {
+        if (list !== this.sugg && (list.length || !soft)) this.sugg = list;
+        this.loading = false; this.refreshSugg();
+      }
     }
   },
 
@@ -3763,18 +3810,63 @@ views.builder = {
   },
 
   focusSearch() { const q = $("bd-q"); q.focus(); q.select(); },
+  /** Search, like the app's: artists first, then songs. Spotify gives apps at most 10 results per request
+   *  (since February 2026), so songs come in two pages. The same song in several releases shows once. */
   searchInput() {
     clearTimeout(this.searchT);
     this.searchT = setTimeout(async () => {
       const q = $("bd-q").value.trim();
-      this.searchQ = q;
-      if (!q) { this.found = []; return this.refreshSugg(); }
-      const r = await api("GET", `/search?type=track&limit=20&q=${enc(q)}`);
-      if (this.searchQ !== q) return;
-      this.found = ((r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || []).filter((t) => t && t.uri && !t.is_local);
+      this.searchQ = q; this.artistView = null;
+      if (!q) { this.found = []; this.foundArtists = []; this.searchLoading = false; return this.refreshSugg(); }
+      this.searchLoading = true; this.found = []; this.foundArtists = [];
       this.setSide("sugg");
       this.refreshSugg();
-    }, 260);
+      const [a, b] = await Promise.all([
+        api("GET", `/search?type=track,artist&limit=10&q=${enc(q)}`),
+        api("GET", `/search?type=track&limit=10&offset=10&q=${enc(q)}`),
+      ]);
+      if (this.searchQ !== q || this.artistView) return;
+      const tracks = [a, b].flatMap((r) => (r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || []);
+      const artists = ((a.status === 200 && a.body && a.body.artists && a.body.artists.items) || []).filter((x) => x && x.id);
+      // Artists whose name matches what you typed, best first (Spotify's artist results can be loose).
+      const ql = LFM.norm(q);
+      this.foundArtists = artists.filter((x) => { const n = LFM.norm(x.name); return n && (n.includes(ql) || ql.includes(n)); }).slice(0, 3);
+      this.found = this.uniqueSongs(tracks);
+      this.searchLoading = false;
+      this.refreshSugg();
+    }, 220);
+  },
+  /** Songs without repeats: one per song (the first, usually the original release), no local files. */
+  uniqueSongs(list) {
+    const seen = new Set();
+    return list.filter((t) => {
+      if (!t || !t.uri || t.is_local) return false;
+      const k = LFM.key(LFM.firstArtist(t), t.name);
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  },
+  /** An artist from the search: their songs (three pages of Spotify search), to add from. */
+  async openArtist(a) {
+    if (!a) return;
+    this.artistView = a;
+    this.searchLoading = true; this.found = [];
+    this.refreshSugg();
+    const pages = await Promise.all([0, 10, 20].map((off) => api("GET", `/search?type=track&limit=10&offset=${off}&q=${enc('artist:"' + a.name + '"')}`)));
+    if (this.artistView !== a) return;
+    const tracks = pages.flatMap((r) => (r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || [])
+      .filter((t) => t && (t.artists || []).some((x) => x.id === a.id || LFM.norm(x.name) === LFM.norm(a.name)));
+    this.found = this.uniqueSongs(tracks);
+    this.searchLoading = false;
+    this.suggList.i = 0;
+    this.refreshSugg();
+  },
+  /** Esc in an artist's songs goes back to the search results. */
+  closeArtist() {
+    if (!this.artistView) return false;
+    this.artistView = null;
+    this.searchInput();
+    return true;
   },
 
   // ----- Shared -----
@@ -3825,14 +3917,17 @@ views.builder = {
       if (e.key === "Escape" || (e.key === "ArrowDown" && e.target.id === "bd-q")) { e.target.blur(); this.setSide("sugg"); return true; }
       if (e.key === "Enter") {
         if (e.target.id === "bd-name") { e.target.blur(); this.remember(); return true; }
-        const t = this.suggList.cur && this.suggList.cur.t;
-        if (t) this.addTrack(t);
+        const cur = this.suggList.cur;
+        if (cur && cur.artist) { e.target.blur(); this.setSide("sugg"); this.openArtist(cur.artist); }
+        else if (cur && cur.t) this.addTrack(cur.t);
         return true;
       }
       if (e.key === "Tab") { e.target.blur(); this.setSide(e.target.id === "bd-q" ? "draft" : "sugg"); return true; }
       return false;
     }
     const k = e.key.toLowerCase(), L = this.list(), cur = L.cur, t = this.side === "sugg" ? cur && cur.t : cur;
+    if ((e.key === "Escape" || e.key === "Backspace") && this.closeArtist()) return true;
+    if (this.side === "sugg" && e.key === "Enter" && cur && cur.artist) { pop(L.rows[L.i]); this.openArtist(cur.artist); return true; }
     if (e.key === "Tab") { this.setSide(this.side === "draft" ? "sugg" : "draft"); return true; }
     if (this.side === "draft" && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { this.move(L.i, L.i + (e.key === "ArrowUp" ? -1 : 1)); return true; }
     if (L.nav(e)) return true;
@@ -6263,9 +6358,8 @@ const Radio = {
   },
   begin(t) {
     this.active = true; this.order = [t]; this.at = 0; this.qd = []; this.stray = null;
-    this.used = new Set([t.uri, ...this.recent.map((x) => x.uri)]); this.grace = Date.now() + 6000;      // nothing you just heard
-    this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
-    this.sent = new Set(); this.played = new Set([t.uri]); this.failedSend = new Set();
+    this.grace = Date.now() + 6000;
+    this.fresh(t, true);
     this.readyAt = Date.now() + 2000;                              // give Spotify a moment to register the new song
     clearInterval(this.timer); this.timer = setInterval(() => this.watch(), 1000);
     this.prog = { uri: t.uri, max: 0, item: t };
@@ -6310,6 +6404,17 @@ const Radio = {
     this.order = head.concat(out);
   },
   /** One more song for the line-up (from a lookup that's still running). */
+  /** A new autoplay session from `t`. `picked`: you chose that song yourself, so it alone sets the
+   *  direction (the songs you heard before it were a different mood, and shouldn't steer what comes next).
+   *  Otherwise (an album or playlist ran out) the last few songs of it count too. */
+  fresh(t, picked) {
+    this.used = new Set([t.uri, ...this.recent.map((x) => x.uri)]);                     // nothing you just heard
+    this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
+    this.sent = new Set(); this.played = new Set([t.uri]); this.failedSend = new Set();
+    this.startedAt = picked ? Date.now() - 3000 : 0;
+    if (picked) { this.liked = []; this.likedUris = new Set(); }    // songs finished last session were for that mood
+  },
+  startedAt: 0,
   /** One key per song whatever the version: the single, the album cut and a remaster are the same song. */
   songKey(t) { const a = LFM.firstArtist(t); return a && t.name ? LFM.key(a, t.name) : ""; },
   usedKeys: new Set(), sent: new Set(), played: new Set(), failedSend: new Set(), readyAt: 0,
@@ -6404,13 +6509,15 @@ const Radio = {
   heard(it) {
     const artists = (it.raw && it.raw.artists) || String(it.artists || "").split(", ").filter(Boolean).map((name) => ({ name }));
     if (!it.uri || !/^spotify:track:/.test(it.uri) || !artists.length) return;
-    this.recent = [{ uri: it.uri, name: it.name, artists }, ...this.recent.filter((x) => x.uri !== it.uri)].slice(0, 6);
+    this.recent = [{ uri: it.uri, name: it.name, artists, at: Date.now() }, ...this.recent.filter((x) => x.uri !== it.uri)].slice(0, 6);
   },
   /** Songs like the ones you just played, from Last.fm's listening data ("people who play this also play…").
    *  Each of the last three songs counts, the newest most. Empty when Last.fm isn't set up or knows nothing. */
   async similarLastfm(seed, found) {
     if (!LFM.ready()) return [];
-    const seeds = [seed, ...this.recent.filter((x) => x.uri !== seed.uri)].slice(0, 3);
+    // Only songs heard since this autoplay started (when you picked its first song yourself): what you
+    // played before that was another mood and would pull in songs that don't fit.
+    const seeds = [seed, ...this.recent.filter((x) => x.uri !== seed.uri && (x.at || 0) >= this.startedAt)].slice(0, 3);
     const score = new Map();
     const title = (x) => LFM.norm(cleanTitle(x));
     const playedTitles = new Set(seeds.map((x) => title(x.name)));
@@ -6672,7 +6779,7 @@ const Radio = {
       const same = q.item ? q.item.uri === last.uri && this.ended(q) : !!(this.nearEnd && this.nearEnd.uri === last.uri);
       if (!same) return;
       const seed = { uri: last.uri, name: last.name, artists: (last.raw && last.raw.artists) || [] };
-      this.used = new Set([seed.uri, ...this.recent.map((x) => x.uri)]);
+      this.fresh(seed, false);
       this.active = true; this.order = [seed]; this.at = 0; this.qd = [];
       this.holdQueue = true;                                   // nothing goes in Spotify's queue until the first song plays
       let started = false;
@@ -8992,6 +9099,7 @@ const Demo = (() => {
     if (method === "tag.getTopTracks") return { tracks: { track: rot(tracks, String(q.tag).length).map((t) => ({ name: t.name, artist: { name: t.artists[0].name } })) } };
     if (method === "track.getSimilar") return { similartracks: { track: rot(tracks, 3).slice(0, 8).map((t, i) => ({ name: t.name, artist: { name: t.artists[0].name }, match: String(1 - i / 10) })) } };
     if (method === "artist.getSimilar") return { similarartists: { artist: lfmArtists.slice(1, 6).map((name) => ({ name })) } };
+    if (method === "artist.getTopTracks") return { toptracks: { track: tracks.filter((t) => t.artists[0].name === q.artist).map((t) => ({ name: t.name, artist: { name: t.artists[0].name } })) } };
     if (method === "track.getInfo") { const i = Math.max(0, songs.findIndex((t) => t.name.toLowerCase().startsWith(String(q.track || "").toLowerCase().slice(0, 6)))); return { track: { name: q.track, userplaycount: String(Math.round(620 / (i + 1.2)) + 1) } }; }
     return {};
   }
@@ -9012,6 +9120,8 @@ const Demo = (() => {
       const hits = tracks.filter((t) => (t.name + t.artists[0].name + t.album.name).toLowerCase().includes(term.slice(0, 3)));
       const list = (hits.length ? hits : tracks).concat(tracks).slice(off, off + 10);
       const type = q.get("type");
+      // Several types at once (as the playlist builder asks): songs and artists together.
+      if (type === "track,artist") return ok({ tracks: { items: list, total: 24 }, artists: { items: [...new Map(tracks.filter((t) => t.artists[0].name.toLowerCase().includes(term.slice(0, 3))).map((t) => [t.artists[0].id, { ...t.artists[0], uri: "spotify:artist:" + t.artists[0].id, genres: ["dream pop"], images: t.album.images }])).values()], total: 1 } });
       if (type === "album") return ok({ albums: { items: [...new Map(tracks.map((t) => [t.album.id, { ...t.album, uri: "spotify:album:" + t.album.id, artists: t.artists, release_date: "2024-05-01", album_type: "album" }])).values()].slice(off, off + 10), total: 5 } });
       if (type === "artist") return ok({ artists: { items: [...new Map(tracks.map((t) => [t.artists[0].id, { ...t.artists[0], uri: "spotify:artist:" + t.artists[0].id, genres: ["dream pop", "city pop"], images: t.album.images }])).values()].slice(off, off + 10), total: 5 } });
       if (type === "playlist") return ok({ playlists: { items: playlists.slice(off, off + 10), total: playlists.length } });

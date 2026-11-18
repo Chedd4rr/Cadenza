@@ -43,7 +43,9 @@ which it starts and manages for you.
 - Synced lyrics from LRCLIB, timed to what you actually hear. Press T to translate them into your
   Mac's language, offline, with Firefox's translator (see [Lyrics translation](#lyrics-translation)). Search → Lyrics finds a song from a line you remember.
 - A playlist builder (N in Library, B on a playlist, or ⌘K): your playlist on the left, and on the right
-  songs like the ones you've added, a search box and mood filters (chill, energy, happy, moody, focus,
+  suggestions worked out from the whole playlist (they change as you add and remove songs: songs like
+  several of yours count most, plus songs by artists like your main ones), a search box that finds songs
+  and artists (⏎ on an artist lists their songs, Esc goes back) and mood filters (chill, energy, happy, moody, focus,
   party, love). Drag songs to order them, spread out artists, shuffle, undo, and save as a new playlist
   or back to the one you opened. What you're building is kept if you leave the page.
 - Up Next, Cadenza's own queue: add with Q, reorder with ⌥↑/⌥↓, remove with X, clear with C.
