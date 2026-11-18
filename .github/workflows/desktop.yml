@@ -1,30 +1,48 @@
-# Builds the Windows, Linux and macOS app (desktop/) on every push that touches it, so a change that
-# breaks one of them shows up straight away. The installers are kept for a week under the run's
-# "Artifacts", for trying out. Releases come later (phase 7 of the port).
+# Builds the Windows, Linux and macOS app (desktop/) when you ask for it: Actions → Desktop app →
+# Run workflow, then pick which system. The installers are kept for a week under the run's "Artifacts".
+#
+# It only runs when started by hand because on a private repository build time comes out of a monthly
+# allowance, and the Mac runners cost about ten times as much as Linux ones. Roughly, one run costs:
+# Linux $0.12, Windows $0.30, macOS $1.55, of the $12 a month a free account includes.
 name: Desktop app
 
 on:
-  push:
-    paths: ["desktop/**", "Resources/web/**", "patches/**", ".github/workflows/desktop.yml"]
-  pull_request:
-    paths: ["desktop/**", "Resources/web/**", "patches/**", ".github/workflows/desktop.yml"]
   workflow_dispatch:
+    inputs:
+      system:
+        description: Which system to build
+        type: choice
+        default: linux
+        options: [linux, windows, macos, all]
 
 permissions:
   contents: read
 
 jobs:
+  # Turns the choice into the list of systems to build, so only those runners start (and are paid for).
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      systems: ${{ steps.pick.outputs.systems }}
+    steps:
+      - id: pick
+        run: |
+          linux='{"os":"ubuntu-22.04","name":"linux"}'
+          windows='{"os":"windows-latest","name":"windows"}'
+          macos='{"os":"macos-latest","name":"macos"}'
+          case "${{ inputs.system }}" in
+            all) echo "systems=[$linux,$windows,$macos]" >> "$GITHUB_OUTPUT" ;;
+            windows) echo "systems=[$windows]" >> "$GITHUB_OUTPUT" ;;
+            macos) echo "systems=[$macos]" >> "$GITHUB_OUTPUT" ;;
+            *) echo "systems=[$linux]" >> "$GITHUB_OUTPUT" ;;
+          esac
+
   build:
+    needs: pick
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            name: linux
-          - os: windows-latest
-            name: windows
-          - os: macos-latest
-            name: macos
+        include: ${{ fromJSON(needs.pick.outputs.systems) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:

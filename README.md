@@ -304,7 +304,7 @@ Swift can't do. How the bundled librespot is built and patched is in [docs/libre
 Cadenza is being ported to Windows and Linux with [Tauri](https://tauri.app), in `desktop/`. It uses the
 same page; the native side is rewritten in Rust. It's early: sign-in and playback work, most extras
 don't yet. What works, what's coming and how to build it are in [desktop/README.md](desktop/README.md).
-GitHub builds it for all three systems on every change (Actions → Desktop app).
+GitHub can build it for any of the three systems when you start it (Actions → Desktop app → Run workflow).
 
 ## Troubleshooting
 
