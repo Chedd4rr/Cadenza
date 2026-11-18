@@ -15,8 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const RATE: u32 = 44_100;
-/// The output's own buffer, in frames (about 45 ms at 44.1 kHz).
+/// The output's own buffer, in frames: about 45 ms at 44.1 kHz to start with. If the output keeps
+/// falling behind (a slow computer or a virtual machine), it's doubled, up to about 190 ms.
 const BUFFER_FRAMES: u32 = 2048;
+const BUFFER_FRAMES_MAX: u32 = 8192;
 const BUFFER_SAMPLES: usize = (RATE as usize / 4) * 2;       // a quarter of a second, two channels
 
 fn now_ms() -> u64 {
@@ -38,6 +40,11 @@ struct Shared {
     peak: AtomicU64,            // the loudest sample, as f32 bits
     /// When the output last asked for sound (ms since 1970), for the watchdog.
     last_callback: AtomicU64,
+    /// The output buffer to ask for next time it's opened, and the rate it runs at.
+    buffer_frames: std::sync::atomic::AtomicU32,
+    rate: std::sync::atomic::AtomicU32,
+    /// The output is falling behind: open it again with the bigger buffer.
+    too_slow: AtomicBool,
 }
 
 pub struct Sound {
@@ -57,6 +64,9 @@ impl Sound {
             log: Mutex::new(vec![]),
             received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
             last_callback: AtomicU64::new(0),
+            buffer_frames: std::sync::atomic::AtomicU32::new(BUFFER_FRAMES),
+            rate: std::sync::atomic::AtomicU32::new(RATE),
+            too_slow: AtomicBool::new(false),
         });
         let r = shared.clone();
         std::thread::Builder::new().name("cadenza-sound-report".into()).spawn(move || report(r)).ok();
@@ -141,12 +151,16 @@ fn output_thread(shared: Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) {
                 let opened = std::time::Instant::now();
                 shared.last_callback.store(now_ms(), Ordering::Relaxed);
                 let mut stalled = false;
+                let mut resize = false;
+                shared.too_slow.store(false, Ordering::SeqCst);
                 while !shared.broken.load(Ordering::SeqCst) {
+                    if shared.too_slow.swap(false, Ordering::SeqCst) { resize = true; break; }
                     std::thread::sleep(Duration::from_millis(250));
                     let since = now_ms().saturating_sub(shared.last_callback.load(Ordering::Relaxed));
                     if opened.elapsed() > Duration::from_secs(3) && since > 2000 { stalled = true; break; }
                 }
                 drop(stream);
+                if resize { continue; }              // straight back, with the bigger buffer (already noted)
                 if stalled {
                     reopens.retain(|t: &std::time::Instant| t.elapsed() < Duration::from_secs(60));
                     reopens.push(std::time::Instant::now());
@@ -198,10 +212,11 @@ fn open_output(shared: &Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) -> Res
     // A fixed buffer of about 45 ms. Left to choose, ALSA can pick one so small that a busy computer
     // (or a virtual machine) doesn't refill it in time, which is heard as crackles and gaps.
     let frames = match config.buffer_size() {
-        cpal::SupportedBufferSize::Range { min, max } => Some(BUFFER_FRAMES.clamp(*min, *max)),
+        cpal::SupportedBufferSize::Range { min, max } => Some(shared.buffer_frames.load(Ordering::Relaxed).clamp(*min, *max)),
         cpal::SupportedBufferSize::Unknown => None,
     };
     let mut config: cpal::StreamConfig = config.into();
+    shared.rate.store(config.sample_rate.0, Ordering::Relaxed);
     if let Some(f) = frames { config.buffer_size = cpal::BufferSize::Fixed(f); }
     *shared.output.lock().unwrap() = format!("{name} ({} Hz, {} channels, {format:?}, buffer {})", config.sample_rate.0, config.channels,
         frames.map(|f| format!("{f} frames")).unwrap_or_else(|| "chosen by the system".into()));
@@ -210,7 +225,7 @@ fn open_output(shared: &Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) -> Res
     let stream = match build_any(&device, &config, format, shared, consumer.clone()) {
         Ok(s) => s,
         Err(e) if frames.is_some() => {
-            note(shared, format!("The output refused a {BUFFER_FRAMES}-frame buffer ({e}); letting it choose."));
+            note(shared, format!("The output refused a {}-frame buffer ({e}); letting it choose.", frames.unwrap_or(0)));
             config.buffer_size = cpal::BufferSize::Default;
             build_any(&device, &config, format, shared, consumer)?
         }
@@ -298,6 +313,7 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
 /// how much the output played and how loud it was. It shows at a glance where sound stops, if it does.
 fn report(shared: Arc<Shared>) {
     let mut quiet_reported = false;
+    let mut slow: i32 = -1;          // the first window after start-up is a partial one
     loop {
         std::thread::sleep(Duration::from_secs(5));
         let received = shared.received.swap(0, Ordering::Relaxed);
@@ -314,6 +330,20 @@ fn report(shared: Arc<Shared>) {
             continue;
         }
         quiet_reported = false;
+        // While sound is coming in, the output should ask for about 5 s of it every 5 s. Asking for much
+        // less, twice running, means it can't keep up: give it a bigger buffer.
+        let expected = shared.rate.load(Ordering::Relaxed) as f64 * 5.0;
+        // (librespot can only send as fast as the output takes it, so "sound is playing" is the test,
+        // not how much arrived.) The window right after opening the output is a partial one: skipped.
+        if slow < 0 { slow = 0; } else if played > 0 && (called as f64) < expected * 0.85 { slow += 1; } else { slow = 0; }
+        let size = shared.buffer_frames.load(Ordering::Relaxed);
+        if slow >= 2 && size < BUFFER_FRAMES_MAX {
+            slow = -1;
+            shared.buffer_frames.store(size * 2, Ordering::Relaxed);
+            note(&shared, format!("The output is falling behind (asked for {:.1} s of 5 s): trying a bigger buffer ({} frames).",
+                called as f64 / shared.rate.load(Ordering::Relaxed) as f64, size * 2));
+            shared.too_slow.store(true, Ordering::SeqCst);
+        }
         let secs = |f: u64| f as f64 / RATE as f64;
         let level = if peak > 0.0 { format!("{:.0} dB", 20.0 * peak.log10()) } else { "silent".into() };
         note(&shared, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}",
