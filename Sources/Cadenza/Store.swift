@@ -43,7 +43,7 @@ final class Store {
         io.async {
             guard JSONSerialization.isValidJSONObject(snapshot),
                   let d = try? JSONSerialization.data(withJSONObject: snapshot) else { return }
-            try? d.write(to: file, options: .atomic)
+            _ = Settings.writePrivately(d, to: file)
         }
     }
 
@@ -54,7 +54,7 @@ final class Store {
         let snapshot = data, file = file
         io.sync {
             if JSONSerialization.isValidJSONObject(snapshot), let d = try? JSONSerialization.data(withJSONObject: snapshot) {
-                try? d.write(to: file, options: .atomic)
+                _ = Settings.writePrivately(d, to: file)
             }
         }
     }

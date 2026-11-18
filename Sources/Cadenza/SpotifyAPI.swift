@@ -136,7 +136,7 @@ final class SpotifyAPI {
                             self.blocks[endpoint] = until
                             self.blockedUntil = max(self.blockedUntil, until)
                         }
-                        try? self.logLines.joined(separator: "\n").write(to: self.logFile, atomically: true, encoding: .utf8)
+                        _ = Settings.writePrivately(Data(self.logLines.joined(separator: "\n").utf8), to: self.logFile)
                     }
                     if status == 401 && retries > 0 {
                         self.auth.invalidate()

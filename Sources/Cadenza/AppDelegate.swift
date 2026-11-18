@@ -338,6 +338,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         text = text.replacingOccurrences(of: NSHomeDirectory(), with: "~")
         text = text.replacingOccurrences(of: "Authenticated as ['\"][^'\"]*['\"]", with: "Authenticated as '(hidden)'", options: .regularExpression)
         text = text.replacingOccurrences(of: "([?&]q=)[^&\\s]*", with: "$1(hidden)", options: .regularExpression)   // what you searched for
+        // Your name, wherever it turns up (headphones and speakers are often called "Alex's AirPods").
+        let names = [NSFullUserName(), NSFullUserName().split(separator: " ").first.map(String.init) ?? "", NSUserName()]
+        for name in names.reduce(into: [String](), { if !$0.contains($1) { $0.append($1) } }) where name.count >= 3 {
+            // Whole words only (a first name like "Will" mustn't eat "will" in a log line), full name first.
+            text = text.replacingOccurrences(of: "\\b" + NSRegularExpression.escapedPattern(for: name) + "\\b", with: "(you)", options: [.regularExpression])
+        }
         return text
     }
 

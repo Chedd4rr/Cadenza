@@ -237,8 +237,8 @@ Raycast, Alfred or Terminal (`open "cadenza://next"`) can control it.
 
 ## Your data
 
-Everything stays on your Mac, in `~/Library/Application Support/Cadenza/`, in files only your account
-can read. Cadenza talks to Spotify, and to Last.fm, Discord, Genius, LRCLIB and Mozilla only for the
+Everything stays on your Mac, in `~/Library/Application Support/Cadenza/`, a folder only your account
+can open. Cadenza talks to Spotify, and to Last.fm, Discord, Genius, LRCLIB and Mozilla only for the
 features that use them.
 
 | File | Holds |
@@ -252,6 +252,7 @@ features that use them.
 | `taste.json` | Your taste profile |
 | `store.json` | Small things: Up Next, playlist tags, the builder draft, remembered matches |
 | `translation-models/` | Downloaded translation languages |
+| `spotify-requests.log` | The last requests Cadenza made to Spotify, for System → Spotify activity |
 
 ## Updates and releases
 
@@ -301,7 +302,8 @@ Swift can't do. How the bundled librespot is built and patched is in [docs/libre
 ## Troubleshooting
 
 System → Engine settings → Copy diagnostics copies the engine log, recent playback events and your
-settings, without passwords, keys, your username or your home folder, to paste into a bug report.
+settings to paste into a bug report. It leaves out passwords and keys, your Spotify username, what you
+searched for, your home folder, and your name wherever it appears (in device names like "Alex's AirPods").
 
 - **"No active device":** Cadenza restarts the audio engine by itself when Spotify stops listing it
   (usually after sleep or a network change). If it still doesn't appear, check System → Engine settings.

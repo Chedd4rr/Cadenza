@@ -64,7 +64,7 @@ final class History {
             _ = try? h.seekToEnd()
             try? h.write(contentsOf: line)
         } else {
-            try? line.write(to: file, options: .atomic)
+            _ = Settings.writePrivately(line, to: file)              // created readable only by you
         }
     }
 
