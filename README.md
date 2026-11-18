@@ -304,6 +304,9 @@ each of those matters to you from which of its picks you keep. Every sixth song 
 keeps finding things. The Queue page says why each autoplay song is there. It never lines up a song you've heard in
 the last day (from anywhere, any version of it), never the same song twice in one session even as a
 different version, and spaces artists out so the same one doesn't come up twice within four songs.
+Start from a song and you may get one more by that artist in the first three; after that it's at most
+one in six, and autoplay mixes in songs by similar artists (from Last.fm) early, so it moves on to
+artists like them instead of staying with the same one.
 
 The Taste page (T in Stats, or ⌘K → "Your taste") shows all of it, and you can correct it:
 

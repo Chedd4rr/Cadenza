@@ -6262,6 +6262,7 @@ const Radio = {
     this.active = true; this.order = [t]; this.at = 0; this.qd = []; this.stray = null;
     this.used = new Set([t.uri, ...this.recent.map((x) => x.uri)]); this.grace = Date.now() + 6000;      // nothing you just heard
     this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
+    this.sent = new Set(); this.played = new Set([t.uri]);
     clearInterval(this.timer); this.timer = setInterval(() => this.watch(), 1000);
     this.prog = { uri: t.uri, max: 0, item: t };
     // Songs are added (and the first one handed to Spotify) as each is found, not after the whole batch.
@@ -6284,11 +6285,17 @@ const Radio = {
     const pool = this.order.slice(start).map((t) => ({ t, v: this.value(t) })).sort((a, b) => b.v - a.v);
     const out = [];
     // Space artists out: the same artist at most once in any four songs in a row, when there's a choice.
-    const recentArtists = () => head.concat(out).slice(-3).map((t) => t._artist || LFM.norm(LFM.firstArtist(t)));
+    // The artist of the song you started from gets one more of theirs early on; from the fourth song,
+    // at most one in six, so autoplay moves on to similar artists instead of staying with them.
+    const artistOf = (t) => t._artist || LFM.norm(LFM.firstArtist(t));
+    const seedArtist = this.order[0] ? artistOf(this.order[0]) : "";
+    const recentArtists = (n) => head.concat(out).slice(1).slice(-n).map(artistOf);   // (not counting the song you started from)
     while (pool.length) {
-      const explore = (start + out.length) % E === E - 1;
-      const near = recentArtists();
-      const fresh = (p) => !near.includes(p.t._artist);
+      const pos = start + out.length;
+      const explore = pos % E === E - 1;
+      const near = recentArtists(3), placed = head.concat(out).slice(1).map(artistOf);
+      const seedOk = pos < 4 ? !placed.includes(seedArtist) : !recentArtists(5).includes(seedArtist);
+      const fresh = (p) => p.t._artist === seedArtist ? seedOk : !near.includes(p.t._artist);
       let k = explore ? pool.findIndex((p) => p.t._new && fresh(p)) : -1;
       if (k < 0) k = pool.findIndex(fresh);
       if (k < 0) k = 0;
@@ -6301,7 +6308,7 @@ const Radio = {
   /** One more song for the line-up (from a lookup that's still running). */
   /** One key per song whatever the version: the single, the album cut and a remaster are the same song. */
   songKey(t) { const a = LFM.firstArtist(t); return a && t.name ? LFM.key(a, t.name) : ""; },
-  usedKeys: new Set(),
+  usedKeys: new Set(), sent: new Set(), played: new Set(),
   add(t, score, seed) {
     if (!this.active || !t || !t.uri || this.used.has(t.uri) || refusedLately(t.uri)) return false;
     const key = this.songKey(t);
@@ -6434,17 +6441,21 @@ const Radio = {
       }
     };
     await Promise.all([worker(), worker(), worker()]);
-    // Too new or too obscure for song-level data: artists like this one instead, a well-known song each.
-    if (out.length < 5) {
-      const artist = (seed.artists && seed.artists[0] && seed.artists[0].name) || "";
+    // Artists like this one, a well-known song each: when song-level data is thin (too new or too obscure),
+    // and also whenever most of what was found is by the same artist, so other artists come in early.
+    const artist = (seed.artists && seed.artists[0] && seed.artists[0].name) || "";
+    const others = out.filter((t) => LFM.norm(LFM.firstArtist(t)) !== LFM.norm(artist)).length;
+    if (out.length < 5 || others < 6) {
+      const want = out.length < 5 ? 10 - out.length : 6 - others;
+      let added = 0;
       const b = artist ? await LFM.get("artist.getSimilar", { artist, limit: 12, autocorrect: 1 }, 3600000) : null;
       for (const a of LFM.arr(b && b.similarartists && b.similarartists.artist).slice(0, 10)) {
-        if (out.length >= 10) break;
+        if (added >= want || !this.active) break;
         const r = await api("GET", `/search?type=track&limit=5&q=${enc('artist:"' + a.name + '"')}`);
         const hits = ((r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || []).filter((t) => t && t.uri && !t.is_local && !this.used.has(t.uri)
           && (t.artists || []).some((x) => LFM.norm(x.name) === LFM.norm(a.name)));
         const t = hits[Math.floor(Math.random() * Math.min(3, hits.length))];
-        if (t && !out.some((o) => o.uri === t.uri)) { out.push(t); if (found) found(t, 0.5); }
+        if (t && !out.some((o) => o.uri === t.uri)) { out.push(t); added++; if (found) found(t, 0.7); }
       }
     }
     return out;
@@ -6506,8 +6517,17 @@ const Radio = {
       while (this.active && this.qd.length < this.AHEAD) {
         const next = this.order[this.at + 1 + this.qd.length];
         if (!next) break;
+        // Already handed to Spotify earlier this session (and Spotify can't take a song back out of its
+        // queue): it's still there, so count it instead of sending it a second time.
+        if (this.sent.has(next.uri)) { this.qd.push(next.uri); continue; }
         const r = await api("POST", `/me/player/queue?uri=${enc(next.uri)}`);
         if (!this.active) break;
+        if (r.status >= 300 && r.status !== 429) {
+          // A failed answer doesn't always mean it failed (a slow or broken reply after Spotify took it).
+          // Look before trying again, or the song ends up in the queue twice.
+          const q = await api("GET", "/me/player/queue");
+          if (q.status === 200 && q.body && (q.body.queue || []).some((t) => t && t.uri === next.uri)) { this.sent.add(next.uri); this.qd.push(next.uri); continue; }
+        }
         if (r.status >= 300) {
           // Usually "no active device" while Cadenza's speaker is still starting the song: try again shortly,
           // or the album the song was played from carries on instead of autoplay's picks.
@@ -6515,6 +6535,7 @@ const Radio = {
           if (r.status !== 429) this.requeueT = setTimeout(() => this.queueNext(), 2500);
           break;
         }
+        this.sent.add(next.uri);
         this.qd.push(next.uri);
       }
     } finally { this.queueing = false; }
@@ -6548,8 +6569,12 @@ const Radio = {
       return;
     }
     const i = this.indexOf(uri);
+    // A song autoplay already played came round again: it was in Spotify's queue when autoplay had to
+    // play it directly (skipping fast, or Spotify losing track). Spotify can't remove queued songs, so skip it.
+    if (i >= 0 && this.played.has(this.order[i].uri) && this.order[i].uri !== (this.order[this.at] || {}).uri) { cmd("next"); return; }
     if (i >= 0) {
       this.at = i;
+      this.played.add(this.order[i].uri);
       this.prog = { uri, max: 0, item: this.order[i] };
       // Queued songs up to this one have played (or been skipped past): they're out of Spotify's queue.
       this.qd = this.qd.filter((u) => this.order.findIndex((t) => t.uri === u) > i);
