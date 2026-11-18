@@ -30,6 +30,17 @@ ringbuf = "0.4"
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+# Development builds (./build.sh --run) still optimise Cadenza's own code and the audio libraries, so the
+# sound plays smoothly. Everything else stays quick to compile.
+[profile.dev.package.cadenza]
+opt-level = 2
+
+[profile.dev.package.cpal]
+opt-level = 2
+
+[profile.dev.package.ringbuf]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = true

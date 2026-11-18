@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const RATE: u32 = 44_100;
+/// The output's own buffer, in frames (about 45 ms at 44.1 kHz).
+const BUFFER_FRAMES: u32 = 2048;
 const BUFFER_SAMPLES: usize = (RATE as usize / 4) * 2;       // a quarter of a second, two channels
 
 fn now_ms() -> u64 {
@@ -160,18 +162,40 @@ fn open_output(shared: &Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) -> Res
         .map(|c| c.with_sample_rate(cpal::SampleRate(RATE)))
         .unwrap_or(default);
     let format = config.sample_format();
-    let config: cpal::StreamConfig = config.into();
-    *shared.output.lock().unwrap() = format!("{name} ({} Hz, {} channels, {format:?})", config.sample_rate.0, config.channels);
+    // A fixed buffer of about 45 ms. Left to choose, ALSA can pick one so small that a busy computer
+    // (or a virtual machine) doesn't refill it in time, which is heard as crackles and gaps.
+    let frames = match config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => Some(BUFFER_FRAMES.clamp(*min, *max)),
+        cpal::SupportedBufferSize::Unknown => None,
+    };
+    let mut config: cpal::StreamConfig = config.into();
+    if let Some(f) = frames { config.buffer_size = cpal::BufferSize::Fixed(f); }
+    *shared.output.lock().unwrap() = format!("{name} ({} Hz, {} channels, {format:?}, buffer {})", config.sample_rate.0, config.channels,
+        frames.map(|f| format!("{f} frames")).unwrap_or_else(|| "chosen by the system".into()));
     note(shared, format!("Playing through {}", shared.output.lock().unwrap()));
 
+    let stream = match build_any(&device, &config, format, shared, consumer.clone()) {
+        Ok(s) => s,
+        Err(e) if frames.is_some() => {
+            note(shared, format!("The output refused a {BUFFER_FRAMES}-frame buffer ({e}); letting it choose."));
+            config.buffer_size = cpal::BufferSize::Default;
+            build_any(&device, &config, format, shared, consumer)?
+        }
+        Err(e) => return Err(e),
+    };
+    stream.play().map_err(|e| e.to_string())?;
+    Ok(stream)
+}
+
+fn build_any(device: &cpal::Device, config: &cpal::StreamConfig, format: cpal::SampleFormat, shared: &Arc<Shared>,
+             consumer: Arc<Mutex<HeapCons<f32>>>) -> Result<cpal::Stream, String> {
     let stream = match format {
-        cpal::SampleFormat::F32 => build::<f32>(&device, &config, shared.clone(), consumer),
-        cpal::SampleFormat::I16 => build::<i16>(&device, &config, shared.clone(), consumer),
-        cpal::SampleFormat::U16 => build::<u16>(&device, &config, shared.clone(), consumer),
-        cpal::SampleFormat::I32 => build::<i32>(&device, &config, shared.clone(), consumer),
+        cpal::SampleFormat::F32 => build::<f32>(device, config, shared.clone(), consumer),
+        cpal::SampleFormat::I16 => build::<i16>(device, config, shared.clone(), consumer),
+        cpal::SampleFormat::U16 => build::<u16>(device, config, shared.clone(), consumer),
+        cpal::SampleFormat::I32 => build::<i32>(device, config, shared.clone(), consumer),
         other => return Err(format!("unsupported sample format {other:?}")),
     }?;
-    stream.play().map_err(|e| e.to_string())?;
     Ok(stream)
 }
 
