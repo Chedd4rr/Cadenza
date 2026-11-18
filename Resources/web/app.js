@@ -5689,7 +5689,7 @@ const Taste = {
       if (c.feat && y != null) this.learn(c.feat, y);
     }
     d.rec.unshift([x.key, x.a, now, done ? 1 : 0]);
-    if (d.rec.length > 80) d.rec.length = 80;
+    if (d.rec.length > 500) d.rec.length = 500;                 // about a few days of listening
     d.plays++;
     this.save();
   },
@@ -5756,6 +5756,14 @@ const Taste = {
     let z = d.bias;
     for (let i = 0; i < f.length; i++) z += d.w[i] * f[i];
     return z;
+  },
+  /** You heard this song (any version of it) in the last `ms`. */
+  heardWithin(t, ms) {
+    const d = this.d, x = this.info(t);
+    if (!d || !x) return false;
+    const now = Date.now();
+    for (const r of d.rec) { if (now - r[2] > ms) break; if (r[0] === x.key) return true; }
+    return false;
   },
   /** Songs and artists you've told it (or shown it) to leave out. */
   blocked(t) {
@@ -6253,6 +6261,7 @@ const Radio = {
   begin(t) {
     this.active = true; this.order = [t]; this.at = 0; this.qd = []; this.stray = null;
     this.used = new Set([t.uri, ...this.recent.map((x) => x.uri)]); this.grace = Date.now() + 6000;      // nothing you just heard
+    this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
     clearInterval(this.timer); this.timer = setInterval(() => this.watch(), 1000);
     this.prog = { uri: t.uri, max: 0, item: t };
     // Songs are added (and the first one handed to Spotify) as each is found, not after the whole batch.
@@ -6274,9 +6283,14 @@ const Radio = {
     const head = this.order.slice(0, start);
     const pool = this.order.slice(start).map((t) => ({ t, v: this.value(t) })).sort((a, b) => b.v - a.v);
     const out = [];
+    // Space artists out: the same artist at most once in any four songs in a row, when there's a choice.
+    const recentArtists = () => head.concat(out).slice(-3).map((t) => t._artist || LFM.norm(LFM.firstArtist(t)));
     while (pool.length) {
       const explore = (start + out.length) % E === E - 1;
-      let k = explore ? pool.findIndex((p) => p.t._new) : 0;
+      const near = recentArtists();
+      const fresh = (p) => !near.includes(p.t._artist);
+      let k = explore ? pool.findIndex((p) => p.t._new && fresh(p)) : -1;
+      if (k < 0) k = pool.findIndex(fresh);
       if (k < 0) k = 0;
       const [p] = pool.splice(k, 1);
       p.t._explore = explore && !!p.t._new;
@@ -6285,12 +6299,19 @@ const Radio = {
     this.order = head.concat(out);
   },
   /** One more song for the line-up (from a lookup that's still running). */
+  /** One key per song whatever the version: the single, the album cut and a remaster are the same song. */
+  songKey(t) { const a = LFM.firstArtist(t); return a && t.name ? LFM.key(a, t.name) : ""; },
+  usedKeys: new Set(),
   add(t, score, seed) {
     if (!this.active || !t || !t.uri || this.used.has(t.uri) || refusedLately(t.uri)) return false;
+    const key = this.songKey(t);
+    if (key && this.usedKeys.has(key)) return false;                          // another version of a song already lined up
+    // Nothing you've heard in the last day (from anywhere, not just this autoplay session).
+    if (Taste.heardWithin(t, 24 * 3600e3)) return false;
     const artist = (t.artists && t.artists[0] && t.artists[0].name) || "";
     if ((this.taste.get(LFM.norm(artist)) || 0) <= -2.5) return false;      // an artist you've skipped again and again
     if (Taste.blocked(t)) return false;                                       // left out on purpose (see the Taste page)
-    this.used.add(t.uri);
+    this.used.add(t.uri); if (key) this.usedKeys.add(key);
     this.order.push({ ...t, _score: score, _seed: seed && seed.uri, _artist: LFM.norm(artist) });
     this.rerank();
     if (this.qd.length < this.AHEAD) this.queueNext();

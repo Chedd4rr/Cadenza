@@ -301,7 +301,9 @@ When autoplay picks the next songs, it weighs how close a match each one is, how
 and the style, whether it fits this time of day, whether you love that exact song, whether you've heard
 the artist a lot in the last couple of hours, and whether the artist is new to you. It learns how much
 each of those matters to you from which of its picks you keep. Every sixth song is a new artist, so it
-keeps finding things. The Queue page says why each autoplay song is there.
+keeps finding things. The Queue page says why each autoplay song is there. It never lines up a song you've heard in
+the last day (from anywhere, any version of it), never the same song twice in one session even as a
+different version, and spaces artists out so the same one doesn't come up twice within four songs.
 
 The Taste page (T in Stats, or ⌘K → "Your taste") shows all of it, and you can correct it:
 
