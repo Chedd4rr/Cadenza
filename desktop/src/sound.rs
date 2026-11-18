@@ -31,6 +31,11 @@ struct Shared {
     /// What's playing the sound, for diagnostics.
     output: Mutex<String>,
     log: Mutex<Vec<String>>,
+    // Counters for the sound report in the log (frames, reset every 5 s).
+    received: AtomicU64,        // arrived from librespot
+    called: AtomicU64,          // the output asked for
+    played: AtomicU64,          // the output played from librespot's sound
+    peak: AtomicU64,            // the loudest sample, as f32 bits
 }
 
 pub struct Sound {
@@ -48,7 +53,10 @@ impl Sound {
             broken: AtomicBool::new(false),
             output: Mutex::new("none yet".into()),
             log: Mutex::new(vec![]),
+            received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
         });
+        let r = shared.clone();
+        std::thread::Builder::new().name("cadenza-sound-report".into()).spawn(move || report(r)).ok();
         let consumer = Arc::new(Mutex::new(cons));
         let s = shared.clone();
         std::thread::Builder::new().name("cadenza-output".into()).spawn(move || output_thread(s, consumer)).ok();
@@ -63,7 +71,7 @@ impl Sound {
 
     pub fn output_name(&self) -> String { self.shared.output.lock().unwrap().clone() }
 
-    pub fn take_log(&self) -> Vec<String> { std::mem::take(&mut *self.shared.log.lock().unwrap()) }
+    pub fn log(&self) -> Vec<String> { self.shared.log.lock().unwrap().clone() }
 
     /// Reads librespot's audio until it closes its output (it quit or was restarted).
     pub fn attach<R: Read + Send + 'static>(&self, mut pipe: R) {
@@ -96,6 +104,7 @@ impl Sound {
                 }
                 if i < n { carry = Some(bytes[i]); }
                 shared.last_audio.store(now_ms(), Ordering::Relaxed);
+                shared.received.fetch_add(samples.len() as u64 / 2, Ordering::Relaxed);
                 // Hand it over as room frees up. Waiting here is what paces librespot.
                 let mut done = 0;
                 while done < samples.len() {
@@ -213,6 +222,7 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
     let mut pending: std::collections::VecDeque<f32> = std::collections::VecDeque::with_capacity(16384);
     let mut scratch = vec![0f32; 16384];
     let broken = shared.clone();
+    let counts = shared.clone();
     device.build_output_stream(
         config,
         move |data: &mut [T], _| {
@@ -226,11 +236,13 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
                     pending.extend(&scratch[..got]);
                 }
             }
+            let mut played = 0u64;
+            let mut peak = 0f32;
             for frame in data.chunks_mut(channels) {
                 while frac >= 1.0 {
                     prev = cur;
                     cur = match (pending.pop_front(), pending.pop_front()) {
-                        (Some(l), Some(r)) => [l, r],
+                        (Some(l), Some(r)) => { played += 1; peak = peak.max(l.abs()).max(r.abs()); [l, r] }
                         _ => [0.0, 0.0],                  // ran dry: silence until more arrives
                     };
                     frac -= 1.0;
@@ -244,6 +256,10 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
                 }
                 frac += step;
             }
+            counts.called.fetch_add(frames as u64, Ordering::Relaxed);
+            counts.played.fetch_add(played, Ordering::Relaxed);
+            let was = f32::from_bits(counts.peak.load(Ordering::Relaxed) as u32);
+            if peak > was { counts.peak.store(peak.to_bits() as u64, Ordering::Relaxed); }
         },
         move |err| {
             log::warn!("sound output error: {err}");
@@ -251,4 +267,31 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
         },
         None,
     ).map_err(|e| e.to_string())
+}
+
+/// Every 5 s while anything is happening, a line in the log saying how much sound came from librespot,
+/// how much the output played and how loud it was. It shows at a glance where sound stops, if it does.
+fn report(shared: Arc<Shared>) {
+    let mut quiet_reported = false;
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let received = shared.received.swap(0, Ordering::Relaxed);
+        let called = shared.called.swap(0, Ordering::Relaxed);
+        let played = shared.played.swap(0, Ordering::Relaxed);
+        let peak = f32::from_bits(shared.peak.swap(0, Ordering::Relaxed) as u32);
+        if received == 0 && played == 0 {
+            // Say once that the output is idle (or not running at all), then stay quiet until sound comes.
+            if !quiet_reported {
+                quiet_reported = true;
+                note(&shared, if called == 0 { "Sound report: the output isn't asking for sound at all.".into() }
+                              else { "Sound report: the output is running; nothing from librespot yet.".into() });
+            }
+            continue;
+        }
+        quiet_reported = false;
+        let secs = |f: u64| f as f64 / RATE as f64;
+        let level = if peak > 0.0 { format!("{:.0} dB", 20.0 * peak.log10()) } else { "silent".into() };
+        note(&shared, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}",
+            secs(received), secs(played), called as f64 / RATE as f64));
+    }
 }

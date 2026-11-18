@@ -264,6 +264,7 @@ fn diagnostics(core: &Core) -> String {
     out.push(String::new());
     out.push("== sound output ==".into());
     out.push(core.sound.output_name());
+    out.extend(core.sound.log().into_iter().rev().take(30).rev());
     let text = out.join("\n");
     // The same redactions as the Mac app: your home folder, your Spotify username, search words.
     let mut text = match dirs::home_dir() { Some(h) => text.replace(&h.display().to_string(), "~"), None => text };

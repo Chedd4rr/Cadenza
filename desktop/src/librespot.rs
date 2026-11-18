@@ -325,6 +325,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             if f.len() < 11 { continue; }
             let (event, uri, track_id) = (f[0], f[1], f[2]);
             let ms = |s: &str| s.trim().parse::<i64>().ok();
+            if event != "volume_changed" { push_log(g, format!("event: {event} at {} ms", f[8].trim())); }
             let p = &mut g.player;
             match event {
                 "track_changed" => {
