@@ -139,7 +139,12 @@ impl Api {
         let mut req = self.http.request(m, url).timeout(Duration::from_secs(15)).bearer_auth(token);
         if method != "GET" {
             req = req.header("Content-Type", "application/json");
-            req = match body { Some(b) if !b.is_null() => req.body(b.to_string()), _ => req.body("") };
+            // Spotify refuses a PUT or POST that doesn't say how long it is (411 Length Required), and an
+            // empty body goes out without saying so unless it's set here. (macOS adds it by itself.)
+            req = match body {
+                Some(b) if !b.is_null() => req.body(b.to_string()),
+                _ => req.header("Content-Length", "0").body(""),
+            };
         }
         let (status, json, retry_after) = match req.send().await {
             Ok(r) => {
