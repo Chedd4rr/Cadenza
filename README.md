@@ -299,6 +299,13 @@ The native code is in `Sources/Cadenza/`:
 `Sources/ObjCSafe/` holds a small Objective-C helper that catches the audio engine's exceptions, which
 Swift can't do. How the bundled librespot is built and patched is in [docs/librespot.md](docs/librespot.md).
 
+### Windows and Linux
+
+Cadenza is being ported to Windows and Linux with [Tauri](https://tauri.app), in `desktop/`. It uses the
+same page; the native side is rewritten in Rust. It's early: sign-in and playback work, most extras
+don't yet. What works, what's coming and how to build it are in [desktop/README.md](desktop/README.md).
+GitHub builds it for all three systems on every change (Actions → Desktop app).
+
 ## Troubleshooting
 
 System → Engine settings → Copy diagnostics copies the engine log, recent playback events and your

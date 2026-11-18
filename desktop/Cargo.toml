@@ -1,0 +1,36 @@
+[package]
+name = "cadenza"
+version = "1.0.0"
+description = "A Spotify client with its own sound engine"
+license = "MIT"
+repository = "https://github.com/Chedd4rr/Cadenza"
+edition = "2021"
+rust-version = "1.80"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+url = "2"
+regex = "1"
+dirs = "5"
+open = "5"
+cpal = "0.15"
+ringbuf = "0.4"
+log = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

@@ -11,7 +11,9 @@ const h = (tag, cls, text) => {
   if (text != null) e.textContent = text;
   return e;
 };
-const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native;
+// The native side: WebKit's message handler in the Mac app, or window.cadenzaNative in the Windows and
+// Linux app (Tauri), which works the same way. Neither means demo mode in a browser.
+const bridge = window.cadenzaNative || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native);
 const native = (cmd, args = {}) => (bridge ? bridge.postMessage({ cmd, args }) : Demo.native(cmd, args));
 const API_BASE = "https://api.spotify.com/v1";
 const enc = encodeURIComponent;
@@ -4889,7 +4891,7 @@ function bergamotWorker() {
 
 const Translator = {
   detector: null, engine: null, loaded: [],
-  base() { return bridge ? "cadenza-files://app/vendor/" : "vendor/"; },
+  base() { return bridge ? (window.cadenzaFiles || "cadenza-files://") + "app/vendor/" : "vendor/"; },
   /** The language lyrics are translated into: the Mac's own. */
   target() { return String(navigator.language || "en").split("-")[0].toLowerCase(); },
   name(code) { try { return new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code; } catch (e) { return code; } },

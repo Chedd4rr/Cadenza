@@ -1,0 +1,181 @@
+//! Cadenza for macOS, Windows and Linux. The page in Resources/web is the whole interface, unchanged
+//! from the Mac app; this is the native side it talks to (see bridge.rs).
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod api;
+mod auth;
+mod bridge;
+mod files;
+mod librespot;
+mod settings;
+mod sound;
+mod store;
+
+use serde_json::Value;
+use std::sync::Arc;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+pub struct Core {
+    pub settings: Arc<settings::Settings>,
+    pub store: Arc<store::Store>,
+    pub auth: Arc<auth::Auth>,
+    pub api: Arc<api::Api>,
+    pub sound: Arc<sound::Sound>,
+    pub librespot: Arc<librespot::Librespot>,
+    pub http: reqwest::Client,
+}
+
+/// Runs before the page's own scripts. app.js looks for `window.cadenzaNative` and sends every
+/// `native(cmd, args)` through it, exactly as it uses WebKit's message handler in the Mac app.
+const SHIM: &str = r#"
+(() => {
+  const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+  Object.defineProperty(window, "cadenzaNative", {
+    value: Object.freeze({ postMessage: (m) => invoke("native", { cmd: String(m.cmd), args: m.args || {} }) }),
+  });
+  window.cadenzaPlatform = "__OS__";
+  window.cadenzaFiles = "__FILES__";
+  // The page's shortcuts are written for the Mac's ⌘ key. On Windows and Linux, Ctrl does that job, so
+  // each key and mouse event is shown to the page with the two swapped before anything else sees it.
+  if (window.cadenzaPlatform !== "macos") {
+    const swap = (e) => {
+      const meta = e.metaKey, ctrl = e.ctrlKey;
+      Object.defineProperty(e, "metaKey", { value: ctrl });
+      Object.defineProperty(e, "ctrlKey", { value: meta });
+    };
+    for (const t of ["keydown", "keyup", "keypress", "click", "auxclick", "mousedown", "mouseup", "wheel", "contextmenu"]) {
+      window.addEventListener(t, swap, true);
+    }
+  }
+})();
+"#;
+
+/// Sends an event to the page: `app.onNative(event, data)`, as Bridge.swift's emit does.
+fn emit_to(app: &tauri::AppHandle, event: &str, data: &Value) {
+    let safe: String = event.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_').collect();
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval(format!("window.app && app.onNative('{safe}', {data})"));
+    }
+}
+
+/// The address the page uses for `cadenza-files://`: the translator's code and language models.
+/// Windows's web view can't use a custom scheme directly and reaches it through http://<scheme>.localhost.
+fn files_base() -> &'static str {
+    if cfg!(windows) { "http://cadenza-files.localhost/" } else { "cadenza-files://" }
+}
+
+fn main() {
+    env_logger_lite();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .register_uri_scheme_protocol("cadenza-files", |ctx, request| files_scheme(ctx.app_handle(), request))
+        .invoke_handler(tauri::generate_handler![bridge::native])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let http = reqwest::Client::builder()
+                .user_agent(format!("Cadenza/{} (https://github.com/Chedd4rr/Cadenza)", env!("CARGO_PKG_VERSION")))
+                .build()?;
+            let settings = Arc::new(settings::Settings::load());
+            let store = store::Store::load();
+            let auth = Arc::new(auth::Auth::new(settings.clone(), http.clone()));
+            let api = Arc::new(api::Api::new(auth.clone(), http.clone()));
+            let sound = sound::Sound::start();
+            let emitter = handle.clone();
+            let emit: librespot::Emit = Arc::new(move |event: &str, data: Value| emit_to(&emitter, event, &data));
+            let librespot = librespot::Librespot::new(settings.clone(), api.clone(), sound.clone(), emit);
+            let core = Arc::new(Core { settings: settings.clone(), store, auth, api, sound, librespot: librespot.clone(), http });
+            app.manage(core);
+
+            let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base());
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("Cadenza")
+                .inner_size(1440.0, 900.0)
+                .min_inner_size(1100.0, 700.0)
+                .center()
+                .initialization_script(&shim)
+                .build()?;
+
+            if settings.bool("manageLibrespot") { librespot.start(); }
+            // For testing the bridge in development builds: CADENZA_PROBE holds a script to run in the page.
+            #[cfg(debug_assertions)]
+            if let Ok(script) = std::env::var("CADENZA_PROBE") {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(6));
+                    if let Some(w) = h.get_webview_window("main") { let _ = w.eval(script); }
+                });
+            }
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("couldn't start Cadenza")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(core) = app.try_state::<Arc<Core>>() {
+                    core.store.flush();
+                    core.librespot.shutdown();
+                }
+            }
+        });
+}
+
+/// Serves `cadenza-files://app/vendor/…` (the translator's code, from the page's own folder) and
+/// `cadenza-files://models/<hash>.bin|spm` (downloaded language models). Nothing else.
+fn files_scheme(app: &tauri::AppHandle, request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::Response;
+    let not_found = || Response::builder().status(404).body(Vec::new()).unwrap();
+    let uri = request.uri();
+    // cadenza-files://app/vendor/x on macOS and Linux; http://cadenza-files.localhost/app/vendor/x on Windows.
+    let mut parts: Vec<String> = uri.path().split('/').filter(|p| !p.is_empty()).map(String::from).collect();
+    let host = uri.host().unwrap_or("");
+    if host != "app" && host != "models" { if parts.is_empty() { return not_found(); } } else { parts.insert(0, host.to_string()); }
+    if parts.iter().any(|p| p == ".." || p.contains('\\')) { return not_found(); }
+
+    let file = match parts.first().map(String::as_str) {
+        Some("models") if parts.len() == 2 => {
+            let re = regex::Regex::new(r"^[0-9a-f]{64}\.(bin|spm)$").unwrap();
+            if !re.is_match(&parts[1]) { return not_found(); }
+            files::path("translation-models").join(&parts[1])
+        }
+        Some("app") if parts.len() >= 3 && parts[1] == "vendor" => {
+            let rel = parts[2..].join("/");
+            match app.asset_resolver().get(format!("vendor/{rel}")) {
+                Some(asset) => return reply(asset.bytes, &rel),
+                None => return not_found(),
+            }
+        }
+        _ => return not_found(),
+    };
+    match std::fs::read(&file) {
+        Ok(bytes) => reply(bytes, &file.display().to_string()),
+        Err(_) => not_found(),
+    }
+}
+
+fn reply(bytes: Vec<u8>, name: &str) -> tauri::http::Response<Vec<u8>> {
+    let kind = if name.ends_with(".js") { "text/javascript" } else if name.ends_with(".wasm") { "application/wasm" } else { "application/octet-stream" };
+    tauri::http::Response::builder()
+        .status(200)
+        .header("Content-Type", kind)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", "no-store")
+        .body(bytes)
+        .unwrap()
+}
+
+/// Log messages go to standard error when CADENZA_LOG is set (no logging crate needed for that).
+fn env_logger_lite() {
+    struct L;
+    impl log::Log for L {
+        fn enabled(&self, _: &log::Metadata) -> bool { true }
+        fn log(&self, r: &log::Record) { eprintln!("[{}] {}", r.level(), r.args()); }
+        fn flush(&self) {}
+    }
+    if std::env::var_os("CADENZA_LOG").is_some() {
+        static LOGGER: L = L;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Info);
+    }
+}

@@ -23,3 +23,8 @@ credentials.json
 *.p12
 *.pem
 .env
+
+# The Windows and Linux app (desktop/): build output, generated files and the librespot it bundles
+desktop/target/
+desktop/gen/
+desktop/binaries/

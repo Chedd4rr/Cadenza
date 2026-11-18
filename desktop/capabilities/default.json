@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What Cadenza's own window may use. The page talks to the app through one command, native.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
