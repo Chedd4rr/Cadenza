@@ -38,8 +38,15 @@ impl Api {
 
     fn note(&self, g: &mut Guard, line: String) {
         let now = chrono_like_now();
+        log::info!("spotify: {line}");
         g.log.push(format!("{now}  {line}"));
         if g.log.len() > 300 { let extra = g.log.len() - 300; g.log.drain(..extra); }
+    }
+
+    /// The latest requests and Spotify's answers, for diagnostics.
+    pub fn recent_log(&self, n: usize) -> Vec<String> {
+        let g = self.guard.lock().unwrap();
+        g.log.iter().rev().take(n).rev().cloned().collect()
     }
 
     /// A new login or Client ID starts fresh: forget any wait Spotify gave the previous one.

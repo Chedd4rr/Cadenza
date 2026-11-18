@@ -306,7 +306,7 @@ fn report(shared: Arc<Shared>) {
         let peak = f32::from_bits(shared.peak.swap(0, Ordering::Relaxed) as u32);
         if received == 0 && played == 0 {
             // Say once that the output is idle (or not running at all), then stay quiet until sound comes.
-            if !quiet_reported {
+            if !quiet_reported && !shared.output.lock().unwrap().starts_with("none") {
                 quiet_reported = true;
                 note(&shared, if called == 0 { "Sound report: the output isn't asking for sound at all.".into() }
                               else { "Sound report: the output is running; nothing from librespot yet.".into() });

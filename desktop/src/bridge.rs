@@ -262,14 +262,26 @@ fn diagnostics(core: &Core) -> String {
     ];
     out.extend(core.librespot.diagnostics());
     out.push(String::new());
+    out.push("== Spotify requests (latest) ==".into());
+    out.extend(core.api.recent_log(40));
+    out.push(String::new());
     out.push("== sound output ==".into());
     out.push(core.sound.output_name());
     out.extend(core.sound.log().into_iter().rev().take(30).rev());
     let text = out.join("\n");
     // The same redactions as the Mac app: your home folder, your Spotify username, search words.
     let mut text = match dirs::home_dir() { Some(h) => text.replace(&h.display().to_string(), "~"), None => text };
-    let user = regex::Regex::new(r#"Authenticated as "[^"]*""#).unwrap();
-    text = user.replace_all(&text, r#"Authenticated as "…""#).to_string();
+    let user = regex::Regex::new(r#"Authenticated as ['"][^'"]*['"]"#).unwrap();
+    text = user.replace_all(&text, "Authenticated as '(hidden)'").to_string();
+    // Your login name, as a whole word (it can turn up in paths that aren't under your home folder).
+    for var in ["USER", "USERNAME", "LOGNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            if name.len() >= 2 {
+                let re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(&name))).unwrap();
+                text = re.replace_all(&text, "(you)").to_string();
+            }
+        }
+    }
     let q = regex::Regex::new(r"([?&]q=)[^&\s]*").unwrap();
     q.replace_all(&text, "${1}…").to_string()
 }
