@@ -1934,7 +1934,7 @@ views.home = {
     switch (id) {
       case "dj":
         head = DJ.active ? "ON AIR" : "OFF AIR"; go = DJ.active ? "TUNE IN" : "START A SET";
-        rows.push(DJ.lastLine || "Sets built from your top tracks, recent plays and Liked Songs, with spoken intros.");
+        rows.push(DJ.lastLine || "Sets built from your top tracks, recent plays and Liked Songs, introduced as they play.");
         break;
       case "lyrics":
         head = it ? it.name : "NOTHING PLAYING"; go = "SING ALONG";
@@ -8855,6 +8855,11 @@ async function boot() {
     if (S.asleep && !document.hidden) S.asleep = false;           // in front of you, so certainly not asleep
     rest(document.hidden);
   });
+  // Any key or click means you're here: wake up, even if the window never got a "wake" from macOS
+  // (otherwise the page could stay at rest, with every animation frozen on its first frame).
+  const here = () => { if (document.hidden) return; clearTimeout(idleTimer); if (S.asleep || document.body.classList.contains("paused")) { S.asleep = false; rest(false); } };
+  addEventListener("keydown", here, true);
+  addEventListener("mousedown", here, true);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     // Back in view: drop any half-played song-change animation and redraw from the latest state.

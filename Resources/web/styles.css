@@ -45,6 +45,9 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 input { font: inherit; color: inherit; background: none; border: 0; outline: 0; -webkit-user-select: text; user-select: text; }
 [hidden] { display: none !important; }
 body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }
+/* …except Ogmi.os's takeover and blocks, and toasts: they're things you just did, and frozen on their
+   first frame they're invisible (the warning panel and the error pop-ups start squashed flat). */
+#breach, #breach *, #deny, #deny *, #deny *::before, #deny *::after, .rg-speak, .rg-speak *, #toast, #toast * { animation-play-state: running !important; }
 body.moving #bg *, body.moving .item .label, body.moving #hl .face::after, body.moving .art-wrap, body.moving .card .in { animation-play-state: paused !important; }
 
 /* ============ Background ============ */
