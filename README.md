@@ -302,8 +302,8 @@ Swift can't do. How the bundled librespot is built and patched is in [docs/libre
 ### Windows and Linux
 
 Cadenza is being ported to Windows and Linux with [Tauri](https://tauri.app), in `desktop/`. It uses the
-same page; the native side is rewritten in Rust. Playback, Last.fm, lyrics, translation and the history
-import work; the sound engine (EQ, crossfade, visualizer) and system parts (media keys, tray) are next.
+same page; the native side is rewritten in Rust. Playback, the sound engine (EQ, crossfade, visualizer),
+Last.fm, lyrics, translation and the history import work; system parts (media keys, tray) are next.
 What works, what's coming and how to build it are in [desktop/README.md](desktop/README.md).
 GitHub can build it for any of the three systems when you start it (Actions → Desktop app → Run workflow).
 

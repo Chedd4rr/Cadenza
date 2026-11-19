@@ -7,6 +7,7 @@ mod api;
 mod auth;
 mod bridge;
 mod cover;
+mod dsp;
 mod files;
 mod history;
 mod lastfm;
@@ -63,7 +64,7 @@ const SHIM: &str = r#"
 /// Sends an event to the page: `app.onNative(event, data)`, as Bridge.swift's emit does.
 fn emit_to(app: &tauri::AppHandle, event: &str, data: &Value) {
     let safe: String = event.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_').collect();
-    if !matches!(safe.as_str(), "player" | "eq.levels" | "librespot") { log::info!("to the page: {safe} {}", data.to_string().chars().take(160).collect::<String>()); }
+    if !matches!(safe.as_str(), "player" | "eq.levels" | "librespot" | "translate.progress") { log::info!("to the page: {safe} {}", data.to_string().chars().take(160).collect::<String>()); }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(format!("window.app && app.onNative('{safe}', {data})"));
     }
@@ -91,9 +92,9 @@ fn main() {
             let store = store::Store::load();
             let auth = Arc::new(auth::Auth::new(settings.clone(), http.clone()));
             let api = Arc::new(api::Api::new(auth.clone(), http.clone()));
-            let sound = sound::Sound::start();
             let emitter = handle.clone();
             let emit: librespot::Emit = Arc::new(move |event: &str, data: Value| emit_to(&emitter, event, &data));
+            let sound = sound::Sound::start(settings.clone(), emit.clone());
             let history = Arc::new(history::History::default());
             let librespot = librespot::Librespot::new(settings.clone(), api.clone(), sound.clone(), history, emit.clone());
             let lastfm = Arc::new(lastfm::LastFm::new(settings.clone(), http.clone()));

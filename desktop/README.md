@@ -5,17 +5,20 @@ from one codebase. The interface is the same page as the Mac app (`Resources/web
 native side is new, written in Rust. The Mac app in `Sources/` keeps working as before until this one
 does everything it does.
 
-**Phases 0–2 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
-window and the bridge to the page, Spotify sign-in and playback, and everything the pages read and save.
-The sound goes straight through for now; Cadenza's own sound engine is next.
+**Phases 0–3 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
+window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save, and
+Cadenza's own sound engine. Next are the system parts: media keys, the tray icon and notifications.
 
 ## What works so far
 
 - The whole interface, every page and theme.
 - Signing in to Spotify, browsing, searching, playing, pause and skip, the queue, autoplay.
-- librespot (the same version and patches as the Mac app) playing through Cadenza's sound output. If the
-  output stalls it's reopened, and if it can't keep up (a slow computer or a virtual machine) its buffer
-  grows by itself.
+- librespot (the same version and patches as the Mac app) playing through Cadenza's own sound engine: the
+  10-band EQ with presets and preamp, a peak limiter so boosting never clips, the crossfade between songs,
+  pause, play, skip and seek that respond at once, the sleep timer's fade, and the visualizer and EQ meters.
+- Picking the output (on Linux, the sound server's outputs; picking one makes it the system's output), with
+  an EQ kept for each device. If the output stalls it's reopened, and if it can't keep up (a slow computer
+  or a virtual machine) its buffer grows by itself.
 - Recovery like the Mac app's: songs Spotify won't unlock are skipped and left out of autoplay for a while,
   songs that failed to load on a hiccup get one more try, a dropped connection restarts librespot and picks
   up the same song at the same second, and Cadenza checks Spotify still lists it after the computer wakes.
@@ -31,7 +34,6 @@ The sound goes straight through for now; Cadenza's own sound engine is next.
 
 | Comes in | What |
 | --- | --- |
-| Phase 3 | EQ, limiter, crossfade, visualizer, instant pause, picking the output device |
 | Phase 4 | Media keys, tray icon, notifications, global shortcut, start at login, mini player, Discord |
 | Phase 5 | Windows: player events from librespot, the installer, testing |
 | Phase 6 | macOS build at parity, moving your Mac settings over |
@@ -60,7 +62,8 @@ On Windows, run these in Git Bash.
 
 To see what it's doing, start it with `CADENZA_LOG=1` set: it then prints the engine log, every bridge
 call, every Spotify request with its answer, and a sound report every few seconds. `cargo test` runs the
-tests (the history import, the history log, translation models, Last.fm signing, covers).
+tests (the EQ curves, the limiter, the visualizer levels, the history import, the history log, translation
+models, Last.fm signing, covers).
 
 ## Where it keeps your data
 
@@ -82,7 +85,8 @@ read them.
 | `src/auth.rs` | Spotify sign-in | `SpotifyAuth.swift` |
 | `src/api.rs` | Spotify Web API, with the rate-limit guard | `SpotifyAPI.swift` |
 | `src/librespot.rs` | Runs librespot and reads what it's playing | `Librespot.swift` |
-| `src/sound.rs` | Plays librespot's sound | `EQ.swift` (the `AudioPipe` part) |
+| `src/sound.rs` | The sound engine: reading librespot, the crossfade, pause and skip, outputs | `EQ.swift`, `AudioOutputs.swift` |
+| `src/dsp.rs` | The EQ, limiter, fades and visualizer levels, sample by sample | `EQ.swift` (Apple's EQ and limiter units) |
 | `src/lastfm.rs` | Last.fm, lyrics (LRCLIB) and Genius | `LastFM.swift`, `Extras.swift` |
 | `src/history.rs`, `src/spotify_history.rs` | Cadenza's own history; the Spotify history import | `History.swift`, `SpotifyHistory.swift` |
 | `src/translation.rs` | Downloads and checks translation models | `TranslationModels.swift` |

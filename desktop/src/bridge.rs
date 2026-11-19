@@ -194,28 +194,26 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
             json!({"status": core.api.upload("PUT", &format!("/playlists/{id}/images"), b64.into_bytes(), "image/jpeg").await})
         }
 
+        // MARK: the sound engine
+        "eq.get" => core.sound.eq_state(),
+        "eq.set" => core.sound.eq_update(args),
+        "eq.engine" => json!(true),                        // always on here: Cadenza's engine is the only way sound plays
+        "eq.meter" => { core.sound.set_meter(b(args, "on", false)); json!(true) }
+        "audio.local" => {
+            // Instant pause, play and skip when this computer's engine is the one playing.
+            if core.librespot.is_active_here() {
+                let action = s(args, "action");
+                core.sound.local(&action, core.librespot.is_playing_here());
+                if action == "pause" || (action == "toggle" && core.sound.holding()) { core.librespot.verify_pause(); }
+            }
+            json!(true)
+        }
+        "outputs.list" => core.sound.outputs(),
+        "outputs.set" => json!(core.sound.set_output(&s(args, "uid"))),
+
         // MARK: not ported yet, answered like demo mode
         "nowplaying" => json!(true),                                                      // phase 4: media keys, tray, notifications
-        "outputs.list" => json!([]),                                                      // phase 3
-        "outputs.set" => json!(false),
-        "eq.get" | "eq.set" => {                                                          // phase 3: the EQ itself
-            let mut st = core.store.get("__eq");
-            if !st.is_object() { st = json!({"enabled": false, "preamp": 0, "gains": [0,0,0,0,0,0,0,0,0,0], "preset": "Flat"}); }
-            if cmd == "eq.set" {
-                if let (Some(m), Some(a)) = (st.as_object_mut(), args.as_object()) {
-                    for k in ["enabled", "preamp", "gains", "preset"] { if let Some(v) = a.get(k) { m.insert(k.into(), v.clone()); } }
-                }
-                core.store.set("__eq", st.clone());
-            }
-            let m = st.as_object_mut().unwrap();
-            m.insert("freqs".into(), json!([32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]));
-            m.insert("engine".into(), json!(true));
-            m.insert("running".into(), json!(true));
-            m.insert("device".into(), json!(core.sound.output_name()));
-            m.insert("perDevice".into(), json!(false));
-            st
-        }
-        "eq.engine" | "eq.meter" | "audio.local" | "mini.toggle" => json!(true),          // phases 3–4
+        "mini.toggle" => json!(true),                                                     // phase 4
 
         "discord.status" => json!({"enabled": false, "status": "not available yet", "hasId": false}),   // phase 4
         "update.status" | "update.check" => json!({"repo": core.settings.string("updateRepo"), "current": env!("CARGO_PKG_VERSION"), "state": "idle", "message": "", "auto": false}),   // phase 7

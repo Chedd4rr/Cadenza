@@ -56,7 +56,12 @@ struct Inner {
 fn within(t: Option<Instant>, secs: u64) -> bool { t.map_or(false, |t| t.elapsed() < Duration::from_secs(secs)) }
 
 /// Things noticed while holding the lock, done once it's let go.
-enum Then { CheckSound, Retry(String), RetryLater(String), Dropped(String, bool), Refused(String) }
+enum Then {
+    CheckSound, Retry(String), RetryLater(String), Dropped(String, bool), Refused(String),
+    // The sound engine: a new song (its length), a position report (ms, length), a jump, and letting go of
+    // sound Cadenza is holding when Spotify says it's playing.
+    NewSong(Option<i64>), Position(i64, Option<i64>), Seeked, ReleaseIfHeld,
+}
 
 pub struct Librespot {
     inner: Mutex<Inner>,
@@ -402,6 +407,8 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                     p.insert("progress_ms".into(), json!(0));
                     g.pos_at = now_ms();
                     changed = true;
+                    then.push(Then::NewSong(ms(f[7])));
+                    if Self::playing_here(g) { then.push(Then::ReleaseIfHeld); }
                 }
                 "playing" | "paused" | "seeked" | "position_correction" => {
                     let playing = p.get("is_playing").and_then(Value::as_bool).unwrap_or(false);
@@ -416,6 +423,14 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                     if !uri.is_empty() { p.insert("uri".into(), json!(uri)); }
                     p.insert("active".into(), json!(true));
                     if event == "playing" { then.push(Then::CheckSound); }
+                    if event == "seeked" { then.push(Then::Seeked); }        // the new spot is heard at once
+                    // Spotify says it's playing but Cadenza is still holding the sound (a "playing" report
+                    // that came late or out of order): let it go, or librespot stalls behind it.
+                    if event != "paused" && now_playing { then.push(Then::ReleaseIfHeld); }
+                    if let Some(pos) = ms(f[8]) {
+                        let dur = g.player.get("duration_ms").and_then(Value::as_i64);
+                        then.push(Then::Position(pos, dur));
+                    }
                     if event == "paused" { g.last_stop_at = Some(Instant::now()); }
                     changed = true;
                 }
@@ -475,6 +490,56 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         out.insert("at".into(), json!(now));
         (self.emit)("player", Value::Object(out));
         self.history.observe(&g.player);
+        // An interrupted sleep fade mustn't leave the volume down.
+        if !self.sound.sleep_fading() && self.sound.transition_volume() < 0.999 { self.sound.reset_transition(); }
+    }
+
+    /// Spotify is playing here, but Cadenza is holding the sound. librespot can only write as fast as
+    /// Cadenza takes the sound, so it would sit stuck and the music would "hang". Unless you paused in the
+    /// last few seconds (Spotify's "paused" just hasn't arrived yet), play.
+    fn release_if_held(&self) {
+        if !self.sound.holding() { return; }
+        if self.sound.locally_paused_at().map_or(false, |t| t.elapsed() < Duration::from_secs(4)) { return; }
+        self.note("Spotify is playing but Cadenza's player was still paused: letting the sound through.");
+        self.sound.local_resume();
+    }
+
+    /// Whether librespot here is the device Spotify is playing on (for the instant controls).
+    pub fn is_active_here(&self) -> bool { Self::active_here(&self.inner.lock().unwrap()) }
+    pub fn is_playing_here(&self) -> bool { Self::playing_here(&self.inner.lock().unwrap()) }
+
+    /// You paused in Cadenza: the sound stopped at once and Spotify was asked to pause. A few seconds later,
+    /// check Spotify really did. If not, ask once more; if it still plays, follow Spotify, so librespot isn't
+    /// left stuck behind a paused player.
+    pub fn verify_pause(self: &Arc<Self>) {
+        let me = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            for attempt in 0..2 {
+                tokio::time::sleep(Duration::from_secs(if attempt == 0 { 4 } else { 3 })).await;
+                let held = me.sound.holding() && me.is_playing_here()
+                    && me.sound.locally_paused_at().map_or(false, |t| t.elapsed() > Duration::from_secs(3));
+                if !held { return; }                                   // paused properly, or playing again
+                let (status, p) = me.api.request("GET", "/me/player", None).await;
+                let still = status == 200 && p.get("is_playing").and_then(Value::as_bool) == Some(true)
+                    && p.pointer("/device/name").and_then(Value::as_str) == Some(me.settings.device_name().as_str());
+                if !still {
+                    // Spotify did pause; its report to librespot just never arrived.
+                    if status == 200 || status == 204 {
+                        let mut g = me.inner.lock().unwrap();
+                        g.player.insert("is_playing".into(), json!(false));
+                        me.emit_player(&mut g);
+                    }
+                    return;
+                }
+                if attempt == 0 {
+                    me.note("Spotify didn't pause: asking again.");
+                    me.api.request("PUT", "/me/player/pause", None).await;
+                } else {
+                    me.note("Spotify kept playing after being asked to pause: playing here too so nothing gets stuck.");
+                    me.sound.local_resume();
+                }
+            }
+        });
     }
 
     // MARK: recovery
@@ -483,6 +548,15 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         for t in then {
             match t {
                 Then::CheckSound => self.check_sound(),
+                Then::NewSong(dur) => {
+                    // A new song starts at full volume (in case the sleep fade was cut short).
+                    if self.sound.transition_volume() < 0.999 && !self.sound.sleep_fading() { self.sound.ramp_transition(1.0, 1.6); }
+                    self.sound.track_changed();
+                    self.sound.song_position(None, dur, true);
+                }
+                Then::Position(ms, dur) => self.sound.song_position(Some(ms as f64), dur, false),
+                Then::Seeked => self.sound.seeked(),
+                Then::ReleaseIfHeld => self.release_if_held(),
                 Then::Retry(uri) => self.retry_now(uri),
                 Then::RetryLater(uri) => self.retry_later(uri),
                 Then::Dropped(reason, was_active) => self.session_dropped(&reason, was_active),
@@ -600,7 +674,9 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     fn check_sound(self: &Arc<Self>) {
         let me = Arc::clone(self);
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(Duration::from_secs(1));
+            me.sound.ensure_audible();
+            std::thread::sleep(Duration::from_secs(4));
             let g = me.inner.lock().unwrap();
             if g.child.is_none() || !Self::playing_here(&g) || me.sound.seconds_since_audio() <= 4.0
                 || Self::refused_recently(&g) || within(g.last_rescue, 60) { return; }
@@ -625,8 +701,10 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     /// pick the song back up; otherwise a missed "paused" report would un-pause the music by itself.
     fn watch_sound(self: &Arc<Self>) {
         let mut g = self.inner.lock().unwrap();
+        // You just paused: Cadenza stops the sound itself before Spotify confirms, so silence is expected.
+        let paused_here = self.sound.locally_paused_at().map_or(false, |t| t.elapsed() < Duration::from_secs(12));
         let stalled = g.child.is_some() && Self::playing_here(&g) && Self::active_here(&g) && self.sound.seconds_since_audio() > 3.0
-            && !Self::refused_recently(&g);
+            && !Self::refused_recently(&g) && !paused_here;
         if !stalled { g.stall_since = None; return; }
         let since = *g.stall_since.get_or_insert_with(Instant::now);
         if since.elapsed() < Duration::from_secs(9) || within(g.last_rescue, 60) { return; }

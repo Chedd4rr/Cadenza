@@ -1,206 +1,765 @@
-//! Cadenza's sound output. librespot sends its audio here (16-bit stereo at 44.1 kHz on its standard
-//! output, `--backend pipe`), and this plays it on the system's output with cpal (CoreAudio, WASAPI,
-//! PipeWire/ALSA).
+//! Cadenza's own sound engine. librespot hands over its decoded sound (16-bit stereo at 44.1 kHz on its
+//! standard output, `--backend pipe`), and Cadenza plays it through a 10-band EQ, a preamp and a peak
+//! limiter, with:
+//! - a crossfade between songs, by reading the end of a song ahead of time and playing the next song's
+//!   start over it on a second voice (equal-power curves, so the loudness stays even);
+//! - pause, play, skip and seek that respond at once, before Spotify confirms (a short fade, no click);
+//! - the sleep timer's fade and smooth song transitions;
+//! - live levels for the visualizer and the EQ meters.
 //!
-//! Between the two sits a short buffer (a quarter of a second). librespot can only write as fast as the
-//! output takes the sound, which is what keeps it playing in real time. The EQ, limiter, crossfade and
-//! visualizer from the Swift engine come in phase 3; for now the sound goes straight through.
+//! The same design as the Mac app's EQ.swift, but every fade is worked out sample by sample here instead
+//! of by timers changing volumes. The output is opened with cpal (CoreAudio, WASAPI, PipeWire/ALSA),
+//! reopened if it stops working, and given a bigger buffer if it can't keep up.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use ringbuf::traits::{Consumer, Producer, Split};
-use ringbuf::{HeapCons, HeapProd, HeapRb};
+use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::process::ChildStdout;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::dsp::{self, Curve, Eq, Limiter, Ramp};
+use crate::librespot::Emit;
+use crate::settings::Settings;
 
 pub const RATE: u32 = 44_100;
-/// The output's own buffer, in frames: about 45 ms at 44.1 kHz to start with. If the output keeps
-/// falling behind (a slow computer or a virtual machine), it's doubled, up to about 190 ms.
+/// The output's own buffer, in frames: about 45 ms to start with. If the output keeps falling behind (a
+/// slow computer or a virtual machine), it's doubled, up to about 190 ms.
 const BUFFER_FRAMES: u32 = 2048;
 const BUFFER_FRAMES_MAX: u32 = 8192;
-const BUFFER_SAMPLES: usize = (RATE as usize / 4) * 2;       // a quarter of a second, two channels
+/// How much of librespot's sound waits in the engine, in frames (about 93 ms, as in the Mac app): short,
+/// so pause and skip feel instant, and because librespot only writes as fast as this is used, it keeps
+/// librespot playing in real time.
+const QUEUE_FRAMES: usize = 4096;
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
+fn secs(frames: i64) -> String { format!("{:.1} s", frames as f64 / RATE as f64) }
+
+// MARK: the engine's state (shared by the reader, the output and the controls; held only briefly)
+
+struct State {
+    /// Two voices, so the end of one song can overlap the start of the next. `cur` plays the current song.
+    voices: [VecDeque<(f32, f32)>; 2],
+    cur: usize,
+    /// A crossfade in progress: 0 → 1 over its length. The new song (`cur`) comes in on a sine curve while
+    /// the old one goes out on a cosine.
+    blend: Option<Ramp>,
+
+    // Where songs begin and end in librespot's stream, to know when to start the crossfade.
+    stream_frames: i64,
+    track_start: i64,
+    track_length: i64,
+    xf_frames: i64,
+    in_tail: bool,
+    xf_boundary: i64,
+    last_boundary: i64,
+    last_boundary_at: Option<Instant>,
+    tail_started_at: Instant,
+    next_length: i64,
+    last_plan_line: String,
+    /// Sound still in the pipe from before a skip or seek: dropped as it arrives.
+    discard_frames: i64,
+
+    // Pause, skip, seek and transitions: separate volume stages so they never fight.
+    fader: Ramp,
+    pause_pending: bool,
+    holding: bool,
+    locally_paused_at: Option<Instant>,
+    mute: Ramp,
+    skip_until: Option<Instant>,
+    unmute_at: Option<Instant>,
+    xfade: Ramp,
+    sleep_fading: bool,
+
+    eq: Eq,
+    limiter: Limiter,
+    /// The last frame played, so running dry eases out over a couple of milliseconds instead of clicking.
+    last: (f32, f32),
+    logs: Vec<String>,
+}
+
+impl State {
+    fn new() -> Self {
+        State {
+            voices: [VecDeque::with_capacity(16384), VecDeque::with_capacity(16384)], cur: 0, blend: None,
+            stream_frames: 0, track_start: -1, track_length: 0, xf_frames: 6 * RATE as i64, in_tail: false, xf_boundary: -1,
+            last_boundary: -1, last_boundary_at: None, tail_started_at: Instant::now(), next_length: 0, last_plan_line: String::new(),
+            discard_frames: 0,
+            fader: Ramp::at(1.0), pause_pending: false, holding: false, locally_paused_at: None,
+            mute: Ramp::at(1.0), skip_until: None, unmute_at: None, xfade: Ramp::at(1.0), sleep_fading: false,
+            eq: Eq::default(), limiter: Limiter::default(), last: (0.0, 0.0), logs: vec![],
+        }
+    }
+
+    fn xlog(&mut self, line: String) { self.logs.push(format!("Crossfade: {line}")); }
+    fn other(&self) -> usize { 1 - self.cur }
+
+    /// How much to read next, and whether it's part of an old song's tail (read at once, without waiting).
+    /// Reads never run past the start of a crossfade or the end of a song, so a song's end always falls
+    /// exactly between two reads.
+    fn plan(&mut self) -> (i64, bool) {
+        let xf = self.xf_frames;
+        if self.in_tail {
+            let left = self.xf_boundary - self.stream_frames;
+            return (if left > 0 { left.min(1024) } else { 1024 }, true);
+        }
+        if self.track_start < 0 || self.track_length <= 0 { return (1024, false); }
+        let end = self.track_start + self.track_length;
+        if self.stream_frames >= end {
+            // This song ended without a crossfade (off, or too short): the next one starts here.
+            let line = if xf == 0 { "off: next song follows straight on.".to_string() }
+                       else { format!("song too short to blend (under {}): next song follows straight on.", secs(xf * 3)) };
+            self.xlog(line);
+            self.last_boundary = end;
+            self.last_boundary_at = Some(Instant::now());
+            self.track_start = end;
+            self.track_length = 0;
+            return (1024, false);
+        }
+        if xf > 0 && self.track_length > xf * 3 {
+            let window = end - xf;
+            if self.stream_frames >= window {
+                self.in_tail = true;
+                self.xf_boundary = end;
+                self.tail_started_at = Instant::now();
+                self.next_length = 0;
+                let left = end - self.stream_frames;
+                self.xlog(format!("reading the last {} of the song ahead, for the blend.", secs(left)));
+                return (left.min(1024), true);
+            }
+            return ((window - self.stream_frames).min(1024), false);
+        }
+        ((end - self.stream_frames).min(1024), false)
+    }
+
+    /// Stop a crossfade halfway (a skip, a seek, a new output): only the current song carries on.
+    fn abort_blend(&mut self) {
+        self.blend = None;
+        self.in_tail = false;
+        self.xf_boundary = -1;
+        let o = self.other();
+        self.voices[o].clear();
+    }
+
+    /// Throw away the sound already on its way (what's in the pipe and queued here), so a skip or a seek
+    /// is heard at once instead of after it.
+    fn drop_queued(&mut self, waiting_frames: i64) {
+        self.discard_frames = waiting_frames;
+        self.abort_blend();
+        self.track_start = -1;
+        self.track_length = 0;
+        self.last_boundary = -1;
+        let c = self.cur;
+        self.voices[c].clear();
+    }
+
+    /// One frame of finished sound, and whether it came from librespot (rather than running dry).
+    #[inline]
+    fn next_frame(&mut self) -> ((f32, f32), bool) {
+        if self.holding { return ((0.0, 0.0), false); }            // paused here: nothing is used up
+        let (c, o) = (self.cur, self.other());
+        let a = self.voices[c].pop_front();
+        // Ran dry (a network hiccup, or the music simply stopped): fade what was playing out over ~2 ms.
+        let mut out = a.unwrap_or((self.last.0 * 0.99, self.last.1 * 0.99));
+        let mut has = a.is_some();
+        if let Some(blend) = &mut self.blend {
+            let b = self.voices[o].pop_front();
+            has |= b.is_some();
+            let (bl, br) = b.unwrap_or((0.0, 0.0));
+            let p = blend.step() * std::f32::consts::FRAC_PI_2;
+            let (gin, gout) = (p.sin(), p.cos());
+            out = (out.0 * gin + bl * gout, out.1 * gin + br * gout);
+            if !blend.moving() { self.blend = None; self.voices[o].clear(); }   // the old song's last moments, now silent
+        }
+        self.last = out;
+        let (l, r) = self.eq.run(out.0, out.1);
+        let (l, r) = self.limiter.run(l, r);
+        let g = self.fader.step() * self.xfade.step() * self.mute.step();
+        if self.pause_pending && !self.fader.moving() && self.fader.target() == 0.0 {
+            self.pause_pending = false;
+            self.holding = true;
+        }
+        ((l * g, r * g), has)
+    }
+
+    /// Timers that end a skip or a seek's silence (checked once per output callback).
+    fn tick(&mut self) {
+        let now = Instant::now();
+        if self.skip_until.map_or(false, |t| now >= t) { self.skip_until = None; self.mute.go(1.0, 0.01, Curve::Smooth); }
+        if self.unmute_at.map_or(false, |t| now >= t) && self.skip_until.is_none() { self.unmute_at = None; self.mute.go(1.0, 0.01, Curve::Smooth); }
+    }
+}
+
+// MARK: the shared parts
 
 struct Shared {
-    /// When sound last arrived from librespot (ms since 1970), for the "is anything coming through" checks.
+    st: Mutex<State>,
+    settings: Arc<Settings>,
+    emit: Emit,
+    /// When sound last arrived from librespot (ms since 1970).
     last_audio: AtomicU64,
     /// The output stopped working (unplugged, the sound server restarted): open it again.
     broken: AtomicBool,
-    /// What's playing the sound, for diagnostics.
     output: Mutex<String>,
     log: Mutex<Vec<String>>,
-    // Counters for the sound report in the log (frames, reset every 5 s).
-    received: AtomicU64,        // arrived from librespot
-    called: AtomicU64,          // the output asked for
-    played: AtomicU64,          // the output played from librespot's sound
-    peak: AtomicU64,            // the loudest sample, as f32 bits
-    /// When the output last asked for sound (ms since 1970), for the watchdog.
+    // The sound report's counters (frames, reset every 5 s).
+    received: AtomicU64,
+    called: AtomicU64,
+    played: AtomicU64,
+    peak: AtomicU64,
     last_callback: AtomicU64,
-    /// The output buffer to ask for next time it's opened, and the rate it runs at.
-    buffer_frames: std::sync::atomic::AtomicU32,
-    rate: std::sync::atomic::AtomicU32,
-    /// The output is falling behind: open it again with the bigger buffer.
+    buffer_frames: AtomicU32,
+    rate: AtomicU32,
     too_slow: AtomicBool,
+    /// Bumped for each librespot process, so an old reader knows to stop.
+    generation: AtomicU64,
+    /// librespot's sound pipe, for asking how much is still waiting in it.
+    pipe_fd: AtomicI64,
+    // The visualizer.
+    meter_on: AtomicBool,
+    tap: Mutex<VecDeque<f32>>,
+    // Output devices.
+    chosen: Mutex<Option<String>>,
+    device: Mutex<(String, String)>,       // what's playing the sound now: (id, name), for the EQ per device
 }
 
-pub struct Sound {
-    shared: Arc<Shared>,
-    producer: Arc<Mutex<HeapProd<f32>>>,
-}
+pub struct Sound { s: Arc<Shared> }
 
 impl Sound {
-    /// Starts the output thread. It keeps the output open for as long as Cadenza runs, and opens it again
-    /// if it stops working.
-    pub fn start() -> Arc<Self> {
-        let (prod, cons) = HeapRb::<f32>::new(BUFFER_SAMPLES).split();
-        let shared = Arc::new(Shared {
-            last_audio: AtomicU64::new(0),
-            broken: AtomicBool::new(false),
-            output: Mutex::new("none yet".into()),
-            log: Mutex::new(vec![]),
+    pub fn start(settings: Arc<Settings>, emit: Emit) -> Arc<Self> {
+        let s = Arc::new(Shared {
+            st: Mutex::new(State::new()), settings, emit,
+            last_audio: AtomicU64::new(0), broken: AtomicBool::new(false),
+            output: Mutex::new("none yet".into()), log: Mutex::new(vec![]),
             received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
-            last_callback: AtomicU64::new(0),
-            buffer_frames: std::sync::atomic::AtomicU32::new(BUFFER_FRAMES),
-            rate: std::sync::atomic::AtomicU32::new(RATE),
-            too_slow: AtomicBool::new(false),
+            last_callback: AtomicU64::new(0), buffer_frames: AtomicU32::new(BUFFER_FRAMES), rate: AtomicU32::new(RATE),
+            too_slow: AtomicBool::new(false), generation: AtomicU64::new(0), pipe_fd: AtomicI64::new(-1),
+            meter_on: AtomicBool::new(false), tap: Mutex::new(VecDeque::with_capacity(dsp::FFT_SIZE * 2)),
+            chosen: Mutex::new(None), device: Mutex::new((String::new(), String::new())),
         });
-        let r = shared.clone();
-        std::thread::Builder::new().name("cadenza-sound-report".into()).spawn(move || report(r)).ok();
-        let consumer = Arc::new(Mutex::new(cons));
-        let s = shared.clone();
-        std::thread::Builder::new().name("cadenza-output".into()).spawn(move || output_thread(s, consumer)).ok();
-        Arc::new(Sound { shared, producer: Arc::new(Mutex::new(prod)) })
+        let me = Arc::new(Sound { s: s.clone() });
+        me.apply_eq();
+        let chosen = me.s.settings.string("outputDevice");
+        if !chosen.is_empty() && !cfg!(target_os = "linux") { *s.chosen.lock().unwrap() = Some(chosen); }
+        for (name, f) in [("cadenza-sound-report", report as fn(Arc<Shared>)), ("cadenza-output", output_thread), ("cadenza-levels", levels_thread)] {
+            let c = s.clone();
+            std::thread::Builder::new().name(name.into()).spawn(move || f(c)).ok();
+        }
+        let w = me.clone();
+        std::thread::Builder::new().name("cadenza-devices".into()).spawn(move || w.watch_devices()).ok();
+        me
     }
 
     pub fn seconds_since_audio(&self) -> f64 {
-        let at = self.shared.last_audio.load(Ordering::Relaxed);
+        let at = self.s.last_audio.load(Ordering::Relaxed);
         if at == 0 { return f64::INFINITY; }
         now_ms().saturating_sub(at) as f64 / 1000.0
     }
+    pub fn output_name(&self) -> String { self.s.output.lock().unwrap().clone() }
+    pub fn log(&self) -> Vec<String> { self.s.log.lock().unwrap().clone() }
 
-    pub fn output_name(&self) -> String { self.shared.output.lock().unwrap().clone() }
+    fn with<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
+        let (out, logs) = {
+            let mut st = self.s.st.lock().unwrap();
+            let out = f(&mut st);
+            (out, std::mem::take(&mut st.logs))
+        };
+        for l in logs { note(&self.s, l); }
+        out
+    }
 
-    pub fn log(&self) -> Vec<String> { self.shared.log.lock().unwrap().clone() }
+    /// Frames librespot has written that haven't been read yet (still in the pipe).
+    fn waiting_frames(&self) -> i64 { pipe_waiting(self.s.pipe_fd.load(Ordering::Relaxed)) / 4 }
 
-    /// Reads librespot's audio until it closes its output (it quit or was restarted).
-    pub fn attach<R: Read + Send + 'static>(&self, mut pipe: R) {
-        let producer = self.producer.clone();
-        let shared = self.shared.clone();
+    // MARK: reading librespot's sound
+
+    /// Reads a new librespot process's sound until it closes its output (it quit or was restarted).
+    pub fn attach(&self, mut pipe: ChildStdout) {
+        let gen = self.s.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        #[cfg(unix)]
+        { use std::os::unix::io::AsRawFd; self.s.pipe_fd.store(pipe.as_raw_fd() as i64, Ordering::Relaxed); }
+        self.with(|st| { st.stream_frames = 0; st.track_start = -1; st.track_length = 0; st.last_boundary = -1; st.in_tail = false; });
+        let s = self.s.clone();
         std::thread::Builder::new().name("cadenza-pipe".into()).spawn(move || {
-            let mut bytes = [0u8; 8192];
-            let mut carry: Option<u8> = None;                 // half a sample left over from the last read
-            let mut samples: Vec<f32> = Vec::with_capacity(4100);
+            let mut bytes = vec![0u8; 1024 * 4];
+            let mut started = false;
             loop {
-                let mut n = match pipe.read(&mut bytes) { Ok(0) | Err(_) => break, Ok(n) => n };
-                // librespot prints its sign-in link on standard output, which is the sound in pipe mode.
-                // Leave those lines out instead of playing them as a burst of noise (it opens the link
-                // in your browser itself).
-                if carry.is_none() && (bytes[..n].starts_with(b"Browse to: ") || bytes[..n].starts_with(b"If prompted") || bytes[..n].starts_with(b"Provide redirect")) {
-                    let end = bytes[..n].iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(n);
-                    bytes.copy_within(end..n, 0);
-                    n -= end;
-                    if n == 0 { continue; }
+                if s.generation.load(Ordering::SeqCst) != gen { break; }
+                let ((want, tail), logs) = { let mut st = s.st.lock().unwrap(); let p = st.plan(); (p, std::mem::take(&mut st.logs)) };
+                for l in logs { note(&s, l); }
+                // Normally wait for room; an old song's tail is read straight away instead, so the next song
+                // can start playing alongside it.
+                if !tail {
+                    loop {
+                        if s.generation.load(Ordering::SeqCst) != gen { return; }
+                        let full = { let st = s.st.lock().unwrap(); st.voices[st.cur].len() >= QUEUE_FRAMES };
+                        if !full { break; }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
                 }
-                samples.clear();
-                let mut i = 0;
-                if let Some(lo) = carry.take() {
-                    samples.push(i16::from_le_bytes([lo, bytes[0]]) as f32 / 32768.0);
-                    i = 1;
+                let need = (want.clamp(1, 1024) as usize) * 4;
+                let mut got = 0;
+                while got < need {
+                    match pipe.read(&mut bytes[got..need]) { Ok(0) | Err(_) => break, Ok(n) => got += n }
+                    // librespot prints its sign-in link on standard output, which is the sound in pipe mode.
+                    // Leave those lines out instead of playing them as noise (it opens the link itself).
+                    if !started {
+                        let text = [&b"Browse to: "[..], b"If prompted", b"Provide redirect"].iter().any(|p| bytes[..got].starts_with(p));
+                        if text {
+                            if let Some(i) = bytes[..got].iter().position(|b| *b == b'\n') { bytes.copy_within(i + 1..got, 0); got -= i + 1; }
+                            continue;
+                        }
+                    }
                 }
-                while i + 1 < n {
-                    samples.push(i16::from_le_bytes([bytes[i], bytes[i + 1]]) as f32 / 32768.0);
-                    i += 2;
-                }
-                if i < n { carry = Some(bytes[i]); }
-                shared.last_audio.store(now_ms(), Ordering::Relaxed);
-                shared.received.fetch_add(samples.len() as u64 / 2, Ordering::Relaxed);
-                // Hand it over as room frees up. Waiting here is what paces librespot.
-                let mut done = 0;
-                while done < samples.len() {
-                    let pushed = producer.lock().unwrap().push_slice(&samples[done..]);
-                    done += pushed;
-                    if pushed == 0 { std::thread::sleep(Duration::from_millis(3)); }
-                }
+                if got < 4 { break; }                                 // librespot stopped
+                started = true;
+                let n = got / 4;
+                s.last_audio.store(now_ms(), Ordering::Relaxed);
+                s.received.fetch_add(n as u64, Ordering::Relaxed);
+                let logs = {
+                    let mut st = s.st.lock().unwrap();
+                    let at = st.stream_frames;
+                    st.stream_frames += n as i64;
+                    if st.discard_frames > 0 {
+                        st.discard_frames -= n as i64;                    // the end of the previous song (or spot): drop it
+                    } else {
+                        let frames = bytes[..n * 4].chunks_exact(4).map(|b| (
+                            i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
+                            i16::from_le_bytes([b[2], b[3]]) as f32 / 32768.0,
+                        ));
+                        if st.in_tail && at >= st.xf_boundary {
+                            // The next song begins: it goes to the other voice, which fades in while the old
+                            // song's tail (already queued) fades out.
+                            st.last_boundary = st.xf_boundary;
+                            st.last_boundary_at = Some(Instant::now());
+                            st.track_start = st.xf_boundary;
+                            st.track_length = st.next_length;               // 0 until librespot reports it
+                            st.next_length = 0;
+                            st.in_tail = false;
+                            st.cur = 1 - st.cur;
+                            let c = st.cur;
+                            st.voices[c].clear();
+                            st.voices[c].extend(frames);
+                            let xf_secs = st.xf_frames as f64 / RATE as f64;
+                            // Only blend if the old song is still playing out. If the next song came much later
+                            // (the queue ran out and something new was started), it just begins.
+                            let took = st.tail_started_at.elapsed().as_secs_f64();
+                            if took < xf_secs + 2.0 {
+                                let mut r = Ramp::at(0.0);
+                                r.go(1.0, xf_secs.max(0.3), Curve::Linear);
+                                st.blend = Some(r);
+                                st.xlog(format!("next song started; blending over {xf_secs:.0} s (tail read in {took:.2} s)."));
+                            } else {
+                                let o = st.other();
+                                st.voices[o].clear();
+                                st.xlog(format!("next song came {took:.1} s after the old one ended: starting it normally."));
+                            }
+                        } else {
+                            let c = st.cur;
+                            st.voices[c].extend(frames);
+                        }
+                    }
+                    std::mem::take(&mut st.logs)
+                };
+                for l in logs { note(&s, l); }
             }
         }).ok();
     }
+
+    // MARK: what librespot reports
+
+    /// librespot said where it is in the song (`ms`), how long the song is, or that a new song began.
+    /// From that, Cadenza works out where in the stream the song will end, to start the crossfade on time.
+    pub fn song_position(&self, ms: Option<f64>, duration: Option<i64>, new_song: bool) {
+        let waiting = self.waiting_frames();
+        let xf = self.s.settings.int("crossfade").clamp(0, 12);
+        self.with(|st| {
+            st.xf_frames = xf * RATE as i64;
+            let written = st.stream_frames + waiting;
+            let length = duration.map(|d| (d as f64 * 44.1) as i64).unwrap_or(0);
+            if new_song {
+                if st.in_tail { st.next_length = length; return; }      // picked up when the voices switch
+                st.track_start = if st.last_boundary >= 0 && st.last_boundary_at.map_or(false, |t| t.elapsed() < Duration::from_secs(20)) {
+                    st.last_boundary                                        // it began where the last song ended
+                } else { written };                                         // it starts now (a skip, a fresh start)
+                st.track_length = length;
+                report_plan(st, written);
+                return;
+            }
+            if st.in_tail { return; }
+            if length > 0 { st.track_length = length; }
+            let Some(ms) = ms else { return };
+            // Right after a crossfade the reader has just raced ahead, so a position from then would be off;
+            // the start found from the song boundary is more exact.
+            if st.track_start == st.last_boundary && st.last_boundary_at.map_or(false, |t| t.elapsed() < Duration::from_secs(15)) { return; }
+            st.track_start = written - (ms * 44.1) as i64;
+            report_plan(st, written);
+        });
+    }
+
+    /// librespot started a different song: if a skip was waiting for it, throw away the old song's leftovers.
+    pub fn track_changed(&self) {
+        let waiting = self.waiting_frames();
+        self.with(|st| {
+            if st.skip_until.take().is_some() {
+                st.drop_queued(waiting);
+                st.mute.go(1.0, 0.01, Curve::Smooth);
+            }
+        });
+    }
+
+    /// librespot jumped to a new spot: drop the old spot's sound still on its way, behind a tiny fade.
+    pub fn seeked(&self) {
+        let waiting = self.waiting_frames();
+        self.with(|st| {
+            if st.holding || st.skip_until.is_some() { return; }
+            st.mute.go(0.0, 0.005, Curve::Linear);
+            st.drop_queued(waiting);
+            st.unmute_at = Some(Instant::now() + Duration::from_millis(50));
+        });
+    }
+
+    // MARK: instant controls
+
+    /// `audio.local` from the page: pause, play, toggle, skip, sleepfade.
+    pub fn local(&self, action: &str, playing_here: bool) {
+        match action {
+            "pause" => self.local_pause(),
+            "play" => self.local_resume(),
+            "toggle" => if playing_here && !self.holding() { self.local_pause() } else { self.local_resume() },
+            "skip" => self.with(|st| { st.mute.go(0.0, 0.008, Curve::Linear); st.skip_until = Some(Instant::now() + Duration::from_millis(2500)); }),
+            "sleepfade" => self.with(|st| { st.sleep_fading = true; st.xfade.go(0.0, 10.0, Curve::Smooth); }),
+            _ => {}
+        }
+    }
+
+    /// Stops the sound right away with a very short fade. What's queued stays queued, so playing again
+    /// continues exactly where it stopped.
+    pub fn local_pause(&self) {
+        self.with(|st| {
+            if st.holding || st.pause_pending { return; }
+            st.locally_paused_at = Some(Instant::now());
+            st.pause_pending = true;
+            st.fader.go(0.0, 0.12, Curve::Smooth);
+        });
+    }
+
+    pub fn local_resume(&self) {
+        self.with(|st| {
+            if st.sleep_fading { st.sleep_fading = false; st.xfade.go(1.0, 0.5, Curve::Smooth); }   // the sleep timer was cancelled
+            st.locally_paused_at = None;
+            st.pause_pending = false;
+            if st.holding { st.holding = false; st.fader.set(0.0); }
+            st.fader.go(1.0, 0.18, Curve::Smooth);
+        });
+    }
+
+    /// True while Cadenza is holding the sound (paused here), whatever Spotify thinks.
+    pub fn holding(&self) -> bool { self.with(|st| st.holding || st.pause_pending) }
+    pub fn locally_paused_at(&self) -> Option<Instant> { self.with(|st| st.locally_paused_at) }
+    pub fn sleep_fading(&self) -> bool { self.with(|st| st.sleep_fading) }
+    pub fn transition_volume(&self) -> f32 { self.with(|st| st.xfade.value()) }
+
+    /// Ease the transition volume to `target` (the start of a new song after a sleep fade was cut short).
+    pub fn ramp_transition(&self, target: f32, seconds: f64) {
+        self.with(|st| if seconds <= 0.0 || (st.xfade.value() - target).abs() < 0.001 { st.xfade.set(target) } else { st.xfade.go(target, seconds, Curve::Smooth) });
+    }
+    /// Back to full volume at once (anything that isn't the song running out).
+    pub fn reset_transition(&self) { self.with(|st| st.xfade.set(1.0)); }
+
+    /// Safety net when playback (re)starts: nothing left turned down by an interrupted fade or skip.
+    pub fn ensure_audible(&self) {
+        self.with(|st| {
+            if st.skip_until.is_none() { st.mute.set(1.0); st.unmute_at = None; }
+            if !st.fader.moving() && !st.pause_pending { st.fader.set(1.0); }
+            if !st.xfade.moving() && !st.sleep_fading { st.xfade.set(1.0); }
+            if st.holding { st.holding = false; st.locally_paused_at = None; st.fader.set(1.0); }
+        });
+    }
+
+    // MARK: EQ
+
+    fn eq_values(&self) -> (bool, f64, Vec<f64>, String) {
+        let set = &self.s.settings;
+        let gains: Vec<f64> = set.get("eqGains").as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect()).unwrap_or_default();
+        let gains = if gains.len() == 10 { gains } else { vec![0.0; 10] };
+        let preset = set.get("eqPreset").as_str().unwrap_or("Flat").to_string();
+        (set.get("eqEnabled").as_bool().unwrap_or(true), set.get("eqPreamp").as_f64().unwrap_or(0.0), gains, preset)
+    }
+
+    fn apply_eq(&self) {
+        let (on, pre, gains, _) = self.eq_values();
+        self.with(|st| st.eq.set(on, pre, &gains));
+    }
+
+    fn per_device(&self) -> bool { self.s.settings.get("eqPerDevice").as_bool().unwrap_or(true) }
+
+    pub fn eq_state(&self) -> Value {
+        let (on, pre, gains, preset) = self.eq_values();
+        json!({"enabled": on, "preamp": pre, "gains": gains, "preset": preset, "freqs": dsp::FREQS,
+               "running": true, "device": self.s.device.lock().unwrap().1, "perDevice": self.per_device(), "engine": true})
+    }
+
+    fn profile(&self) -> Value {
+        let (on, pre, gains, preset) = self.eq_values();
+        json!({"enabled": on, "preamp": pre, "gains": gains, "preset": preset})
+    }
+
+    pub fn eq_update(&self, args: &Value) -> Value {
+        let set = &self.s.settings;
+        if let Some(v) = args.get("enabled").and_then(Value::as_bool) { set.put("eqEnabled", json!(v)); }
+        if let Some(v) = args.get("preamp").and_then(Value::as_f64) { set.put("eqPreamp", json!(v.clamp(-12.0, 12.0))); }
+        if let Some(g) = args.get("gains").and_then(Value::as_array) {
+            if g.len() == 10 { set.put("eqGains", json!(g.iter().map(|v| v.as_f64().unwrap_or(0.0).clamp(-12.0, 12.0)).collect::<Vec<_>>())); }
+        }
+        if let Some(v) = args.get("preset").and_then(Value::as_str) { set.put("eqPreset", json!(v)); }
+        if let Some(v) = args.get("perDevice").and_then(Value::as_bool) { set.put("eqPerDevice", json!(v)); }
+        self.apply_eq();
+        // Remember these settings for this output device.
+        let id = self.s.device.lock().unwrap().0.clone();
+        if self.per_device() && !id.is_empty() {
+            let mut profiles = set.get("eqProfiles");
+            if !profiles.is_object() { profiles = json!({}); }
+            profiles[id] = self.profile();
+            set.put("eqProfiles", profiles);
+        }
+        self.eq_state()
+    }
+
+    /// The sound now plays through a different device: load its EQ (the first time, it starts from the
+    /// current one). True when a different EQ was loaded.
+    fn use_device(&self, id: &str, name: &str) -> bool {
+        *self.s.device.lock().unwrap() = (id.to_string(), name.to_string());
+        if !self.per_device() || id.is_empty() { return false; }
+        let set = &self.s.settings;
+        let mut profiles = set.get("eqProfiles");
+        if !profiles.is_object() { profiles = json!({}); }
+        let Some(p) = profiles.get(id).cloned() else {
+            profiles[id] = self.profile();
+            set.put("eqProfiles", profiles);
+            return false;
+        };
+        if let Some(v) = p.get("enabled").and_then(Value::as_bool) { set.put("eqEnabled", json!(v)); }
+        if let Some(v) = p.get("preamp").and_then(Value::as_f64) { set.put("eqPreamp", json!(v)); }
+        if let Some(v) = p.get("gains").filter(|g| g.as_array().map_or(false, |a| a.len() == 10)) { set.put("eqGains", v.clone()); }
+        if let Some(v) = p.get("preset").and_then(Value::as_str) { set.put("eqPreset", json!(v)); }
+        self.apply_eq();
+        true
+    }
+
+    pub fn set_meter(&self, on: bool) {
+        self.s.meter_on.store(on, Ordering::Relaxed);
+        if !on { self.s.tap.lock().unwrap().clear(); }
+    }
+
+    // MARK: output devices
+
+    /// The outputs to pick from: [{uid, name, transport, isDefault}].
+    /// - Linux: the sound server's outputs (PipeWire or PulseAudio, through `pactl`), and picking one makes
+    ///   it the system's output, as the Mac app does.
+    /// - Windows and macOS: the system's outputs; picking one plays Cadenza through it.
+    pub fn outputs(&self) -> Value { Value::Array(list_outputs(&self.s)) }
+
+    pub fn set_output(&self, uid: &str) -> bool {
+        if cfg!(target_os = "linux") {
+            let ok = std::process::Command::new("pactl").args(["set-default-sink", uid]).status().map(|s| s.success()).unwrap_or(false);
+            if ok { self.check_device(); }
+            return ok;
+        }
+        let known = list_outputs(&self.s).iter().any(|o| o["uid"] == uid);
+        if !known { return false; }
+        *self.s.chosen.lock().unwrap() = Some(uid.to_string());
+        self.s.settings.put("outputDevice", json!(uid));
+        self.s.broken.store(true, Ordering::SeqCst);                  // reopen on the new device
+        true
+    }
+
+    /// Every 3 s: has the output (or the list of outputs) changed? Tell the page, load that device's EQ,
+    /// and on Windows and macOS follow a new system output unless you picked one yourself.
+    fn watch_devices(self: Arc<Self>) {
+        let mut last_list = String::new();
+        loop {
+            let list = list_outputs(&self.s);
+            let sig = list.iter().map(|o| format!("{}{}", o["uid"], o["isDefault"])).collect::<Vec<_>>().join("|");
+            if sig != last_list {
+                if !last_list.is_empty() { (self.s.emit)("outputs", Value::Null); }
+                last_list = sig;
+            }
+            self.check_device();
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    }
+
+    fn check_device(&self) {
+        let (id, name) = current_device(&self.s);
+        let changed = self.s.device.lock().unwrap().0 != id;
+        if !changed { return; }
+        let first = self.s.device.lock().unwrap().0.is_empty();
+        if !first && !cfg!(target_os = "linux") && self.s.chosen.lock().unwrap().is_none() {
+            note(&self.s, format!("The system's sound output changed to {name}: moving the sound there."));
+            self.s.broken.store(true, Ordering::SeqCst);
+        }
+        if self.use_device(&id, &name) && !first {
+            (self.s.emit)("eq.changed", self.eq_state());
+        }
+        if !first { (self.s.emit)("outputs", Value::Null); }
+    }
 }
 
-fn note(shared: &Shared, line: String) {
+fn report_plan(st: &mut State, written: i64) {
+    if st.track_start < 0 { return; }
+    if st.track_length <= 0 { return st.xlog("song length not known yet: no blend planned.".into()); }
+    if st.xf_frames == 0 { return st.xlog("off.".into()); }
+    if st.track_length <= st.xf_frames * 3 { return st.xlog("song too short to blend.".into()); }
+    let left = st.track_start + st.track_length - written;
+    let line = format!("this song ends in {}; the {} blend starts {} from now.", secs(left), secs(st.xf_frames), secs((left - st.xf_frames).max(0)));
+    if line == st.last_plan_line { return; }                      // the same plan, worked out again a moment later
+    st.last_plan_line = line.clone();
+    st.xlog(line);
+}
+
+/// Bytes waiting in a pipe (librespot's sound not read yet).
+fn pipe_waiting(_fd: i64) -> i64 {
+    #[cfg(unix)]
+    {
+        if _fd < 0 { return 0; }
+        let mut n: libc::c_int = 0;
+        // SAFETY: FIONREAD only writes one int through the pointer; a closed descriptor just fails.
+        if unsafe { libc::ioctl(_fd as libc::c_int, libc::FIONREAD, &mut n) } == 0 { return n as i64; }
+    }
+    0
+}
+
+fn note(s: &Shared, line: String) {
     log::info!("{line}");
-    let mut l = shared.log.lock().unwrap();
+    let mut l = s.log.lock().unwrap();
     l.push(line);
-    if l.len() > 50 { l.remove(0); }
+    if l.len() > 80 { l.remove(0); }
 }
 
-/// Keeps an output open. With no output at all (a server, a test machine) the sound is taken at real-time
-/// speed anyway, so librespot keeps playing and the position keeps moving.
-fn output_thread(shared: Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) {
-    let mut reopens: Vec<std::time::Instant> = vec![];
+// MARK: devices
+
+fn transport_from_name(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    if ["bluez", "bluetooth", "airpods", "buds", "headset"].iter().any(|k| n.contains(k)) { "bluetooth" }
+    else if n.contains("usb") { "usb" }
+    else if ["hdmi", "displayport", "display"].iter().any(|k| n.contains(k)) { "display" }
+    else if ["speaker", "analog", "built-in", "builtin", "realtek", "pci"].iter().any(|k| n.contains(k)) { "builtin" }
+    else { "other" }
+}
+
+/// Linux: the sound server's outputs through `pactl` (PipeWire and PulseAudio both answer it).
+fn pactl_sinks() -> Option<(String, Vec<(String, String)>)> {
+    let default = std::process::Command::new("pactl").arg("get-default-sink").output().ok()
+        .filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    let json = std::process::Command::new("pactl").args(["--format=json", "list", "sinks"]).output().ok()
+        .filter(|o| o.status.success()).and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
+    let sinks = json.and_then(|v| v.as_array().cloned()).unwrap_or_default().iter().filter_map(|s| {
+        let id = s.get("name")?.as_str()?.to_string();
+        let name = s.get("description").and_then(Value::as_str).unwrap_or(&id).to_string();
+        Some((id, name))
+    }).collect::<Vec<_>>();
+    Some((default, sinks))
+}
+
+fn list_outputs(s: &Shared) -> Vec<Value> {
+    if cfg!(target_os = "linux") {
+        return match pactl_sinks() {
+            Some((default, sinks)) if !sinks.is_empty() => sinks.iter().map(|(id, name)| json!({
+                "uid": id, "name": name, "transport": transport_from_name(&format!("{id} {name}")), "isDefault": *id == default,
+            })).collect(),
+            _ => vec![json!({"uid": "default", "name": "System output", "transport": "builtin", "isDefault": true})],
+        };
+    }
+    let host = cpal::default_host();
+    let default = host.default_output_device().and_then(|d| d.name().ok()).unwrap_or_default();
+    let using = s.chosen.lock().unwrap().clone().unwrap_or(default);
+    host.output_devices().map(|list| list.filter_map(|d| d.name().ok()).map(|name| json!({
+        "uid": name, "name": name, "transport": transport_from_name(&name), "isDefault": name == using,
+    })).collect()).unwrap_or_default()
+}
+
+/// What's playing the sound now: (id, name).
+fn current_device(s: &Shared) -> (String, String) {
+    if cfg!(target_os = "linux") {
+        if let Some((default, sinks)) = pactl_sinks() {
+            let name = sinks.iter().find(|(id, _)| *id == default).map(|(_, n)| n.clone()).unwrap_or_else(|| default.clone());
+            return (default, name);
+        }
+        return ("default".into(), "System output".into());
+    }
+    let name = s.chosen.lock().unwrap().clone()
+        .or_else(|| cpal::default_host().default_output_device().and_then(|d| d.name().ok()))
+        .unwrap_or_default();
+    (name.clone(), name)
+}
+
+fn find_device(s: &Shared) -> Option<cpal::Device> {
+    let host = cpal::default_host();
+    if let Some(want) = s.chosen.lock().unwrap().clone() {
+        if let Some(d) = host.output_devices().ok()?.find(|d| d.name().ok().as_deref() == Some(want.as_str())) { return Some(d); }
+    }
+    host.default_output_device()
+}
+
+// MARK: the output
+
+/// Keeps an output open. With no output at all, the sound is taken at real-time speed anyway, so
+/// librespot keeps playing and the position keeps moving.
+fn output_thread(s: Arc<Shared>) {
+    let mut reopens: Vec<Instant> = vec![];
     loop {
-        shared.broken.store(false, Ordering::SeqCst);
-        match open_output(&shared, consumer.clone()) {
+        s.broken.store(false, Ordering::SeqCst);
+        match open_output(&s) {
             Ok(stream) => {
-                // Watchdog: an output that stops asking for sound without reporting an error (it happens
-                // after a computer or virtual machine wakes up, or when the sound server hiccups) is
-                // opened again, so the music doesn't just stop.
-                let opened = std::time::Instant::now();
-                shared.last_callback.store(now_ms(), Ordering::Relaxed);
-                let mut stalled = false;
-                let mut resize = false;
-                shared.too_slow.store(false, Ordering::SeqCst);
-                while !shared.broken.load(Ordering::SeqCst) {
-                    if shared.too_slow.swap(false, Ordering::SeqCst) { resize = true; break; }
+                // Watchdog: an output that stops asking for sound without an error (after waking up, or a
+                // sound server hiccup) is opened again, so the music doesn't just stop.
+                let opened = Instant::now();
+                s.last_callback.store(now_ms(), Ordering::Relaxed);
+                let (mut stalled, mut resize) = (false, false);
+                s.too_slow.store(false, Ordering::SeqCst);
+                while !s.broken.load(Ordering::SeqCst) {
+                    if s.too_slow.swap(false, Ordering::SeqCst) { resize = true; break; }
                     std::thread::sleep(Duration::from_millis(250));
-                    let since = now_ms().saturating_sub(shared.last_callback.load(Ordering::Relaxed));
+                    let since = now_ms().saturating_sub(s.last_callback.load(Ordering::Relaxed));
                     if opened.elapsed() > Duration::from_secs(3) && since > 2000 { stalled = true; break; }
                 }
                 drop(stream);
-                if resize { continue; }              // straight back, with the bigger buffer (already noted)
+                if resize { continue; }
                 if stalled {
-                    reopens.retain(|t: &std::time::Instant| t.elapsed() < Duration::from_secs(60));
-                    reopens.push(std::time::Instant::now());
-                    // Wait longer each time it keeps stalling (1 s, 2 s, 4 s… up to 30 s), so a broken
-                    // output isn't reopened over and over.
+                    reopens.retain(|t| t.elapsed() < Duration::from_secs(60));
+                    reopens.push(Instant::now());
                     let wait = (1u64 << (reopens.len() - 1).min(5)).min(30);
-                    note(&shared, format!("The sound output stopped asking for sound: opening it again in {wait} s."));
+                    note(&s, format!("The sound output stopped asking for sound: opening it again in {wait} s."));
                     std::thread::sleep(Duration::from_secs(wait));
                 } else {
-                    note(&shared, "The sound output stopped working: opening it again.".into());
-                    std::thread::sleep(Duration::from_millis(500));
+                    note(&s, "Opening the sound output again.".into());
+                    std::thread::sleep(Duration::from_millis(300));
                 }
             }
             Err(e) => {
-                note(&shared, format!("No sound output ({e}). Playing silently and trying again in 5 s."));
-                *shared.output.lock().unwrap() = "none (silent)".into();
-                // Take the sound at real-time speed for 5 s, then try the output again.
-                let started = std::time::Instant::now();
+                note(&s, format!("No sound output ({e}). Playing silently and trying again in 5 s."));
+                *s.output.lock().unwrap() = "none (silent)".into();
+                let started = Instant::now();
                 let mut taken: u64 = 0;
-                let mut sink = vec![0f32; 882];
                 while started.elapsed() < Duration::from_secs(5) {
                     std::thread::sleep(Duration::from_millis(10));
-                    let due = (started.elapsed().as_secs_f64() * RATE as f64) as u64 * 2;
-                    while taken < due {
-                        let want = ((due - taken) as usize).min(sink.len());
-                        let got = consumer.lock().unwrap().pop_slice(&mut sink[..want]);
-                        if got == 0 { taken = due; break; }
-                        taken += got as u64;
-                    }
+                    let due = (started.elapsed().as_secs_f64() * RATE as f64) as u64;
+                    let mut st = s.st.lock().unwrap();
+                    while taken < due { st.tick(); let _ = st.next_frame(); taken += 1; }
                 }
             }
         }
     }
 }
 
-fn open_output(shared: &Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) -> Result<cpal::Stream, String> {
-    let host = cpal::default_host();
-    let device = host.default_output_device().ok_or("no output device")?;
+fn open_output(s: &Arc<Shared>) -> Result<cpal::Stream, String> {
+    let device = find_device(s).ok_or("no output device")?;
     let name = device.name().unwrap_or_else(|_| "unknown".into());
-
     // 44.1 kHz if the output can do it, so nothing needs converting; otherwise its own rate.
     let default = device.default_output_config().map_err(|e| e.to_string())?;
     let config = device.supported_output_configs().ok()
@@ -209,25 +768,24 @@ fn open_output(shared: &Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) -> Res
         .map(|c| c.with_sample_rate(cpal::SampleRate(RATE)))
         .unwrap_or(default);
     let format = config.sample_format();
-    // A fixed buffer of about 45 ms. Left to choose, ALSA can pick one so small that a busy computer
-    // (or a virtual machine) doesn't refill it in time, which is heard as crackles and gaps.
+    // A fixed buffer. Left to choose, ALSA can pick one so small that a busy computer (or a virtual
+    // machine) doesn't refill it in time, which is heard as crackles and gaps.
     let frames = match config.buffer_size() {
-        cpal::SupportedBufferSize::Range { min, max } => Some(shared.buffer_frames.load(Ordering::Relaxed).clamp(*min, *max)),
+        cpal::SupportedBufferSize::Range { min, max } => Some(s.buffer_frames.load(Ordering::Relaxed).clamp(*min, *max)),
         cpal::SupportedBufferSize::Unknown => None,
     };
     let mut config: cpal::StreamConfig = config.into();
-    shared.rate.store(config.sample_rate.0, Ordering::Relaxed);
+    s.rate.store(config.sample_rate.0, Ordering::Relaxed);
     if let Some(f) = frames { config.buffer_size = cpal::BufferSize::Fixed(f); }
-    *shared.output.lock().unwrap() = format!("{name} ({} Hz, {} channels, {format:?}, buffer {})", config.sample_rate.0, config.channels,
+    *s.output.lock().unwrap() = format!("{name} ({} Hz, {} channels, {format:?}, buffer {})", config.sample_rate.0, config.channels,
         frames.map(|f| format!("{f} frames")).unwrap_or_else(|| "chosen by the system".into()));
-    note(shared, format!("Playing through {}", shared.output.lock().unwrap()));
-
-    let stream = match build_any(&device, &config, format, shared, consumer.clone()) {
-        Ok(s) => s,
+    note(s, format!("Playing through {}", s.output.lock().unwrap()));
+    let stream = match build_any(&device, &config, format, s) {
+        Ok(st) => st,
         Err(e) if frames.is_some() => {
-            note(shared, format!("The output refused a {}-frame buffer ({e}); letting it choose.", frames.unwrap_or(0)));
+            note(s, format!("The output refused a {}-frame buffer ({e}); letting it choose.", frames.unwrap_or(0)));
             config.buffer_size = cpal::BufferSize::Default;
-            build_any(&device, &config, format, shared, consumer)?
+            build_any(&device, &config, format, s)?
         }
         Err(e) => return Err(e),
     };
@@ -235,71 +793,65 @@ fn open_output(shared: &Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>) -> Res
     Ok(stream)
 }
 
-fn build_any(device: &cpal::Device, config: &cpal::StreamConfig, format: cpal::SampleFormat, shared: &Arc<Shared>,
-             consumer: Arc<Mutex<HeapCons<f32>>>) -> Result<cpal::Stream, String> {
-    let stream = match format {
-        cpal::SampleFormat::F32 => build::<f32>(device, config, shared.clone(), consumer),
-        cpal::SampleFormat::I16 => build::<i16>(device, config, shared.clone(), consumer),
-        cpal::SampleFormat::U16 => build::<u16>(device, config, shared.clone(), consumer),
-        cpal::SampleFormat::I32 => build::<i32>(device, config, shared.clone(), consumer),
-        other => return Err(format!("unsupported sample format {other:?}")),
-    }?;
-    Ok(stream)
+fn build_any(device: &cpal::Device, config: &cpal::StreamConfig, format: cpal::SampleFormat, s: &Arc<Shared>) -> Result<cpal::Stream, String> {
+    match format {
+        cpal::SampleFormat::F32 => build::<f32>(device, config, s.clone()),
+        cpal::SampleFormat::I16 => build::<i16>(device, config, s.clone()),
+        cpal::SampleFormat::U16 => build::<u16>(device, config, s.clone()),
+        cpal::SampleFormat::I32 => build::<i32>(device, config, s.clone()),
+        other => Err(format!("unsupported sample format {other:?}")),
+    }
 }
 
-fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: Arc<Shared>, consumer: Arc<Mutex<HeapCons<f32>>>)
-    -> Result<cpal::Stream, String>
+fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, s: Arc<Shared>) -> Result<cpal::Stream, String>
 where T: cpal::SizedSample + cpal::FromSample<f32> {
     let channels = config.channels as usize;
     // How far through librespot's sound one output frame moves (1.0 when the rates match).
     let step = RATE as f64 / config.sample_rate.0 as f64;
     let mut frac = 1.0f64;
-    let mut prev = [0f32; 2];
-    let mut cur = [0f32; 2];
-    // Sound taken from the buffer but not played yet (when the rates differ, a callback can need a
-    // frame more or less than it took).
-    let mut pending: std::collections::VecDeque<f32> = std::collections::VecDeque::with_capacity(16384);
-    let mut scratch = vec![0f32; 16384];
-    let broken = shared.clone();
-    let counts = shared.clone();
+    let (mut prev, mut cur) = ((0f32, 0f32), (0f32, 0f32));
+    let mut mono: Vec<f32> = Vec::with_capacity(16384);
+    let broken = s.clone();
     device.build_output_stream(
         config,
         move |data: &mut [T], _| {
             let frames = data.len() / channels;
-            let need = ((frames as f64 * step).ceil() as usize + 2) * 2;
-            if pending.len() < need {
-                let want = (need - pending.len()).min(scratch.len());
-                // try_lock: the reader only holds the lock for a moment, and the output must never wait.
-                if let Ok(mut c) = consumer.try_lock() {
-                    let got = c.pop_slice(&mut scratch[..want]);
-                    pending.extend(&scratch[..got]);
+            let meter = s.meter_on.load(Ordering::Relaxed);
+            let (mut played, mut peak) = (0u64, 0f32);
+            mono.clear();
+            {
+                let mut st = s.st.lock().unwrap();
+                st.tick();
+                for frame in data.chunks_mut(channels) {
+                    while frac >= 1.0 {
+                        prev = cur;
+                        let (f, has) = st.next_frame();
+                        cur = f;
+                        if has { played += 1; peak = peak.max(f.0.abs()).max(f.1.abs()); }
+                        if meter { mono.push((f.0 + f.1) * 0.5); }
+                        frac -= 1.0;
+                    }
+                    let t = frac as f32;
+                    let l = prev.0 + (cur.0 - prev.0) * t;
+                    let r = prev.1 + (cur.1 - prev.1) * t;
+                    for (c, out) in frame.iter_mut().enumerate() {
+                        *out = T::from_sample(match c { 0 => l, 1 => r, _ => 0.0 });
+                    }
+                    frac += step;
                 }
             }
-            let mut played = 0u64;
-            let mut peak = 0f32;
-            for frame in data.chunks_mut(channels) {
-                while frac >= 1.0 {
-                    prev = cur;
-                    cur = match (pending.pop_front(), pending.pop_front()) {
-                        (Some(l), Some(r)) => { played += 1; peak = peak.max(l.abs()).max(r.abs()); [l, r] }
-                        _ => [0.0, 0.0],                  // ran dry: silence until more arrives
-                    };
-                    frac -= 1.0;
+            if meter && !mono.is_empty() {
+                if let Ok(mut tap) = s.tap.try_lock() {
+                    tap.extend(mono.iter().copied());
+                    let extra = tap.len().saturating_sub(dsp::FFT_SIZE);
+                    tap.drain(..extra);
                 }
-                let t = frac as f32;
-                let l = prev[0] + (cur[0] - prev[0]) * t;
-                let r = prev[1] + (cur[1] - prev[1]) * t;
-                for (c, out) in frame.iter_mut().enumerate() {
-                    let v = match c { 0 => l, 1 => r, _ => 0.0 };
-                    *out = T::from_sample(v);
-                }
-                frac += step;
             }
-            counts.called.fetch_add(frames as u64, Ordering::Relaxed);
-            counts.last_callback.store(now_ms(), Ordering::Relaxed);
-            counts.played.fetch_add(played, Ordering::Relaxed);
-            let was = f32::from_bits(counts.peak.load(Ordering::Relaxed) as u32);
-            if peak > was { counts.peak.store(peak.to_bits() as u64, Ordering::Relaxed); }
+            s.called.fetch_add(frames as u64, Ordering::Relaxed);
+            s.last_callback.store(now_ms(), Ordering::Relaxed);
+            s.played.fetch_add(played, Ordering::Relaxed);
+            let was = f32::from_bits(s.peak.load(Ordering::Relaxed) as u32);
+            if peak > was { s.peak.store(peak.to_bits() as u64, Ordering::Relaxed); }
         },
         move |err| {
             log::warn!("sound output error: {err}");
@@ -309,44 +861,63 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
     ).map_err(|e| e.to_string())
 }
 
-/// Every 5 s while anything is happening, a line in the log saying how much sound came from librespot,
-/// how much the output played and how loud it was. It shows at a glance where sound stops, if it does.
-fn report(shared: Arc<Shared>) {
+/// Levels for the visualizer and the EQ meters, about 30 times a second while a page shows them. When
+/// it's quiet, one all-zero frame is sent so the meters settle, then nothing until sound comes back.
+fn levels_thread(s: Arc<Shared>) {
+    let mut spectrum = dsp::Spectrum::default();
+    let mut was_silent = false;
+    let mut samples = vec![0f32; dsp::FFT_SIZE];
+    loop {
+        std::thread::sleep(Duration::from_millis(33));
+        if !s.meter_on.load(Ordering::Relaxed) { continue; }
+        {
+            let tap = s.tap.lock().unwrap();
+            if tap.is_empty() { continue; }
+            let skip = dsp::FFT_SIZE.saturating_sub(tap.len());
+            for v in samples.iter_mut().take(skip) { *v = 0.0; }
+            for (i, v) in tap.iter().enumerate().take(dsp::FFT_SIZE) { samples[skip + i] = *v; }
+        }
+        let quiet = samples.iter().all(|v| v.abs() < 1e-5);
+        if quiet && was_silent { continue; }
+        let (spec, eq) = spectrum.levels(&samples);
+        let silent = spec.iter().all(|&v| v == 0.0);
+        if silent && was_silent { continue; }
+        was_silent = silent;
+        (s.emit)("eq.levels", json!({"spec": spec, "eq": eq}));
+    }
+}
+
+/// Every 5 s while anything is happening, a line in the log: how much sound came from librespot, how
+/// much the output played and how loud. If the output can't keep up, its buffer is made bigger.
+fn report(s: Arc<Shared>) {
     let mut quiet_reported = false;
     let mut slow: i32 = -1;          // the first window after start-up is a partial one
     loop {
         std::thread::sleep(Duration::from_secs(5));
-        let received = shared.received.swap(0, Ordering::Relaxed);
-        let called = shared.called.swap(0, Ordering::Relaxed);
-        let played = shared.played.swap(0, Ordering::Relaxed);
-        let peak = f32::from_bits(shared.peak.swap(0, Ordering::Relaxed) as u32);
+        let received = s.received.swap(0, Ordering::Relaxed);
+        let called = s.called.swap(0, Ordering::Relaxed);
+        let played = s.played.swap(0, Ordering::Relaxed);
+        let peak = f32::from_bits(s.peak.swap(0, Ordering::Relaxed) as u32);
         if received == 0 && played == 0 {
-            // Say once that the output is idle (or not running at all), then stay quiet until sound comes.
-            if !quiet_reported && !shared.output.lock().unwrap().starts_with("none") {
+            if !quiet_reported && !s.output.lock().unwrap().starts_with("none") {
                 quiet_reported = true;
-                note(&shared, if called == 0 { "Sound report: the output isn't asking for sound at all.".into() }
-                              else { "Sound report: the output is running; nothing from librespot yet.".into() });
+                note(&s, if called == 0 { "Sound report: the output isn't asking for sound at all.".into() }
+                         else { "Sound report: the output is running; nothing from librespot yet.".into() });
             }
             continue;
         }
         quiet_reported = false;
-        // While sound is coming in, the output should ask for about 5 s of it every 5 s. Asking for much
-        // less, twice running, means it can't keep up: give it a bigger buffer.
-        let expected = shared.rate.load(Ordering::Relaxed) as f64 * 5.0;
-        // (librespot can only send as fast as the output takes it, so "sound is playing" is the test,
-        // not how much arrived.) The window right after opening the output is a partial one: skipped.
-        if slow < 0 { slow = 0; } else if played > 0 && (called as f64) < expected * 0.85 { slow += 1; } else { slow = 0; }
-        let size = shared.buffer_frames.load(Ordering::Relaxed);
+        let rate = s.rate.load(Ordering::Relaxed) as f64;
+        if slow < 0 { slow = 0; } else if played > 0 && (called as f64) < rate * 5.0 * 0.85 { slow += 1; } else { slow = 0; }
+        let size = s.buffer_frames.load(Ordering::Relaxed);
         if slow >= 2 && size < BUFFER_FRAMES_MAX {
             slow = -1;
-            shared.buffer_frames.store(size * 2, Ordering::Relaxed);
-            note(&shared, format!("The output is falling behind (asked for {:.1} s of 5 s): trying a bigger buffer ({} frames).",
-                called as f64 / shared.rate.load(Ordering::Relaxed) as f64, size * 2));
-            shared.too_slow.store(true, Ordering::SeqCst);
+            s.buffer_frames.store(size * 2, Ordering::Relaxed);
+            note(&s, format!("The output is falling behind (asked for {:.1} s of 5 s): trying a bigger buffer ({} frames).", called as f64 / rate, size * 2));
+            s.too_slow.store(true, Ordering::SeqCst);
         }
-        let secs = |f: u64| f as f64 / RATE as f64;
         let level = if peak > 0.0 { format!("{:.0} dB", 20.0 * peak.log10()) } else { "silent".into() };
-        note(&shared, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}",
-            secs(received), secs(played), called as f64 / RATE as f64));
+        note(&s, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}",
+            received as f64 / RATE as f64, played as f64 / RATE as f64, called as f64 / rate));
     }
 }

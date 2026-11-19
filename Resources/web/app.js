@@ -15,6 +15,10 @@ const h = (tag, cls, text) => {
 // Linux app (Tauri), which works the same way. Neither means demo mode in a browser.
 const bridge = window.cadenzaNative || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native);
 const native = (cmd, args = {}) => (bridge ? bridge.postMessage({ cmd, args }) : Demo.native(cmd, args));
+// What to call the computer Cadenza runs on: "this Mac" in the Mac app (and the browser demo), "this
+// computer" on Windows and Linux.
+const ON_MAC = !window.cadenzaPlatform || window.cadenzaPlatform === "macos";
+const THIS_COMPUTER = ON_MAC ? "this Mac" : "this computer";
 const API_BASE = "https://api.spotify.com/v1";
 const enc = encodeURIComponent;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -4224,7 +4228,7 @@ const Palette = {
     // ----- View, windows and timers -----
     add("VIEW", "expand", "Stage mode (full screen)", () => Stage.open(), "F", { keys: "fullscreen visualizer" });
     add("VIEW", "expand", "Full-screen window", () => native("window.fullscreen").catch(() => {}), "⌃⌘F", { keys: "maximize" });
-    add("VIEW", "mini", "Floating mini player (on / off)", () => native("mini.toggle").catch(() => toast("THE MINI PLAYER IS PART OF THE MAC APP")), "⇧⌘M", { keys: "small window" });
+    add("VIEW", "mini", "Floating mini player (on / off)", () => native("mini.toggle").catch(() => toast(ON_MAC ? "THE MINI PLAYER IS PART OF THE MAC APP" : "THE MINI PLAYER ISN'T AVAILABLE HERE YET")), "⇧⌘M", { keys: "small window" });
     // MP3 mode for the menu-bar player: only here in ⌘K, nowhere else in the app.
     const mp3 = S.settings && S.settings.miniStyle === "mp3";
     add("VIEW", "mini", mp3 ? "MP3 mode: off (menu-bar player matches the theme)" : "MP3 mode: on (menu-bar player as a USB-stick MP3 player)", async () => {
@@ -4268,7 +4272,7 @@ const Palette = {
     const add = (group, icon, name, run, hint, more = {}) => extra.push({ group, icon, name, run, hint: hint || group, ...more });
     try {
       const outs = (await native("outputs.list")) || [];
-      outs.forEach((d) => add("DEVICES", "play", "Play on " + d.name, () => views.output.pick({ ...d, kind: "mac" }), d.isDefault ? "IN USE" : "THIS MAC", { keys: "output speaker headphones airpods device switch" }));
+      outs.forEach((d) => add("DEVICES", "play", "Play on " + d.name, () => views.output.pick({ ...d, kind: "mac" }), d.isDefault ? "IN USE" : upper(THIS_COMPUTER), { keys: "output speaker headphones airpods device switch" }));
     } catch (e) { /* demo */ }
     const r = await api("GET", "/me/player/devices");
     ((r.body && r.body.devices) || []).filter((d) => d.id).forEach((d) => add("DEVICES", "play", "Play on " + d.name, () => views.output.pick({ ...d, kind: "connect" }), d.is_active ? "PLAYING" : "CONNECT", { keys: "spotify connect device phone speaker transfer" }));
@@ -7166,7 +7170,7 @@ views.output = {
         const icon = h("div");
         icon.innerHTML = ICONS[connectIcon(d.type)];
         const txt = h("div");
-        txt.append(h("div", "nm", d.name === S.settings.deviceName ? d.name + " (this Mac)" : d.name),
+        txt.append(h("div", "nm", d.name === S.settings.deviceName ? d.name + ` (${THIS_COMPUTER})` : d.name),
           h("div", "kd", "SPOTIFY CONNECT  ·  " + upper(d.type || "device") + (d.volume_percent != null ? "  ·  " + d.volume_percent + "%" : "")));
         inn.append(icon, txt);
         if (d.is_active) inn.append(h("span", "use", "● PLAYING HERE"));
@@ -7189,7 +7193,7 @@ views.output = {
   show() {
     const sub = $("out-sub");
     sub.textContent = "";
-    if (S.settings.manageLibrespot) sub.append("Pick where your music plays: this Mac's speakers and headphones, or ", h("b", null, "Spotify Connect"), " devices like your phone.");
+    if (S.settings.manageLibrespot) sub.append(`Pick where your music plays: ${THIS_COMPUTER}'s speakers and headphones, or `, h("b", null, "Spotify Connect"), " devices like your phone.");
     else sub.append("Turn on the ", h("b", null, "audio engine"), " in System so music can follow the output you pick.");
     this.sig = "";
     this.refresh(true);
@@ -7215,7 +7219,7 @@ views.output = {
     this.list.set(all);
     this.list.el.scrollTop = top;
     // section headings (not selectable)
-    if (list.length) this.list.rows[0].before(h("div", "dev-h", "THIS MAC"));
+    if (list.length) this.list.rows[0].before(h("div", "dev-h", upper(THIS_COMPUTER)));
     const firstConnect = all.findIndex((d) => d.kind === "connect");
     if (firstConnect >= 0) this.list.rows[firstConnect].before(h("div", "dev-h", "SPOTIFY CONNECT"));
     let idx = all.findIndex((d) => d.key === keep);
@@ -7902,7 +7906,7 @@ views.system = {
       { key: "menuBar", label: "Menu-bar player", type: "toggle", on: S.settings.menuBar !== false, value: "Album cover in the menu bar with a mini player" },
       { key: "mediaKeys", label: "Media keys", type: "toggle", on: !!s.mediaKeys, value: s.mediaKeys && !s.mediaKeysTrusted ? "Allow Cadenza in Settings → Privacy → Accessibility" : "Play/pause, next and previous keys" },
       { key: "globalHotkey", label: "⌥⌘P shortcut", type: "toggle", on: !!s.globalHotkey, value: "Show or hide Cadenza from anywhere" },
-      { key: "openAtLogin", label: "Open at login", type: "toggle", on: !!s.openAtLogin, value: "Start with your Mac" },
+      { key: "openAtLogin", label: "Open at login", type: "toggle", on: !!s.openAtLogin, value: ON_MAC ? "Start with your Mac" : "Start with your computer" },
       { key: "commands", label: "Commands", type: "action", value: "Every shortcut and command in one list", go: "OPEN  ⌘/" },
       { key: "stage", label: "Stage mode", type: "action", value: "Full screen: big cover, synced lyrics and the visualizer", go: "OPEN  F" },
       { key: "discord", label: "Discord status", type: "toggle", on: !!s.discord, value: Links.discordText() },
