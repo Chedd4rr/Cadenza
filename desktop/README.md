@@ -8,7 +8,7 @@ does everything it does.
 **Phases 0–4 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
 window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save,
 Cadenza's own sound engine, and the parts outside the window (media keys, tray, mini player and the rest).
-Next is Windows itself: the installer and testing there.
+Phase 5, Windows, is under way: the Windows-only parts are written (below) and need testing on a real PC.
 
 ## What works so far
 
@@ -44,11 +44,22 @@ Next is Windows itself: the installer and testing there.
 - Settings, the taste profile and the saved page data, in private files.
 - Ctrl does what ⌘ does on the Mac, and the shortcut hints on screen say Ctrl, Alt and Shift.
 
+### On Windows
+
+- librespot's player events: Windows has no shell script to pass them on, so librespot starts Cadenza.exe
+  itself with `--librespot-event`, and that copy writes the event down and quits before any window opens.
+  librespot can't run a program whose path has a space, so Cadenza uses the short form of its own path
+  (`C:\Users\JANEDO~1\...`), or a copy in `C:\ProgramData\Cadenza` if the drive has no short names.
+- How much sound is still waiting in the pipe from librespot, which the crossfade needs to time itself.
+- librespot copies left over from a crash are found and ended when Cadenza starts.
+- An installer (`Cadenza_1.0.0_x64-setup.exe`) that installs for you alone, so it doesn't ask for an
+  administrator.
+
 ## Not yet
 
 | Comes in | What |
 | --- | --- |
-| Phase 5 | Windows: player events from librespot, the installer, testing |
+| Phase 5 | Windows: testing on a real PC, and whatever that turns up |
 | Phase 6 | macOS build at parity, moving your Mac settings over |
 | Phase 7 | Signed releases and automatic updates |
 | Later | Spotify's own Soloist as a second engine you can pick, beside librespot |

@@ -28,9 +28,9 @@ jobs:
     steps:
       - id: pick
         run: |
-          linux='{"os":"ubuntu-22.04","name":"linux"}'
-          windows='{"os":"windows-latest","name":"windows"}'
-          macos='{"os":"macos-latest","name":"macos"}'
+          linux='{"os":"ubuntu-22.04","name":"linux","bundles":"deb,appimage"}'
+          windows='{"os":"windows-latest","name":"windows","bundles":"nsis"}'
+          macos='{"os":"macos-latest","name":"macos","bundles":"app,dmg"}'
           case "${{ inputs.system }}" in
             all) echo "systems=[$linux,$windows,$macos]" >> "$GITHUB_OUTPUT" ;;
             windows) echo "systems=[$windows]" >> "$GITHUB_OUTPUT" ;;
@@ -78,9 +78,10 @@ jobs:
       - name: Install Tauri's build tool
         run: cargo binstall tauri-cli --version "^2" --no-confirm
 
+      # Only the installers worth handing out (on Windows that skips the .msi, which needs another tool).
       - name: Build the app
         working-directory: desktop
-        run: cargo tauri build
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
 
       - uses: actions/upload-artifact@v6
         with:

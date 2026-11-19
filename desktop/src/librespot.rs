@@ -363,8 +363,20 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         Some(hook.display().to_string())
     }
 
-    /// Windows has no sh: player events come in phase 5 (Cadenza itself will act as the hook).
-    #[cfg(not(unix))]
+    /// Windows has no sh, so Cadenza itself is the hook: librespot runs "Cadenza.exe --librespot-event"
+    /// and the copy that starts that way writes one line and quits (see run_event_hook).
+    #[cfg(windows)]
+    fn prepare_event_hook(&self, g: &mut Inner) -> Option<String> {
+        let Some(exe) = hook_program() else {
+            push_log(g, "Couldn't set up player events: Cadenza's folder has a space in its name.".into());
+            return None;
+        };
+        files::write_privately(b"", &self.events_file());
+        g.events_offset = 0;
+        Some(format!("{} {EVENT_ARG}", exe.display()))
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn prepare_event_hook(&self, _g: &mut Inner) -> Option<String> { None }
 
     fn read_events(self: &Arc<Self>) {
@@ -900,6 +912,65 @@ fn supports(path: &Path, option: &str) -> bool {
     text.contains(option)
 }
 
+// MARK: the Windows event hook
+
+/// The argument that makes Cadenza.exe act as librespot's event hook instead of opening the app.
+pub const EVENT_ARG: &str = "--librespot-event";
+
+/// If Cadenza was started as librespot's event hook, writes the event to the events file and returns
+/// true, and the caller quits straight away. librespot passes the event in environment variables. The
+/// line is the same as the one the sh script writes on Mac and Linux. (Test mode reaches the right file
+/// because librespot passes on Cadenza's environment, CADENZA_TEST included.)
+pub fn run_event_hook() -> bool {
+    if std::env::args().nth(1).as_deref() != Some(EVENT_ARG) { return false; }
+    use std::io::Write;
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    // Tabs and line breaks would break the line apart: lists get | between items, text gets spaces.
+    let list = |k: &str| var(k).replace(['\n', '\r', '\t'], "|");
+    let text = |k: &str| var(k).replace(['\n', '\r', '\t'], " ");
+    let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\n",
+        text("PLAYER_EVENT"), text("URI"), text("TRACK_ID"), text("NAME"), list("ARTISTS"), text("ALBUM"),
+        list("COVERS"), text("DURATION_MS"), text("POSITION_MS"), text("VOLUME"), text("SHUFFLE"), text("REPEAT"),
+        chrono::Local::now().format("%H:%M:%S"));
+    let path = files::path("librespot-events.txt");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());       // one write, so lines from two events can't mix
+    }
+    true
+}
+
+/// Where librespot can run Cadenza from. librespot splits the --onevent setting on spaces, and Cadenza
+/// is usually installed under the user's folder (C:\Users\Jane Doe\...), so: the real path if it has no
+/// spaces, else its short 8.3 form, else a copy in C:\ProgramData\Cadenza.
+#[cfg(windows)]
+fn hook_program() -> Option<PathBuf> {
+    let spaced = |p: &Path| p.display().to_string().contains(char::is_whitespace);
+    let exe = std::env::current_exe().ok()?;
+    if !spaced(&exe) { return Some(exe); }
+    if let Some(short) = short_path(&exe).filter(|p| !spaced(p)) { return Some(short); }
+    let dir = PathBuf::from(std::env::var_os("ProgramData")?).join("Cadenza");
+    let dir = if spaced(&dir) { short_path(&dir).filter(|p| !spaced(p))? } else { dir };
+    std::fs::create_dir_all(&dir).ok()?;
+    let copy = dir.join("cadenza-event.exe");
+    // If the copy is in use (the other Cadenza's librespot is running it), the one there still works.
+    if std::fs::copy(&exe, &copy).is_err() && !copy.exists() { return None; }
+    Some(copy)
+}
+
+/// The short (8.3) form of a path, which never has spaces, if the drive keeps short names.
+#[cfg(windows)]
+fn short_path(p: &Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    #[link(name = "kernel32")]
+    extern "system" { fn GetShortPathNameW(long: *const u16, short: *mut u16, size: u32) -> u32; }
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: both buffers are valid for the lengths given; the call writes at most `size` units.
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() { return None; }
+    Some(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
+}
+
 /// librespot copies left behind by a crashed Cadenza would hold on to the device name and swallow the
 /// music. Ours are recognised by their cache folder, so another app's librespot is left alone.
 fn kill_strays(_cache: &Path) {
@@ -908,5 +979,17 @@ fn kill_strays(_cache: &Path) {
         let escaped: String = _cache.display().to_string().chars()
             .map(|c| if ".[]()*+?{}|^$\\".contains(c) { format!("\\{c}") } else { c.to_string() }).collect();
         let _ = Command::new("pkill").args(["-f", &format!("librespot.*--cache {escaped}")]).status();
+    }
+    // Windows doesn't end librespot when Cadenza crashes, so this matters more there. The folder goes in
+    // through an environment variable so nothing in it is read as PowerShell.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = "$c = $env:CADENZA_STRAYS; Get-CimInstance Win32_Process -Filter \"Name = 'librespot.exe'\" | \
+            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($c) } | \
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+        let _ = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("CADENZA_STRAYS", _cache).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .creation_flags(0x0800_0000).status();
     }
 }

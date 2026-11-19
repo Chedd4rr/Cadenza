@@ -289,6 +289,8 @@ impl Sound {
         let gen = self.s.generation.fetch_add(1, Ordering::SeqCst) + 1;
         #[cfg(unix)]
         { use std::os::unix::io::AsRawFd; self.s.pipe_fd.store(pipe.as_raw_fd() as i64, Ordering::Relaxed); }
+        #[cfg(windows)]
+        { use std::os::windows::io::AsRawHandle; self.s.pipe_fd.store(pipe.as_raw_handle() as isize as i64, Ordering::Relaxed); }
         self.with(|st| { st.stream_frames = 0; st.track_start = -1; st.track_length = 0; st.last_boundary = -1; st.in_tail = false; });
         let s = self.s.clone();
         std::thread::Builder::new().name("cadenza-pipe".into()).spawn(move || {
@@ -639,6 +641,21 @@ fn pipe_waiting(_fd: i64) -> i64 {
         let mut n: libc::c_int = 0;
         // SAFETY: FIONREAD only writes one int through the pointer; a closed descriptor just fails.
         if unsafe { libc::ioctl(_fd as libc::c_int, libc::FIONREAD, &mut n) } == 0 { return n as i64; }
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn PeekNamedPipe(pipe: *mut std::ffi::c_void, buf: *mut std::ffi::c_void, size: u32,
+                             read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+        }
+        if _fd < 0 { return 0; }
+        let mut available: u32 = 0;
+        let null = std::ptr::null_mut();
+        // SAFETY: only asks how much is waiting (no buffer); a closed handle just fails.
+        if unsafe { PeekNamedPipe(_fd as isize as *mut std::ffi::c_void, null, 0, null as *mut u32, &mut available, null as *mut u32) } != 0 {
+            return available as i64;
+        }
     }
     0
 }

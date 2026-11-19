@@ -103,6 +103,8 @@ pub fn files_base() -> &'static str {
 }
 
 fn main() {
+    // librespot starts Cadenza.exe to pass on each player event (Windows); that copy only writes it down.
+    if librespot::run_event_hook() { return; }
     env_logger_lite();
     tauri::Builder::default()
         // Only one Cadenza at a time: opening it again (or a cadenza:// link) goes to the one running.
