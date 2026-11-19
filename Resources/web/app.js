@@ -7823,9 +7823,16 @@ const ENGINE_TEXT = { running: "RUNNING", starting: "STARTING…", login: "WAITI
 const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", "update"];
 const SYS_GROUPS = {
   sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "sfx", "sfxVolume"] },
-  connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfmUser", "lastfmKey", "geniusToken"] },
+  // With Cadenza's own Last.fm key and Discord ID built in, nobody needs to set theirs: those two rows
+  // move to Engine settings, as a fallback. (A copy built without them asks for them here.)
+  connections: { label: "Connections", get keys() {
+    return ["discord", ...(S.settings.builtinDiscord ? [] : ["discordAppId"]), "lastfmUser", ...(S.settings.builtinLastfm ? [] : ["lastfmKey"]), "geniusToken"];
+  } },
   prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "playlistTags", "retag", "trModels", "updateRepo", "autoUpdate"] },
-  engine: { label: "Engine settings", keys: ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId", "activity"] },
+  engine: { label: "Engine settings", get keys() {
+    return ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId",
+            ...(S.settings.builtinLastfm ? ["lastfmKey"] : []), ...(S.settings.builtinDiscord ? ["discordAppId"] : []), "activity"];
+  } },
 };
 views.system = {
   el: $("v-system"), timer: null, editing: null, group: null,
@@ -7856,7 +7863,7 @@ views.system = {
       sound: `Sound engine ${onOff(!EQ.state || EQ.state.engine !== false)} · crossfade ${(s.crossfade ?? 6) ? (s.crossfade ?? 6) + " s" : "off"} · even loudness ${onOff(s.normalize !== false)} · ${s.bitrate || 320} kbps · clicks ${onOff(s.sfx !== false)}`,
       connections: `Discord ${onOff(!!s.discord)} · Last.fm ${Links.lastfm && Links.lastfm.user ? "as " + Links.lastfm.user : "off"} · Genius ${s.geniusToken ? "set" : "not set"}`,
       prefs: "Notifications, menu bar, media keys, open at login, playlist tags, update source",
-      engine: `${ENGINE_TEXT[e.state] || "Audio engine"} · "${s.deviceName || "Cadenza"}" · diagnostics, Client ID, librespot, activity log`,
+      engine: `${ENGINE_TEXT[e.state] || "Audio engine"} · "${s.deviceName || "Cadenza"}" · diagnostics, Client ID, librespot, keys, activity log`,
     };
     return [
       ...SYS_TOP.map((k) => by[k]).filter(Boolean),
@@ -7910,9 +7917,9 @@ views.system = {
       { key: "commands", label: "Commands", type: "action", value: "Every shortcut and command in one list", go: "OPEN  ⌘/" },
       { key: "stage", label: "Stage mode", type: "action", value: "Full screen: big cover, synced lyrics and the visualizer", go: "OPEN  F" },
       { key: "discord", label: "Discord status", type: "toggle", on: !!s.discord, value: Links.discordText() },
-      { key: "discordAppId", label: s.builtinDiscord ? "Own Discord app ID" : "Discord app ID", type: "text", value: s.discordAppId || (s.builtinDiscord ? "Not needed: Cadenza has its own (set yours to change the name Discord shows)" : "Not set (discord.com/developers → New Application)"), raw: s.discordAppId || "", go: "EDIT" },
+      { key: "discordAppId", label: s.builtinDiscord ? "Engine Discord app ID" : "Discord app ID", type: "text", value: s.discordAppId || (s.builtinDiscord ? "Cadenza's built-in one · set yours to change the name Discord shows" : "Not set (discord.com/developers → New Application)"), raw: s.discordAppId || "", go: "EDIT" },
       { key: "lastfmUser", label: "Last.fm", type: "text", value: Links.lastfmText(), raw: (Links.lastfm && Links.lastfm.user) || "", go: Links.lastfm && Links.lastfm.user ? "CHANGE" : "CONNECT" },
-      { key: "lastfmKey", label: s.builtinLastfm ? "Own Last.fm API key" : "Last.fm API key", type: "text", value: s.lastfmKey || (s.builtinLastfm ? "Not needed: Cadenza has its own" : "Not set (last.fm/api/account/create)"), raw: s.lastfmKey || "", go: "EDIT" },
+      { key: "lastfmKey", label: s.builtinLastfm ? "Engine Last.fm API key" : "Last.fm API key", type: "text", value: s.lastfmKey || (s.builtinLastfm ? "Cadenza's built-in key · paste your own if Last.fm ever stops working" : "Not set (last.fm/api/account/create)"), raw: s.lastfmKey || "", go: "EDIT" },
       { key: "geniusToken", label: "Genius token", type: "text", value: s.geniusToken ? "Saved (hidden) · lets Search find songs from a lyric" : "Not set (genius.com/api-clients → Generate Access Token) · for Search → Lyrics", raw: "", go: "EDIT" },
       { key: "crossfade", label: "Crossfade", type: "cycle", value: (s.crossfade ?? 6) ? `${s.crossfade ?? 6} seconds: the end of each song blends into the next` : "Off: songs follow each other with no overlap", go: "CHANGE" },
       { key: "devices", label: "Devices", type: "action", value: (S.player && S.player.device) ? "Playing on " + S.player.device + " · speakers, AirPods, Spotify Connect" : "Speakers, AirPods, Bluetooth and Spotify Connect devices", go: "OPEN" },
@@ -9098,7 +9105,7 @@ const Demo = (() => {
     { uid: "dp", name: "LG UltraFine Display", transport: "display", isDefault: false },
     { uid: "ap", name: "Living Room TV", transport: "airplay", isDefault: false },
   ];
-  const settings = { theme: "tide", clientId: "0123456789abcdef0123456789abcdef", manageLibrespot: true, librespotPath: "", deviceName: "Cadenza", bitrate: 320, mediaKeys: true, mediaKeysTrusted: true, globalHotkey: true, openAtLogin: false, reduceMotion: false };
+  const settings = { theme: "tide", clientId: "0123456789abcdef0123456789abcdef", manageLibrespot: true, librespotPath: "", deviceName: "Cadenza", bitrate: 320, mediaKeys: true, mediaKeysTrusted: true, globalHotkey: true, openAtLogin: false, reduceMotion: false, builtinLastfm: true, builtinDiscord: true };
   const ok = (body, status = 200) => Promise.resolve({ status, body });
   // Made-up Last.fm data: years of plays for "you", and a few friends with their own taste.
   const lfmArtists = ["Kairo Blue", "Neon Ferry", "Saya Mori", "The Static Hearts", "Lumen Drive", "Velvet Arcade", "Hana Kite", "Polar Motel", "Glass Tigers", "Midnight Office", "Coral Static", "June Satellites"];
@@ -9247,7 +9254,7 @@ const Demo = (() => {
         case "translate": return new Promise((res) => setTimeout(() => res({ lines: args.lines.map((l) => l && l !== "♪" ? "(ES) " + l.split(" ").reverse().join(" ") : ""), error: null, target: "es" }), 400));
         case "genius.search": return Promise.resolve({ hits: [{ title: "Midnight Tide (Full Moon Mix)", artist: "Kairo Blue" }, { title: "Undertow", artist: "Kairo Blue" }], error: null });
         case "diagnostics": return Promise.resolve("Cadenza 1.2 (demo)\nmacOS (browser)");
-        case "discord.status": return Promise.resolve({ enabled: !!settings.discord, status: settings.discordAppId ? "connected" : "needs an application ID", hasId: !!settings.discordAppId });
+        case "discord.status": { const id = !!(settings.discordAppId || settings.builtinDiscord); return Promise.resolve({ enabled: !!settings.discord, status: id ? "connected" : "needs an application ID", hasId: id }); }
         case "lastfm.status": return Promise.resolve({ user: "chedd4rr", hasKeys: true, loggedIn: true, error: "" });
         case "lastfm.setUser": return Promise.resolve({ ok: true, message: String(args.user || "").trim() });
         case "taste.get": return Promise.resolve(window.__demoTaste ? JSON.parse(window.__demoTaste) : null);

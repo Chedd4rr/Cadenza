@@ -213,11 +213,11 @@ All of these are optional and go in System → Connections.
 
 - **Last.fm** powers play counts, Friends, the DJ's deeper picks, styles in your taste profile and
   better autoplay. Type your Last.fm username; that's all. (Cadenza has its own API key built in; you
-  can set your own under Own Last.fm API key.) Cadenza doesn't scrobble itself: link Spotify to Last.fm
+  can set your own under System → Engine settings → Engine Last.fm API key.) Cadenza doesn't scrobble itself: link Spotify to Last.fm
   instead (Last.fm settings → Applications → Spotify scrobbling) and Spotify scrobbles everything you
   play, Cadenza included.
 - **Discord status:** turn it on. The Discord app has to be running. (Cadenza has its own Discord
-  application built in; set your own ID to change the name Discord shows.)
+  application built in; set your own under Engine settings to change the name Discord shows.)
 - **Genius** (finding a song from its lyrics): create an API client at
   [genius.com/api-clients](https://genius.com/api-clients), generate an access token and paste it in.
 
