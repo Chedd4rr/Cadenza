@@ -251,7 +251,7 @@ impl Sound {
         let me = Arc::new(Sound { s: s.clone() });
         me.apply_eq();
         let chosen = me.s.settings.string("outputDevice");
-        if !chosen.is_empty() && !cfg!(target_os = "linux") { *s.chosen.lock().unwrap() = Some(chosen); }
+        if !chosen.is_empty() && cfg!(windows) { *s.chosen.lock().unwrap() = Some(chosen); }
         for (name, f) in [("cadenza-sound-report", report as fn(Arc<Shared>)), ("cadenza-output", output_thread), ("cadenza-levels", levels_thread)] {
             let c = s.clone();
             std::thread::Builder::new().name(name.into()).spawn(move || f(c)).ok();
@@ -570,9 +570,9 @@ impl Sound {
     // MARK: output devices
 
     /// The outputs to pick from: [{uid, name, transport, isDefault}].
-    /// - Linux: the sound server's outputs (PipeWire or PulseAudio, through `pactl`), and picking one makes
-    ///   it the system's output, as the Mac app does.
-    /// - Windows and macOS: the system's outputs; picking one plays Cadenza through it.
+    /// - macOS: Core Audio's outputs; picking one makes it the Mac's output, as the Swift app does.
+    /// - Linux: the sound server's outputs (PipeWire or PulseAudio, through `pactl`); the same.
+    /// - Windows: the system's outputs; picking one plays Cadenza through it.
     pub fn outputs(&self) -> Value { Value::Array(list_outputs(&self.s)) }
 
     pub fn set_output(&self, uid: &str) -> bool {
@@ -581,6 +581,13 @@ impl Sound {
             if ok { self.check_device(); }
             return ok;
         }
+        #[cfg(target_os = "macos")]
+        {
+            let ok = crate::macaudio::set_default(uid);
+            if ok { self.check_device(); }
+            return ok;
+        }
+        #[allow(unreachable_code)]
         let known = list_outputs(&self.s).iter().any(|o| o["uid"] == uid);
         if !known { return false; }
         *self.s.chosen.lock().unwrap() = Some(uid.to_string());
@@ -701,6 +708,14 @@ fn list_outputs(s: &Shared) -> Vec<Value> {
             _ => vec![json!({"uid": "default", "name": "System output", "transport": "builtin", "isDefault": true})],
         };
     }
+    #[cfg(target_os = "macos")]
+    {
+        let current = crate::macaudio::default_output();
+        return crate::macaudio::outputs().into_iter().map(|o| json!({
+            "uid": o.uid, "name": o.name, "transport": o.transport, "isDefault": o.id == current,
+        })).collect();
+    }
+    #[allow(unreachable_code)]
     let host = cpal::default_host();
     let default = host.default_output_device().and_then(|d| d.name().ok()).unwrap_or_default();
     let using = s.chosen.lock().unwrap().clone().unwrap_or(default);
@@ -717,6 +732,11 @@ fn current_device(s: &Shared) -> (String, String) {
             return (default, name);
         }
         return ("default".into(), "System output".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let current = crate::macaudio::default_output();
+        if let Some(o) = crate::macaudio::outputs().into_iter().find(|o| o.id == current) { return (o.uid, o.name); }
     }
     let name = s.chosen.lock().unwrap().clone()
         .or_else(|| cpal::default_host().default_output_device().and_then(|d| d.name().ok()))

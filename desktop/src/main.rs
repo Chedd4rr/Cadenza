@@ -13,6 +13,11 @@ mod files;
 mod history;
 mod lastfm;
 mod librespot;
+#[cfg(target_os = "macos")]
+mod macaudio;
+#[cfg(target_os = "macos")]
+mod menu;
+mod migrate;
 mod settings;
 mod sound;
 mod spotify_history;
@@ -117,6 +122,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        // The main window opens where you left it, at the size you left it. (The mini player keeps its own spot.)
+        .plugin(tauri_plugin_window_state::Builder::default()
+            .with_state_flags(tauri_plugin_window_state::StateFlags::SIZE | tauri_plugin_window_state::StateFlags::POSITION
+                | tauri_plugin_window_state::StateFlags::MAXIMIZED)
+            .with_denylist(&["mini"])
+            .build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _shortcut, event| {
             if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
@@ -131,6 +142,7 @@ fn main() {
                 .user_agent(format!("Cadenza/{} (https://github.com/Chedd4rr/Cadenza)", env!("CARGO_PKG_VERSION")))
                 .build()?;
             testmode::prepare();                                       // (test mode only: its first start)
+            migrate::run();                                            // (on a Mac, the first start: the Swift app's settings)
             let settings = Arc::new(settings::Settings::load());
             let store = store::Store::load();
             let auth = Arc::new(auth::Auth::new(settings.clone(), http.clone()));
@@ -151,11 +163,18 @@ fn main() {
             app.manage(core.clone());
 
             let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base());
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title(if files::test_mode() { "Cadenza (test)" } else { "Cadenza" })
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)
                 .center()
+                // Cadenza's navy behind the page while it loads, instead of a white flash.
+                .background_color(tauri::window::Color(3, 12, 46, 255));
+            // On a Mac, the page reaches the top of the window with the traffic lights over it and no title,
+            // as in the Swift app. (The strip at the top still drags the window.)
+            #[cfg(target_os = "macos")]
+            let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+            builder
                 .initialization_script(&shim)
                 .on_page_load(|w, payload| {
                     if payload.event() == tauri::webview::PageLoadEvent::Finished {
@@ -164,6 +183,11 @@ fn main() {
                 })
                 .build()?;
             system.start(core.clone());
+            #[cfg(target_os = "macos")]
+            {
+                app.set_menu(menu::build(&handle)?)?;
+                app.on_menu_event(|app, e| menu::picked(app, e.id().as_ref()));
+            }
             apply_hotkey(&handle, settings.bool("globalHotkey"));
 
             // cadenza:// links. Registered with the system here too, so they also work in a development build.

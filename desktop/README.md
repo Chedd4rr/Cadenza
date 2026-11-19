@@ -8,7 +8,9 @@ does everything it does.
 **Phases 0–4 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
 window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save,
 Cadenza's own sound engine, and the parts outside the window (media keys, tray, mini player and the rest).
-Phase 5, Windows, is under way: the Windows-only parts are written (below) and need testing on a real PC.
+Phase 5, Windows, is done in a Windows 11 VM: it builds, plays, and the tray, media keys, mini player,
+links and installer all work. Still to do: one check on a real Windows PC (a VM without graphics
+acceleration makes animations and sound stutter, which could hide a real problem).
 
 ## What works so far
 
@@ -55,12 +57,31 @@ Phase 5, Windows, is under way: the Windows-only parts are written (below) and n
 - An installer (`Cadenza_1.0.0_x64-setup.exe`) that installs for you alone, so it doesn't ask for an
   administrator.
 
+### On a Mac
+
+Phase 6 (under way): this app taking over from the Swift one.
+
+- **Your settings come over by themselves.** Both apps use the same folder, so the sign-ins, history,
+  taste profile and saved page data are already there. The first time this app opens, it also reads the
+  Swift app's settings (Client ID, theme, EQ with each device's EQ, crossfade, volume and the rest) from
+  macOS's preferences into `settings.json`, once. It changes nothing the Swift app reads, so you can go back.
+- The window looks like the Swift app's: the page reaches the top, with the traffic lights over it.
+- The same menu bar: Cadenza, Edit, Controls (with the same shortcuts) and Window.
+- Outputs come from Core Audio, and picking one switches the Mac's output, as in the Swift app. Each
+  device's EQ is saved under the same id, so the EQs you set up there carry over.
+- The window opens where you left it (on every system).
+- Closing the lid pauses the music, so it doesn't start again by itself when the computer wakes (on every
+  system; here it's noticed as the computer wakes rather than as it sleeps).
+
+Don't run this and the Swift app at the same time outside test mode: they'd share one folder and both
+appear in Spotify as "Cadenza". Quit one before opening the other.
+
 ## Not yet
 
 | Comes in | What |
 | --- | --- |
-| Phase 5 | Windows: testing on a real PC, and whatever that turns up |
-| Phase 6 | macOS build at parity, moving your Mac settings over |
+| Before release | Windows: one check on a real PC (smooth animations, clean sound, the installer) |
+| Phase 6 | macOS: your testing, then installing it in place of the Swift app |
 | Phase 7 | Signed releases and automatic updates |
 | Later | Spotify's own Soloist as a second engine you can pick, beside librespot |
 
@@ -126,6 +147,9 @@ read them.
 | `src/api.rs` | Spotify Web API, with the rate-limit guard | `SpotifyAPI.swift` |
 | `src/librespot.rs` | Runs librespot and reads what it's playing | `Librespot.swift` |
 | `src/sound.rs` | The sound engine: reading librespot, the crossfade, pause and skip, outputs | `EQ.swift`, `AudioOutputs.swift` |
+| `src/macaudio.rs` | The Mac's outputs, from Core Audio | `AudioOutputs.swift` |
+| `src/menu.rs` | The Mac's menu bar | `AppDelegate.swift` (`buildMenu`) |
+| `src/migrate.rs` | Bringing the Swift app's settings over, once | `Migration.swift` |
 | `src/dsp.rs` | The EQ, limiter, fades and visualizer levels, sample by sample | `EQ.swift` (Apple's EQ and limiter units) |
 | `src/lastfm.rs` | Last.fm, lyrics (LRCLIB) and Genius | `LastFM.swift`, `Extras.swift` |
 | `src/history.rs`, `src/spotify_history.rs` | Cadenza's own history; the Spotify history import | `History.swift`, `SpotifyHistory.swift` |

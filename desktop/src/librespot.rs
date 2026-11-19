@@ -93,6 +93,24 @@ impl Librespot {
                 keeper.run_device_check();
             }
         }).ok();
+        // Closing the lid pauses the music, like taking headphones off, so it doesn't come back on by itself
+        // when the computer wakes. (The Swift app pauses as the Mac goes to sleep; here it's noticed as it
+        // wakes, within half a second, by the wall clock jumping ahead.)
+        let sleeper = Arc::clone(&me);
+        std::thread::Builder::new().name("cadenza-sleep-watch".into()).spawn(move || {
+            let mut last = SystemTime::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                let gap = SystemTime::now().duration_since(last).unwrap_or_default();
+                last = SystemTime::now();
+                if gap > Duration::from_secs(20) && sleeper.is_playing_here() {
+                    sleeper.sound.local_pause();
+                    sleeper.note("The computer was asleep: pausing.");
+                    let api = sleeper.api.clone();
+                    tauri::async_runtime::spawn(async move { api.request("PUT", "/me/player/pause", None).await; });
+                }
+            }
+        }).ok();
         // Start from an empty events file: what's in it is from the last time Cadenza ran, and reading it
         // would replay those songs as if they were playing now.
         files::write_privately(b"", &me.events_file());
