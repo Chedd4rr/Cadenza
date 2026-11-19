@@ -80,6 +80,7 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
                     core.api.reset_block();
                 }
                 core.settings.set(&key, value);
+                apply_setting(core, window, &key);
             }
             settings_for_page(core)
         }
@@ -211,11 +212,23 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         "outputs.list" => core.sound.outputs(),
         "outputs.set" => json!(core.sound.set_output(&s(args, "uid"))),
 
-        // MARK: not ported yet, answered like demo mode
-        "nowplaying" => json!(true),                                                      // phase 4: media keys, tray, notifications
-        "mini.toggle" => json!(true),                                                     // phase 4
+        // MARK: outside the window (system.rs, discord.rs)
+        "nowplaying" => {
+            core.system.now_playing(args.clone());
+            let d = Arc::clone(&core.discord);
+            let a = args.clone();
+            tauri::async_runtime::spawn_blocking(move || d.update(&a));
+            json!(true)
+        }
+        "mini.toggle" => json!(core.system.toggle_mini()),
+        "discord.status" => core.discord.status(),
+        "app.quit" => { window.app_handle().exit(0); json!(true) }
 
-        "discord.status" => json!({"enabled": false, "status": "not available yet", "hasId": false}),   // phase 4
+        // MARK: not ported yet, answered like demo mode
+
+
+
+
         "update.status" | "update.check" => json!({"repo": core.settings.string("updateRepo"), "current": env!("CARGO_PKG_VERSION"), "state": "idle", "message": "", "auto": false}),   // phase 7
         "update.install" => json!({"ok": false, "message": "Updates come in phase 7 of the port."}),
 
@@ -226,7 +239,34 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
 fn settings_for_page(core: &Core) -> Value {
     let mut v = core.settings.all();
     v["mediaKeysTrusted"] = json!(true);
+    // Whether Cadenza really starts at login, as the system has it.
+    use tauri_plugin_autostart::ManagerExt;
+    v["openAtLogin"] = json!(core.system.app().autolaunch().is_enabled().unwrap_or(false));
     v
+}
+
+/// A setting changed: put it into effect (AppDelegate.applySetting in the Mac app).
+fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
+    let managed = core.settings.bool("manageLibrespot");
+    match key {
+        "manageLibrespot" => if managed { core.librespot.start() } else { core.librespot.stop() },
+        "librespotPath" | "deviceName" | "bitrate" | "normalize" | "autoplay" => if managed { core.librespot.restart() },
+        "globalHotkey" => crate::apply_hotkey(window.app_handle(), core.settings.bool("globalHotkey")),
+        "menuBar" => core.system.set_tray(core.settings.bool("menuBar")),
+        "miniStyle" => core.system.push_mini(),
+        "discord" | "discordAppId" => {
+            let d = Arc::clone(&core.discord);
+            std::thread::spawn(move || d.restart());
+            (core.emit)("refresh", Value::Null);
+        }
+        "openAtLogin" => {
+            use tauri_plugin_autostart::ManagerExt;
+            let al = window.app_handle().autolaunch();
+            let r = if core.settings.bool("openAtLogin") { al.enable() } else { al.disable() };
+            if let Err(e) = r { log::warn!("start at login: {e}"); }
+        }
+        _ => {}
+    }
 }
 
 /// Saves a JSON object the page hands over, refusing anything odd or too big.

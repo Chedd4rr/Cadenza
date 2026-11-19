@@ -50,12 +50,14 @@ fn import_mac_settings() {
     let exported = Command::new("defaults").args(["export", MAC_DOMAIN]).arg(&tmp).status().map(|s| s.success()).unwrap_or(false);
     if !exported { return; }
     let mut settings = match files::read_json("settings.json") { Some(Value::Object(m)) => m, _ => Map::new() };
+    let mut got = vec![];
     for key in MAC_SETTINGS {
         let out = Command::new("plutil").args(["-extract", key, "json", "-o", "-"]).arg(&tmp).output();
         let Ok(out) = out else { continue };
         if !out.status.success() { continue; }
-        if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) { settings.insert((*key).into(), v); }
+        if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) { settings.insert((*key).into(), v); got.push(*key); }
     }
+    log::info!("test mode: settings from the Mac app: {}", if got.is_empty() { "none found".to_string() } else { got.join(", ") });
     let _ = std::fs::remove_file(&tmp);
     files::write_json("settings.json", &Value::Object(settings));
 }

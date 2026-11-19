@@ -5,9 +5,10 @@ from one codebase. The interface is the same page as the Mac app (`Resources/web
 native side is new, written in Rust. The Mac app in `Sources/` keeps working as before until this one
 does everything it does.
 
-**Phases 0–3 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
-window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save, and
-Cadenza's own sound engine. Next are the system parts: media keys, the tray icon and notifications.
+**Phases 0–4 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
+window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save,
+Cadenza's own sound engine, and the parts outside the window (media keys, tray, mini player and the rest).
+Next is Windows itself: the installer and testing there.
 
 ## What works so far
 
@@ -27,14 +28,26 @@ Cadenza's own sound engine. Next are the system parts: media keys, the tray icon
 - Importing your Spotify history (pick the .zip Spotify sends, or the .json files), and Cadenza's own
   listening history for Stats. Both use the same files as the Mac app.
 - Playlist covers from a picture you pick.
+- Media keys and the system's Now Playing (MPRIS on Linux, the media overlay on Windows, Control Center
+  on a Mac), with the song, cover and position.
+- A tray icon showing the album cover, with play/pause, skip, Show Cadenza, the mini player and Quit.
+  Closing the window keeps the music going while the tray icon is there; Quit (or Ctrl+Q) ends it.
+  On GNOME, tray icons need the "AppIndicator" extension (Ubuntu has it already).
+- The mini player: the same little player as the Mac app's menu-bar one, in a small window that stays on
+  top. Drag it anywhere; it remembers where. Open it from the tray, ⌘K, or `cadenza://mini`; Esc hides it.
+- A notification when the song changes while Cadenza isn't in front.
+- The global shortcut: Ctrl+Alt+P shows or hides Cadenza from anywhere (on Linux, under X11; Wayland
+  doesn't let apps have global shortcuts).
+- Start at login, and Discord's "Listening to" status.
+- `cadenza://` links for launchers and scripts (`xdg-open cadenza://next`), and only one Cadenza at a time:
+  opening it again brings back the one that's running.
 - Settings, the taste profile and the saved page data, in private files.
-- Ctrl does what ⌘ does on the Mac (the shortcuts still say ⌘ for now).
+- Ctrl does what ⌘ does on the Mac, and the shortcut hints on screen say Ctrl, Alt and Shift.
 
 ## Not yet
 
 | Comes in | What |
 | --- | --- |
-| Phase 4 | Media keys, tray icon, notifications, global shortcut, start at login, mini player, Discord |
 | Phase 5 | Windows: player events from librespot, the installer, testing |
 | Phase 6 | macOS build at parity, moving your Mac settings over |
 | Phase 7 | Signed releases and automatic updates |
@@ -107,6 +120,8 @@ read them.
 | `src/history.rs`, `src/spotify_history.rs` | Cadenza's own history; the Spotify history import | `History.swift`, `SpotifyHistory.swift` |
 | `src/translation.rs` | Downloads and checks translation models | `TranslationModels.swift` |
 | `src/cover.rs` | Playlist cover pictures | `Extras.swift` (`CoverPicker`) |
+| `src/system.rs` | Media keys and Now Playing, the tray, the mini player, notifications, links, the window resting | `MediaKeys.swift`, `StatusBar.swift`, `FloatingPlayer.swift`, `Notifier.swift`, `AppDelegate.swift` |
+| `src/discord.rs` | Discord's "Listening to" status | `Discord.swift` |
 | `src/settings.rs`, `src/store.rs`, `src/files.rs` | Settings, page data, private files | `Settings.swift`, `Store.swift` |
 | `librespot.sh` | Builds the bundled librespot | `../librespot.sh` |
 

@@ -79,6 +79,9 @@ struct State {
     limiter: Limiter,
     /// The last frame played, so running dry eases out over a couple of milliseconds instead of clicking.
     last: (f32, f32),
+    /// The sound's energy just before and just after the EQ, for the sound report (how much the EQ changes it).
+    energy_in: f64,
+    energy_out: f64,
     logs: Vec<String>,
 }
 
@@ -91,7 +94,7 @@ impl State {
             discard_frames: 0,
             fader: Ramp::at(1.0), pause_pending: false, holding: false, locally_paused_at: None,
             mute: Ramp::at(1.0), skip_until: None, unmute_at: None, xfade: Ramp::at(1.0), sleep_fading: false,
-            eq: Eq::default(), limiter: Limiter::default(), last: (0.0, 0.0), logs: vec![],
+            eq: Eq::default(), limiter: Limiter::default(), last: (0.0, 0.0), energy_in: 0.0, energy_out: 0.0, logs: vec![],
         }
     }
 
@@ -177,6 +180,10 @@ impl State {
         }
         self.last = out;
         let (l, r) = self.eq.run(out.0, out.1);
+        if has {
+            self.energy_in += (out.0 * out.0 + out.1 * out.1) as f64;
+            self.energy_out += (l * l + r * r) as f64;
+        }
         let (l, r) = self.limiter.run(l, r);
         let g = self.fader.step() * self.xfade.step() * self.mute.step();
         if self.pause_pending && !self.fader.moving() && self.fader.target() == 0.0 {
@@ -492,8 +499,10 @@ impl Sound {
     }
 
     fn apply_eq(&self) {
-        let (on, pre, gains, _) = self.eq_values();
+        let (on, pre, gains, preset) = self.eq_values();
         self.with(|st| st.eq.set(on, pre, &gains));
+        let g: Vec<String> = gains.iter().map(|v| format!("{v:+.0}")).collect();
+        note(&self.s, if on { format!("EQ on: {preset}, preamp {pre:+.1} dB, bands {}", g.join(" ")) } else { "EQ off".into() });
     }
 
     fn per_device(&self) -> bool { self.s.settings.get("eqPerDevice").as_bool().unwrap_or(true) }
@@ -917,7 +926,9 @@ fn report(s: Arc<Shared>) {
             s.too_slow.store(true, Ordering::SeqCst);
         }
         let level = if peak > 0.0 { format!("{:.0} dB", 20.0 * peak.log10()) } else { "silent".into() };
-        note(&s, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}",
+        let (ein, eout) = { let mut st = s.st.lock().unwrap(); let e = (st.energy_in, st.energy_out); st.energy_in = 0.0; st.energy_out = 0.0; e };
+        let eq = if ein > 0.0 && eout > 0.0 { format!(", the EQ changes the level by {:+.1} dB", 10.0 * (eout / ein).log10()) } else { String::new() };
+        note(&s, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}{eq}",
             received as f64 / RATE as f64, played as f64 / RATE as f64, called as f64 / rate));
     }
 }

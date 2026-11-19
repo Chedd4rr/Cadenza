@@ -4,7 +4,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.mini;
+// (window.cadenzaMini in the Windows and Linux app, which works the same way.)
+const native = window.cadenzaMini || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.mini);
 const send = (cmd, value) => { if (native) native.postMessage(value === undefined ? { cmd } : { cmd, value }); };
 
 const ICON_PLAY = "M7 4.5v15l12.5-7.5z";

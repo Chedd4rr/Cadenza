@@ -7,6 +7,7 @@ mod api;
 mod auth;
 mod bridge;
 mod cover;
+mod discord;
 mod dsp;
 mod files;
 mod history;
@@ -16,6 +17,7 @@ mod settings;
 mod sound;
 mod spotify_history;
 mod store;
+mod system;
 mod testmode;
 mod translation;
 
@@ -35,6 +37,8 @@ pub struct Core {
     pub http: reqwest::Client,
     /// Sends an event to the page (app.onNative).
     pub emit: librespot::Emit,
+    pub system: Arc<system::System>,
+    pub discord: Arc<discord::Discord>,
 }
 
 /// Runs before the page's own scripts. app.js looks for `window.cadenzaNative` and sends every
@@ -50,6 +54,27 @@ const SHIM: &str = r#"
   // The page's shortcuts are written for the Mac's ⌘ key. On Windows and Linux, Ctrl does that job, so
   // each key and mouse event is shown to the page with the two swapped before anything else sees it.
   if (window.cadenzaPlatform !== "macos") {
+    // Ctrl+Q quits, as in other apps here (before the swap below turns it into ⌘Q for the page).
+    window.addEventListener("keydown", (e) => {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "q" || e.key === "Q")) { e.preventDefault(); invoke("native", { cmd: "app.quit", args: {} }); }
+    }, true);
+    // The shortcut hints on screen say ⌘, ⌥ and ⇧, as on a Mac: show Ctrl, Alt and Shift instead.
+    const names = { "⌘": "Ctrl", "⌥": "Alt", "⇧": "Shift" };
+    const fix = (node) => {
+      if (node.nodeType === 3) {
+        if (/[⌘⌥⇧]/.test(node.nodeValue)) node.nodeValue = node.nodeValue.replace(/([⌘⌥⇧])\s*/g, (m, k) => names[k] + " ");
+      } else if (node.nodeType === 1 && node.nodeName !== "SCRIPT" && node.nodeName !== "STYLE") {
+        if (node.title && /[⌘⌥⇧]/.test(node.title)) node.title = node.title.replace(/([⌘⌥⇧])\s*/g, (m, k) => names[k] + " ");
+        for (const c of node.childNodes) fix(c);
+      }
+    };
+    new MutationObserver((list) => {
+      for (const m of list) {
+        if (m.type === "characterData") fix(m.target);
+        else for (const n of m.addedNodes) fix(n);
+      }
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+    document.addEventListener("DOMContentLoaded", () => fix(document.body));
     const swap = (e) => {
       const meta = e.metaKey, ctrl = e.ctrlKey;
       Object.defineProperty(e, "metaKey", { value: ctrl });
@@ -80,10 +105,24 @@ pub fn files_base() -> &'static str {
 fn main() {
     env_logger_lite();
     tauri::Builder::default()
+        // Only one Cadenza at a time: opening it again (or a cadenza:// link) goes to the one running.
+        // (A link it was opened with reaches the running one through the links plugin below.)
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let link = argv.iter().any(|a| a.starts_with("cadenza:"));
+            if let Some(sys) = app.try_state::<Arc<system::System>>() { if !link { sys.show_main(); } }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _shortcut, event| {
+            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                if let Some(sys) = app.try_state::<Arc<system::System>>() { sys.toggle_main(); }
+            }
+        }).build())
         .register_uri_scheme_protocol("cadenza-files", |ctx, request| files_scheme(ctx.app_handle(), request))
-        .invoke_handler(tauri::generate_handler![bridge::native])
+        .invoke_handler(tauri::generate_handler![bridge::native, system::mini])
         .setup(|app| {
             let handle = app.handle().clone();
             let http = reqwest::Client::builder()
@@ -100,11 +139,14 @@ fn main() {
             let history = Arc::new(history::History::default());
             let librespot = librespot::Librespot::new(settings.clone(), api.clone(), sound.clone(), history, emit.clone());
             let lastfm = Arc::new(lastfm::LastFm::new(settings.clone(), http.clone()));
+            let system = system::System::new(handle.clone());
+            app.manage(system.clone());
             let core = Arc::new(Core {
                 settings: settings.clone(), store, auth, api, sound, librespot: librespot.clone(), lastfm,
                 spotify_history: Arc::new(spotify_history::SpotifyHistory::default()), http, emit,
+                system: system.clone(), discord: discord::Discord::new(settings.clone()),
             });
-            app.manage(core);
+            app.manage(core.clone());
 
             let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base());
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -113,7 +155,24 @@ fn main() {
                 .min_inner_size(1100.0, 700.0)
                 .center()
                 .initialization_script(&shim)
+                .on_page_load(|w, payload| {
+                    if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                        if let Some(sys) = w.app_handle().try_state::<Arc<system::System>>() { sys.page_loaded(); }
+                    }
+                })
                 .build()?;
+            system.start(core.clone());
+            apply_hotkey(&handle, settings.bool("globalHotkey"));
+
+            // cadenza:// links. Registered with the system here too, so they also work in a development build.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                #[cfg(any(target_os = "linux", windows))]
+                { let _ = app.deep_link().register_all(); }
+                let sys = system.clone();
+                app.deep_link().on_open_url(move |e| { for u in e.urls() { sys.link(u.as_str()); } });
+                if let Ok(Some(urls)) = app.deep_link().get_current() { for u in urls { system.link(u.as_str()); } }
+            }
 
             if settings.bool("manageLibrespot") { librespot.start(); }
             // For testing the bridge in development builds: CADENZA_PROBE holds a script to run in the page.
@@ -127,16 +186,49 @@ fn main() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() != "main" { return; }
+            let Some(sys) = window.app_handle().try_state::<Arc<system::System>>() else { return };
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // The music keeps going with the window closed, while the tray (or the Dock) can bring it back.
+                    if sys.keeps_running_when_closed() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        sys.set_asleep(true);
+                    } else {
+                        window.app_handle().exit(0);
+                    }
+                }
+                tauri::WindowEvent::Focused(true) => sys.set_asleep(false),
+                tauri::WindowEvent::Resized(_) => { if window.is_minimized().unwrap_or(false) { sys.set_asleep(true); } }
+                _ => {}
+            }
+        })
         .build(tauri::generate_context!())
         .expect("couldn't start Cadenza")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => { if let Some(sys) = app.try_state::<Arc<system::System>>() { sys.show_main(); } }
+            tauri::RunEvent::Exit => {
                 if let Some(core) = app.try_state::<Arc<Core>>() {
+                    // Exactly where the song was, so the next Play starts there.
+                    if let Some(spot) = core.librespot.snapshot() { core.store.set("enginePosition", spot); }
                     core.store.flush();
                     core.librespot.shutdown();
                 }
             }
+            _ => {}
         });
+}
+
+/// The global shortcut: Option-⌘-P on a Mac, Ctrl+Alt+P elsewhere, shows or hides Cadenza from anywhere.
+pub fn apply_hotkey(app: &tauri::AppHandle, on: bool) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let key = "Alt+CommandOrControl+P";
+    let gs = app.global_shortcut();
+    let _ = gs.unregister(key);
+    if on { if let Err(e) = gs.register(key) { log::warn!("couldn't set the global shortcut: {e}"); } }
 }
 
 /// Serves `cadenza-files://app/vendor/…` (the translator's code, from the page's own folder) and

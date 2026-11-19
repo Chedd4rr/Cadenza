@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What Cadenza's own window may use. The page talks to the app through one command, native.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "What Cadenza's own windows may use. The page talks to the app through one command (native), the mini player through another (mini); the mini player may also move its own window.",
+  "windows": [
+    "main",
+    "mini"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ]
 }

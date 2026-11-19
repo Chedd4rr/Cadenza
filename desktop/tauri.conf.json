@@ -11,7 +11,8 @@
     "windows": [],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
@@ -37,6 +38,15 @@
     ],
     "resources": {
       "binaries/librespot-LICENSE.txt": "licenses/librespot-LICENSE.txt"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "cadenza"
+        ]
+      }
     }
   }
 }

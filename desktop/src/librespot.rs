@@ -509,6 +509,9 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         self.sound.local_resume();
     }
 
+    /// Where the engine is right now, for picking up there next time (saved when Cadenza quits).
+    pub fn snapshot(&self) -> Option<Value> { Self::position_snapshot(&self.inner.lock().unwrap()) }
+
     /// Whether librespot here is the device Spotify is playing on (for the instant controls).
     pub fn is_active_here(&self) -> bool { Self::active_here(&self.inner.lock().unwrap()) }
     pub fn is_playing_here(&self) -> bool { Self::playing_here(&self.inner.lock().unwrap()) }
