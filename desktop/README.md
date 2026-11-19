@@ -5,12 +5,13 @@ from one codebase. The interface is the same page as the Mac app (`Resources/web
 native side is new, written in Rust. The Mac app in `Sources/` keeps working as before until this one
 does everything it does.
 
-**Phases 0–4 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
+**Phases 0–6 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
 window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save,
 Cadenza's own sound engine, and the parts outside the window (media keys, tray, mini player and the rest).
 Phase 5, Windows, is done in a Windows 11 VM: it builds, plays, and the tray, media keys, mini player,
 links and installer all work. Still to do: one check on a real Windows PC (a VM without graphics
-acceleration makes animations and sound stutter, which could hide a real problem).
+acceleration makes animations and sound stutter, which could hide a real problem). Phase 6: on a Mac this
+app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed releases and updates.
 
 ## What works so far
 
@@ -59,7 +60,10 @@ acceleration makes animations and sound stutter, which could hide a real problem
 
 ### On a Mac
 
-Phase 6 (under way): this app taking over from the Swift one.
+Phase 6 is done: this app takes over from the Swift one. `./build.sh --install` (here or in the
+project folder) builds it, signs it with your "Cadenza Local Signing" certificate, and puts it in
+/Applications in place of the Swift app, which is kept as `~/Library/Developer/Cadenza/Cadenza-swift.zip`.
+To go back: `./build.sh --swift --install` in the project folder.
 
 - **Your settings come over by themselves.** Both apps use the same folder, so the sign-ins, history,
   taste profile and saved page data are already there. The first time this app opens, it also reads the
@@ -81,7 +85,6 @@ appear in Spotify as "Cadenza". Quit one before opening the other.
 | Comes in | What |
 | --- | --- |
 | Before release | Windows: one check on a real PC (smooth animations, clean sound, the installer) |
-| Phase 6 | macOS: your testing, then installing it in place of the Swift app |
 | Phase 7 | Signed releases and automatic updates |
 | Later | Spotify's own Soloist as a second engine you can pick, beside librespot |
 

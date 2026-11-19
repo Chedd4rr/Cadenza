@@ -98,11 +98,13 @@ and Rust (`brew install rust`) for the audio engine.
 3. **Log in.** Paste your Client ID, press Log in and approve in the browser. The audio engine asks you
    to sign in once more in the browser. (If spotify-qt is signed in on your Mac, Cadenza offers to
    reuse its login.)
-4. **Allow media keys.** macOS asks for Accessibility permission: turn Cadenza on in System Settings →
-   Privacy & Security → Accessibility.
-
 `build.sh` signs the app with a certificate it makes once in your login keychain ("Cadenza Local
-Signing"), so macOS keeps that permission across rebuilds.
+Signing"), so macOS keeps its permissions (notifications, local network) across rebuilds.
+
+**Switching from the Swift app.** `./build.sh --install` now builds the new app (`desktop/`, the same on
+Mac, Windows and Linux) and puts it in /Applications in place of the old one. Your settings, sign-ins,
+history and EQs come over by themselves. The old app is kept as
+`~/Library/Developer/Cadenza/Cadenza-swift.zip`; to go back, run `./build.sh --swift --install`.
 
 ## Using it
 
@@ -275,11 +277,16 @@ in a browser for a demo with sample data; add `?theme=heist` (or `neon`, `min`, 
 theme. The menu-bar player is `Resources/web/mini/mini.html`. In the app, Option-right-click → Inspect
 Element opens the Web Inspector. Run `./build.sh --install` after changes.
 
+The app's native side is in `desktop/` (Rust, with [Tauri](https://tauri.app)); see
+[desktop/README.md](desktop/README.md) for its files. The old Swift app's code below stays for now, so
+you can go back to it (`./build.sh --swift --install`); it will be removed once the new app has been
+released.
+
 Each theme is a folder in `Resources/web/themes/` with a stylesheet, a script for its background and
 animations, and its own synthesised sounds. To make one, see
 [`Resources/web/themes/README.md`](Resources/web/themes/README.md).
 
-The native code is in `Sources/Cadenza/`:
+The old Swift app's code is in `Sources/Cadenza/`:
 
 | File | Does |
 |---|---|
@@ -301,9 +308,9 @@ Swift can't do. How the bundled librespot is built and patched is in [docs/libre
 
 ### Windows and Linux
 
-Cadenza is being ported to Windows and Linux with [Tauri](https://tauri.app), in `desktop/`. It uses the
-same page; the native side is rewritten in Rust. Playback, the sound engine, Last.fm, lyrics, translation,
-the history import, media keys, the tray and the mini player work; Windows testing and releases are next.
+Cadenza runs on Mac, Windows and Linux from one codebase, in `desktop/`, built with
+[Tauri](https://tauri.app). It uses the same page; the native side is Rust. Everything works on all three;
+signed releases with automatic updates come next.
 What works, what's coming and how to build it are in [desktop/README.md](desktop/README.md).
 GitHub can build it for any of the three systems when you start it (Actions → Desktop app → Run workflow).
 

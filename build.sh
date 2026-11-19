@@ -1,8 +1,19 @@
 #!/bin/bash
-# Builds "Cadenza.app" into ./build. Pass --install to also copy it to /Applications.
-# It also puts librespot inside the app (librespot.sh builds it the first time, then reuses it).
+# Builds Cadenza.
+#   ./build.sh --install          the app (desktop/, for macOS, Windows and Linux); on a Mac, also puts it in
+#                                 /Applications in place of the old one (see desktop/build.sh)
+#   ./build.sh                    the same, without installing
+#   ./build.sh --swift [--install]  the old Swift Mac app (Sources/), kept for now in case you want to go back
 set -euo pipefail
 cd "$(dirname "$0")"
+
+if [ "${1:-}" != "--swift" ]; then
+  exec ./desktop/build.sh "$@"
+fi
+shift
+
+# The Swift app: builds "Cadenza.app" into ./build, and with --install copies it to /Applications.
+# It also puts librespot inside the app (librespot.sh builds it the first time, then reuses it).
 
 APP="Cadenza.app"
 OUT="build/${APP}"
@@ -42,45 +53,7 @@ if [ -f Resources/icon.png ]; then
   iconutil -c icns "${ICONSET}" -o "${OUT}/Contents/Resources/AppIcon.icns"
 fi
 
-# Sign with a stable, self-made certificate ("Cadenza Local Signing", created once in your login
-# keychain). macOS ties the Accessibility permission to the app's signature. With a one-off (ad-hoc)
-# signature, every rebuild looks like a new app and macOS asks for permission again.
-IDENTITY="Cadenza Local Signing"
-if ! security find-certificate -c "${IDENTITY}" >/dev/null 2>&1; then
-  echo "> Creating the signing certificate (one time)..."
-  TMP="$(mktemp -d)"
-  if /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=${IDENTITY}" \
-       -keyout "${TMP}/key.pem" -out "${TMP}/cert.pem" \
-       -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning" \
-       -addext "basicConstraints=critical,CA:false" >/dev/null 2>&1 &&
-     /usr/bin/openssl pkcs12 -export -out "${TMP}/cadenza.p12" -inkey "${TMP}/key.pem" -in "${TMP}/cert.pem" \
-       -name "${IDENTITY}" -passout pass:cadenza >/dev/null 2>&1 &&
-     security import "${TMP}/cadenza.p12" -k "${HOME}/Library/Keychains/login.keychain-db" -P cadenza \
-       -T /usr/bin/codesign >/dev/null 2>&1; then
-    echo "OK: Created ${IDENTITY}"
-  else
-    echo "!  Couldn't create the certificate; falling back to a one-off signature."
-  fi
-  rm -rf "${TMP}"
-fi
-
-echo "> Signing..."
-# Files that came out of a zip or a download carry Finder/quarantine tags, which codesign refuses
-# ("resource fork, Finder information, or similar detritus not allowed"). Strip them first.
-xattr -cr "${OUT}" 2>/dev/null || true
-# The bundled librespot is signed on its own first, with the same identity: macOS won't run a program
-# inside an app unless it carries the app's signature too.
-HELPER="${OUT}/Contents/MacOS/librespot"
-if security find-certificate -c "${IDENTITY}" >/dev/null 2>&1 &&
-   { [ ! -f "${HELPER}" ] || codesign --force --sign "${IDENTITY}" "${HELPER}"; } &&
-   codesign --force --deep --sign "${IDENTITY}" "${OUT}"; then
-  echo "OK: Signed as ${IDENTITY} (Accessibility permission now survives rebuilds)"
-else
-  echo "!  Using a one-off (ad-hoc) signature. After each rebuild, re-add Cadenza in"
-  echo "   System Settings > Privacy & Security > Accessibility."
-  if [ -f "${HELPER}" ]; then codesign --force --sign - "${HELPER}"; fi
-  codesign --force --deep --sign - "${OUT}"
-fi
+./mac-sign.sh "${OUT}"
 
 # Copy the signed app into ./build (ditto keeps the signature intact).
 mkdir -p build

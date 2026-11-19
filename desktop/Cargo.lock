@@ -549,6 +549,7 @@ dependencies = [
  "libc",
  "log",
  "md-5",
+ "objc2",
  "open",
  "rand 0.8.8",
  "regex",

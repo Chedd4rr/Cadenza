@@ -240,8 +240,7 @@ fn settings_for_page(core: &Core) -> Value {
     let mut v = core.settings.all();
     v["mediaKeysTrusted"] = json!(true);
     // Whether Cadenza really starts at login, as the system has it.
-    use tauri_plugin_autostart::ManagerExt;
-    v["openAtLogin"] = json!(core.system.app().autolaunch().is_enabled().unwrap_or(false));
+    v["openAtLogin"] = json!(crate::loginitem::enabled(core.system.app()));
     v
 }
 
@@ -259,12 +258,7 @@ fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
             std::thread::spawn(move || d.restart());
             (core.emit)("refresh", Value::Null);
         }
-        "openAtLogin" => {
-            use tauri_plugin_autostart::ManagerExt;
-            let al = window.app_handle().autolaunch();
-            let r = if core.settings.bool("openAtLogin") { al.enable() } else { al.disable() };
-            if let Err(e) = r { log::warn!("start at login: {e}"); }
-        }
+        "openAtLogin" => { crate::loginitem::set(window.app_handle(), core.settings.bool("openAtLogin")); }
         _ => {}
     }
 }

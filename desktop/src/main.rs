@@ -13,6 +13,7 @@ mod files;
 mod history;
 mod lastfm;
 mod librespot;
+mod loginitem;
 #[cfg(target_os = "macos")]
 mod macaudio;
 #[cfg(target_os = "macos")]
@@ -189,6 +190,7 @@ fn main() {
                 app.on_menu_event(|app, e| menu::picked(app, e.id().as_ref()));
             }
             apply_hotkey(&handle, settings.bool("globalHotkey"));
+            loginitem::tidy(&handle);
 
             // cadenza:// links. Registered with the system here too, so they also work in a development build.
             {

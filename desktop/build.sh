@@ -4,6 +4,8 @@
 #   ./build.sh --run    build and open it straight away, for trying changes
 #   ./build.sh --test   the same, in test mode: beside your normal Cadenza, with its own copy of your data
 #                       and its own speaker, "Cadenza (test)", for comparing the two
+#   ./build.sh --install  macOS: build Cadenza.app, sign it, and put it in /Applications in place of the
+#                       old one (the Swift app is kept as a zip, so you can go back). Elsewhere: the installers.
 #   ./build.sh --app    macOS: build the real Cadenza.app (with its icon, Dock and menu name, notifications
 #                       and links, which a --run build doesn't have) and open it. Add --log to see its log.
 # Needs Rust (https://rustup.rs). On Linux also the system libraries listed in desktop/README.md.
@@ -35,9 +37,20 @@ if [ "${1:-}" = "--test" ]; then
   exit 0
 fi
 
-if ! cargo tauri --version >/dev/null 2>&1; then
+# Tauri's build tool goes into Cargo's own folder, which isn't always on the PATH (Homebrew's Rust doesn't
+# add it), so look there too instead of installing it again every time.
+CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+case ":$PATH:" in *":$CARGO_BIN:"*) ;; *) export PATH="$CARGO_BIN:$PATH" ;; esac
+if ! command -v cargo-tauri >/dev/null 2>&1; then
   echo "> Installing Tauri's build tool (first time only)..."
   cargo install tauri-cli --version "^2" --locked
+fi
+
+# Your own installs skip the slowest optimisation (link-time, over the whole program): it makes the app
+# a little smaller and faster, but adds minutes to every build even when one line changed. The installers
+# GitHub builds for handing out keep it.
+if [ "${1:-}" = "--app" ] || [ "${1:-}" = "--install" ]; then
+  export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 fi
 
 if [ "${1:-}" = "--app" ]; then
@@ -50,6 +63,40 @@ if [ "${1:-}" = "--app" ]; then
   fi
   open "$APP"
   echo "OK: opened $APP"
+  exit 0
+fi
+
+if [ "${1:-}" = "--install" ] && [ "$(uname -s)" = "Darwin" ]; then
+  cargo tauri build --bundles app
+  BUILT="target/release/bundle/macos/Cadenza.app"
+  # Signed in a temporary folder: if this project is in an iCloud-synced folder (Desktop or Documents),
+  # macOS keeps tagging files there, and codesign refuses tagged files.
+  STAGE="$(mktemp -d /tmp/cadenza-install.XXXXXX)"
+  trap 'rm -rf "${STAGE}"' EXIT
+  ditto "${BUILT}" "${STAGE}/Cadenza.app"
+  ../mac-sign.sh "${STAGE}/Cadenza.app"
+
+  # Quit whichever Cadenza is running (the old app and this one have the same id), and wait for it.
+  osascript -e 'tell application id "io.github.chedd4rr.cadenza" to quit' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f "Cadenza.app/Contents/MacOS/" >/dev/null || break
+    sleep 1
+  done
+  pkill -f "Cadenza.app/Contents/MacOS/" 2>/dev/null || true
+
+  # The first time: keep the Swift app as a zip (it has the page as files inside; this one doesn't).
+  # To go back:  ./build.sh --swift --install  from the project folder.
+  OLD="/Applications/Cadenza.app"
+  if [ -f "${OLD}/Contents/Resources/web/index.html" ]; then
+    KEEP="${HOME}/Library/Developer/Cadenza"
+    mkdir -p "${KEEP}"
+    ditto -c -k --keepParent "${OLD}" "${KEEP}/Cadenza-swift.zip"
+    echo "OK: Kept the Swift app as ${KEEP/#$HOME/~}/Cadenza-swift.zip"
+  fi
+  rm -rf "${OLD}"
+  ditto "${STAGE}/Cadenza.app" "${OLD}"
+  echo "OK: Installed to ${OLD}"
+  open "${OLD}"
   exit 0
 fi
 

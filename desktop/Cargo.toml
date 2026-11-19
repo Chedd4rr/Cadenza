@@ -50,6 +50,10 @@ debug = false
 
 # They still optimise Cadenza's own code and the audio libraries, so the sound plays smoothly. Everything
 # else stays quick to compile.
+# The Mac's login items (SMAppService), through Objective-C.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
