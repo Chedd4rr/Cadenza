@@ -38,14 +38,21 @@ impl LastFm {
                  reading: tokio::sync::Mutex::new(Instant::now() - Duration::from_secs(1)) }
     }
 
-    fn api_key(&self) -> String { self.settings.string("lastfmKey") }
+    /// Your own key if you set one, otherwise Cadenza's built-in one.
+    fn api_key(&self) -> String {
+        let own = self.settings.string("lastfmKey");
+        if own.is_empty() { crate::builtin::LASTFM_KEY.to_string() } else { own }
+    }
     fn secret(&self) -> String { self.settings.secret("lastfmSecret") }
-    fn session(&self) -> String { self.settings.secret("lastfmSession") }
     pub fn user(&self) -> String { self.settings.string("lastfmUser") }
 
     pub fn status(&self) -> Value {
-        json!({"user": self.user(), "hasKeys": !self.api_key().is_empty() && !self.secret().is_empty(),
-               "loggedIn": !self.session().is_empty(), "error": *self.last_error.lock().unwrap()})
+        // Everything Cadenza reads from Last.fm needs only an API key and your username. (Signing in, which
+        // also needs the secret, only ever told Cadenza your username; it's still there for an own key.)
+        json!({"user": self.user(), "hasKeys": !self.api_key().is_empty(), "loggedIn": !self.user().is_empty(),
+               "builtinKey": self.settings.string("lastfmKey").is_empty() && !crate::builtin::LASTFM_KEY.is_empty(),
+               "canSignIn": !self.api_key().is_empty() && !self.secret().is_empty(),
+               "error": *self.last_error.lock().unwrap()})
     }
 
     /// Opens Last.fm's "allow access" page and waits (up to 3 minutes) for you to say yes.
@@ -75,6 +82,29 @@ impl LastFm {
             }
         }
         Err("Timed out waiting for the browser".into())
+    }
+
+    /// Connects a Last.fm account by its username: checks Last.fm knows it and saves the name as Last.fm
+    /// spells it. Ok(name) or Err(message for the page). An empty name disconnects.
+    pub async fn set_user(&self, name: &str) -> Result<String, String> {
+        let name = name.trim().trim_start_matches("https://www.last.fm/user/").trim_end_matches('/');
+        if name.is_empty() { self.logout(); return Ok(String::new()); }
+        if self.api_key().is_empty() { return Err("Add a Last.fm API key first".into()); }
+        let mut p = serde_json::Map::new();
+        p.insert("user".into(), json!(name));
+        let (status, body) = self.read("user.getInfo", &p).await;
+        if let Some(found) = body.pointer("/user/name").and_then(Value::as_str) {
+            if !found.eq_ignore_ascii_case(&self.user()) { self.settings.set_secret("lastfmSession", ""); }
+            self.settings.put("lastfmUser", json!(found));
+            self.last_error.lock().unwrap().clear();
+            return Ok(found.to_string());
+        }
+        Err(match body.get("message").and_then(Value::as_str) {
+            Some(_) if body.get("error").and_then(Value::as_i64) == Some(6) => format!("Last.fm has no user called {name}"),
+            Some(m) => m.to_string(),
+            None if status == 0 => "Couldn't reach Last.fm".into(),
+            None => format!("Last.fm answered {status}"),
+        })
     }
 
     pub fn logout(&self) {

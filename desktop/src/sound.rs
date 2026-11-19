@@ -710,6 +710,7 @@ fn list_outputs(s: &Shared) -> Vec<Value> {
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = s;                                            // (the Mac follows the system output, never a chosen one)
         let current = crate::macaudio::default_output();
         return crate::macaudio::outputs().into_iter().map(|o| json!({
             "uid": o.uid, "name": o.name, "transport": o.transport, "isDefault": o.id == current,

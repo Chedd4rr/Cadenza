@@ -47,7 +47,11 @@ impl Discord {
     }
 
     fn enabled(&self) -> bool { self.settings.bool("discord") }
-    fn app_id(&self) -> String { self.settings.string("discordAppId") }
+    /// Your own application ID if you set one, otherwise Cadenza's built-in one.
+    fn app_id(&self) -> String {
+        let own = self.settings.string("discordAppId");
+        if own.is_empty() { crate::builtin::DISCORD_APP_ID.to_string() } else { own }
+    }
 
     /// For System: "connected", "waiting for Discord", "needs an application ID"…
     pub fn status(&self) -> Value {

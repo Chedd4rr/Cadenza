@@ -2618,7 +2618,7 @@ views.queue = {
    ===================================================================== */
 const LFM = {
   cache: new Map(),
-  /** Last.fm is set up: an API key and a logged-in user. */
+  /** Last.fm is set up: an API key and a username. */
   ready() { const l = Links.lastfm; return !!(l && l.hasKeys && l.user); },
   user() { return (Links.lastfm && Links.lastfm.user) || ""; },
   async get(method, params = {}, maxAge = 600000) {
@@ -7823,7 +7823,7 @@ const ENGINE_TEXT = { running: "RUNNING", starting: "STARTING…", login: "WAITI
 const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", "update"];
 const SYS_GROUPS = {
   sound: { label: "Sound & EQ", keys: ["eqEngine", "crossfade", "eqPerDevice", "normalize", "bitrate", "sfx", "sfxVolume"] },
-  connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfmAccount", "lastfmKey", "lastfmSecret", "geniusToken"] },
+  connections: { label: "Connections", keys: ["discord", "discordAppId", "lastfmUser", "lastfmKey", "geniusToken"] },
   prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "playlistTags", "retag", "trModels", "updateRepo", "autoUpdate"] },
   engine: { label: "Engine settings", keys: ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId", "activity"] },
 };
@@ -7854,7 +7854,7 @@ views.system = {
     }
     const summary = {
       sound: `Sound engine ${onOff(!EQ.state || EQ.state.engine !== false)} · crossfade ${(s.crossfade ?? 6) ? (s.crossfade ?? 6) + " s" : "off"} · even loudness ${onOff(s.normalize !== false)} · ${s.bitrate || 320} kbps · clicks ${onOff(s.sfx !== false)}`,
-      connections: `Discord ${onOff(!!s.discord)} · Last.fm ${Links.lastfm && Links.lastfm.loggedIn ? "as " + Links.lastfm.user : "off"} · Genius ${s.geniusToken ? "set" : "not set"}`,
+      connections: `Discord ${onOff(!!s.discord)} · Last.fm ${Links.lastfm && Links.lastfm.user ? "as " + Links.lastfm.user : "off"} · Genius ${s.geniusToken ? "set" : "not set"}`,
       prefs: "Notifications, menu bar, media keys, open at login, playlist tags, update source",
       engine: `${ENGINE_TEXT[e.state] || "Audio engine"} · "${s.deviceName || "Cadenza"}" · diagnostics, Client ID, librespot, activity log`,
     };
@@ -7910,10 +7910,9 @@ views.system = {
       { key: "commands", label: "Commands", type: "action", value: "Every shortcut and command in one list", go: "OPEN  ⌘/" },
       { key: "stage", label: "Stage mode", type: "action", value: "Full screen: big cover, synced lyrics and the visualizer", go: "OPEN  F" },
       { key: "discord", label: "Discord status", type: "toggle", on: !!s.discord, value: Links.discordText() },
-      { key: "discordAppId", label: "Discord app ID", type: "text", value: s.discordAppId || "Not set (discord.com/developers → New Application)", raw: s.discordAppId || "", go: "EDIT" },
-      { key: "lastfmAccount", label: "Last.fm account", type: "action", value: Links.lastfmText(), go: Links.lastfm && Links.lastfm.loggedIn ? "LOG OUT" : "LOG IN" },
-      { key: "lastfmKey", label: "Last.fm API key", type: "text", value: s.lastfmKey || "Not set (last.fm/api/account/create)", raw: s.lastfmKey || "", go: "EDIT" },
-      { key: "lastfmSecret", label: "Last.fm secret", type: "text", value: s.lastfmSecret ? "Saved (hidden)" : "Not set", raw: "", go: "EDIT" },
+      { key: "discordAppId", label: s.builtinDiscord ? "Own Discord app ID" : "Discord app ID", type: "text", value: s.discordAppId || (s.builtinDiscord ? "Not needed: Cadenza has its own (set yours to change the name Discord shows)" : "Not set (discord.com/developers → New Application)"), raw: s.discordAppId || "", go: "EDIT" },
+      { key: "lastfmUser", label: "Last.fm", type: "text", value: Links.lastfmText(), raw: (Links.lastfm && Links.lastfm.user) || "", go: Links.lastfm && Links.lastfm.user ? "CHANGE" : "CONNECT" },
+      { key: "lastfmKey", label: s.builtinLastfm ? "Own Last.fm API key" : "Last.fm API key", type: "text", value: s.lastfmKey || (s.builtinLastfm ? "Not needed: Cadenza has its own" : "Not set (last.fm/api/account/create)"), raw: s.lastfmKey || "", go: "EDIT" },
       { key: "geniusToken", label: "Genius token", type: "text", value: s.geniusToken ? "Saved (hidden) · lets Search find songs from a lyric" : "Not set (genius.com/api-clients → Generate Access Token) · for Search → Lyrics", raw: "", go: "EDIT" },
       { key: "crossfade", label: "Crossfade", type: "cycle", value: (s.crossfade ?? 6) ? `${s.crossfade ?? 6} seconds: the end of each song blends into the next` : "Off: songs follow each other with no overlap", go: "CHANGE" },
       { key: "devices", label: "Devices", type: "action", value: (S.player && S.player.device) ? "Playing on " + S.player.device + " · speakers, AirPods, Spotify Connect" : "Speakers, AirPods, Bluetooth and Spotify Connect devices", go: "OPEN" },
@@ -7981,6 +7980,14 @@ views.system = {
     $("sys-log-body").textContent = (e.log || []).slice(-8).join("\n") || "No output yet.";
   },
   async set(key, value) {
+    // Last.fm only needs your username: Cadenza checks Last.fm knows it. Clearing it disconnects.
+    if (key === "lastfmUser") {
+      let r = null;
+      try { r = await native("lastfm.setUser", { user: String(value) }); } catch (e) { r = { ok: false, message: "Not available here" }; }
+      if (r && r.ok) toast(r.message ? "LAST.FM: CONNECTED AS " + upper(r.message) : "LAST.FM DISCONNECTED");
+      else toast("LAST.FM: " + upper((r && r.message) || "COULDN'T CONNECT"), true);
+      return this.refresh(false);
+    }
     const oldId = S.settings.clientId;
     try { const s = await native("settings.set", { key, value }); if (s) S.settings = s; } catch (e) { /* ignore */ }
     if (key === "themedCovers") { S.settings.themedCovers = !!value; Covers.refresh(); }
@@ -8011,7 +8018,6 @@ views.system = {
     if (o.type === "toggle") return this.set(o.key, !o.on).then(() => (o.key === "discord" ? setTimeout(() => { sendNowPlaying(true); this.refresh(false); }, 1500) : null));
     if (o.key === "commands") return go("commands");
     if (o.key === "stage") return Stage.open();
-    if (o.key === "lastfmAccount") return Links.lastfm && Links.lastfm.loggedIn ? native("lastfm.logout").then(() => { toast("LOGGED OUT OF LAST.FM"); this.refresh(false); }) : Links.lastfmLogin();
     if (o.key === "update") return Links.update && Links.update.state === "available" && Links.update.found ? Links.offer(Links.update.found) : Links.check(true);
     if (o.key === "theme") return switchTheme();
     if (o.key === "bitrate") { const opts = [96, 160, 320]; return this.set("bitrate", opts[(opts.indexOf(S.settings.bitrate || 320) + 1) % 3]); }
@@ -8073,7 +8079,13 @@ views.setup = {
       if (st) { $("setup-cid").value = st.clientId || ""; $("setup-uri").textContent = st.redirectURI || "http://127.0.0.1:8888"; }
     } catch (e) { /* ignore */ }
     $("setup-msg").textContent = (params && params.reason) || "";
+    this.check();
     setTimeout(() => $("setup-cid").focus(), 80);
+  },
+  /** Says straight away whether what's in the box looks like a Client ID. */
+  check() {
+    const v = $("setup-cid").value.trim();
+    $("setup-check").textContent = !v ? "" : /^[0-9a-f]{32}$/i.test(v) ? "✓ LOOKS RIGHT" : "(32 letters and numbers)";
   },
   async login() {
     if (this.working) return;
@@ -8103,6 +8115,13 @@ views.setup = {
   },
 };
 $("setup-go").onclick = () => views.setup.login();
+$("setup-cid").addEventListener("input", () => views.setup.check());
+$("setup-dash").onclick = () => native("openURL", { url: "https://developer.spotify.com/dashboard" }).catch(() => window.open("https://developer.spotify.com/dashboard"));
+$("setup-copy").onclick = async () => {
+  const uri = $("setup-uri").textContent;
+  try { await native("clipboard", { text: uri }); } catch (e) { try { await navigator.clipboard.writeText(uri); } catch (_) { /* demo */ } }
+  toast("COPIED " + uri);
+};
 
 /* =====================================================================
    Add-to-playlist drawer
@@ -8912,15 +8931,15 @@ const Links = {
   },
   discordText() {
     const s = S.settings, d = this.discord;
-    if (!s.discordAppId) return "Add a Discord application ID below first";
+    if (!s.discordAppId && !(d && d.hasId)) return "Add a Discord application ID below first";
     if (!s.discord) return "Show what you're listening to on your Discord profile";
     return d && d.status ? "Status: " + d.status : "Starting…";
   },
   lastfmText() {
     const l = this.lastfm;
-    if (!l || !l.hasKeys) return "Add your Last.fm API key and secret below first";
-    if (!l.loggedIn) return "Not logged in · log in so Stats, play counts, the DJ and Friends can read your scrobbles";
-    return l.user + " · scrobbles come from Spotify (link it in Last.fm's settings)" + (l.error ? " · " + l.error : "");
+    if (!l || !l.hasKeys) return "Add a Last.fm API key below first";
+    if (!l.user) return "Not connected · type your Last.fm username so Stats, play counts, the DJ and Friends can read your scrobbles";
+    return l.user + (l.error ? " · " + l.error : "") + " · clear the name to disconnect · Spotify sends your scrobbles (link it in Last.fm's settings)";
   },
   updateText() {
     const u = this.update;
@@ -9230,6 +9249,7 @@ const Demo = (() => {
         case "diagnostics": return Promise.resolve("Cadenza 1.2 (demo)\nmacOS (browser)");
         case "discord.status": return Promise.resolve({ enabled: !!settings.discord, status: settings.discordAppId ? "connected" : "needs an application ID", hasId: !!settings.discordAppId });
         case "lastfm.status": return Promise.resolve({ user: "chedd4rr", hasKeys: true, loggedIn: true, error: "" });
+        case "lastfm.setUser": return Promise.resolve({ ok: true, message: String(args.user || "").trim() });
         case "taste.get": return Promise.resolve(window.__demoTaste ? JSON.parse(window.__demoTaste) : null);
         case "taste.set": window.__demoTaste = JSON.stringify(args.value); return Promise.resolve(true);
         case "taste.clear": window.__demoTaste = null; return Promise.resolve(true);

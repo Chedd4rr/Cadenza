@@ -6,6 +6,7 @@
 mod api;
 mod auth;
 mod bridge;
+mod builtin;
 mod cover;
 mod discord;
 mod dsp;

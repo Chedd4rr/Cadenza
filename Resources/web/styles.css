@@ -226,6 +226,9 @@ body.moving #bg *, body.moving .item .label, body.moving #hl .face::after, body.
 .setup-step input { width: 100%; margin-top: .8vh; font: 600 2.6vh ui-monospace, Menlo, monospace; color: var(--white); border-bottom: .3vh solid var(--cyan); padding: .4vh 0; }
 .big-btn { margin-left: 6.4vw; transform: skewX(var(--skew)); background: var(--white); color: var(--deep); font-family: var(--display); font-style: normal; font-size: 5vh; padding: 1vh 3vw; box-shadow: 1.2vh 1.2vh 0 var(--cyan); transition: transform .18s var(--snap); }
 .big-btn:hover { transform: skewX(var(--skew)) translate(.4vw, -.3vh); }
+.setup-btn { font: inherit; font-weight: 700; font-size: .85em; color: inherit; background: transparent; border: .2vh solid currentColor; padding: .1vh .6vw; margin: 0 .2vw; cursor: pointer; }
+.setup-btn:hover { background: rgb(255 255 255 / .12); }
+#setup-check { font-weight: 700; margin-left: .4vw; }
 #setup-msg { margin: 3vh 0 0 6.4vw; font-size: 2.4vh; color: var(--ice); min-height: 3vh; transform: skewX(var(--skew)); }
 
 /* ============ Now playing (full on Home, docked mini elsewhere) ============ */

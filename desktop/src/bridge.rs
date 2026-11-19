@@ -160,6 +160,12 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
                 Err(m) => json!({"ok": false, "message": m}),
             }
         }
+        "lastfm.setUser" => {
+            let r = core.lastfm.set_user(&s(args, "user")).await;
+            if r.is_ok() { let _ = std::fs::remove_file(files::path("lastfm-plays.json")); }   // the old account's plays
+            (core.emit)("lastfm", core.lastfm.status());
+            match r { Ok(user) => json!({"ok": true, "message": user}), Err(m) => json!({"ok": false, "message": m}) }
+        }
         "lastfm.get" => {
             let params = args.get("params").and_then(Value::as_object).cloned().unwrap_or_default();
             let (status, body) = core.lastfm.read(&s(args, "method"), &params).await;
@@ -239,6 +245,9 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
 fn settings_for_page(core: &Core) -> Value {
     let mut v = core.settings.all();
     v["mediaKeysTrusted"] = json!(true);
+    // Whether this copy has Cadenza's own Last.fm key and Discord ID built in (the page then needs neither).
+    v["builtinLastfm"] = json!(!crate::builtin::LASTFM_KEY.is_empty());
+    v["builtinDiscord"] = json!(!crate::builtin::DISCORD_APP_ID.is_empty());
     // Whether Cadenza really starts at login, as the system has it.
     v["openAtLogin"] = json!(crate::loginitem::enabled(core.system.app()));
     v

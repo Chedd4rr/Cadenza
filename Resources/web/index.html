@@ -276,9 +276,9 @@
   <!-- SETUP (first run) -->
   <section class="view" id="v-setup" hidden>
     <h1 class="vh st"><span class="title" data-title="WELCOME"></span><small>LET'S CONNECT SPOTIFY</small></h1>
-    <div class="setup-step st"><span class="num">1</span><div class="body">Open <b>developer.spotify.com/dashboard</b>, pick your app (the one you made for spotify-qt works), and copy its <b>Client ID</b>.<input id="setup-cid" placeholder="Paste Client ID" spellcheck="false" autocomplete="off"></div></div>
-    <div class="setup-step st"><span class="num">2</span><div class="body">In the app's settings, make sure this is listed under <b>Redirect URIs</b>: <code id="setup-uri">http://127.0.0.1:8888</code></div></div>
-    <div class="setup-step st"><span class="num">3</span><div class="body">Log in. Your browser will open; approve access and come back here.</div></div>
+    <div class="setup-step st"><span class="num">1</span><div class="body">Make a free Spotify developer app: <button class="setup-btn" id="setup-dash">OPEN SPOTIFY'S DASHBOARD</button><br>Press <b>Create app</b> and give it any name. Under <b>Redirect URIs</b> add <code id="setup-uri">http://127.0.0.1:8888</code> <button class="setup-btn" id="setup-copy">COPY</button>, tick <b>Web API</b>, and save. (An app you made for spotify-qt works too.)</div></div>
+    <div class="setup-step st"><span class="num">2</span><div class="body">Open the app's settings and copy its <b>Client ID</b> into here. <span id="setup-check"></span><input id="setup-cid" placeholder="Paste Client ID" spellcheck="false" autocomplete="off"></div></div>
+    <div class="setup-step st"><span class="num">3</span><div class="body">Log in. Your browser opens twice: once for Cadenza and once for its player. Approve both, then come back here. You need Spotify Premium.</div></div>
     <button class="big-btn st" id="setup-go">LOG IN</button>
     <div id="setup-msg"></div>
   </section>

@@ -82,7 +82,9 @@ and Rust (`brew install rust`) for the audio engine.
 1. **Make a Spotify developer app.** It's free. At
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), create an app, add
    `http://127.0.0.1:8888` under Redirect URIs, tick Web API, and copy its Client ID. Everyone uses
-   their own app, so this project has no shared key.
+   their own app: since 2026 Spotify limits each developer app to 5 users, so a shared one can't work.
+   Cadenza's first screen walks you through it, with a button for the dashboard and one to copy the
+   address.
 2. **Get Cadenza.** Either:
    - **Download** a copy from [Releases](https://github.com/Chedd4rr/Cadenza/releases), unzip it and
      drag it into Applications. It isn't notarized by Apple, so the first time, right-click it and
@@ -210,13 +212,12 @@ lyrics can be mistaken for a similar language.
 All of these are optional and go in System → Connections.
 
 - **Last.fm** powers play counts, Friends, the DJ's deeper picks, styles in your taste profile and
-  better autoplay. Create an API account at
-  [last.fm/api/account/create](https://www.last.fm/api/account/create), paste the key and secret, and
-  log in. Cadenza doesn't scrobble itself: link Spotify to Last.fm instead (Last.fm settings →
-  Applications → Spotify scrobbling) and Spotify scrobbles everything you play, Cadenza included.
-- **Discord status:** make an application called Cadenza at
-  [discord.com/developers/applications](https://discord.com/developers/applications), paste its
-  Application ID and turn Discord status on. The Discord app has to be running.
+  better autoplay. Type your Last.fm username; that's all. (Cadenza has its own API key built in; you
+  can set your own under Own Last.fm API key.) Cadenza doesn't scrobble itself: link Spotify to Last.fm
+  instead (Last.fm settings → Applications → Spotify scrobbling) and Spotify scrobbles everything you
+  play, Cadenza included.
+- **Discord status:** turn it on. The Discord app has to be running. (Cadenza has its own Discord
+  application built in; set your own ID to change the name Discord shows.)
 - **Genius** (finding a song from its lyrics): create an API client at
   [genius.com/api-clients](https://genius.com/api-clients), generate an access token and paste it in.
 
