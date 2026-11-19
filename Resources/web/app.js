@@ -1016,40 +1016,50 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
     S.userPick = u ? { uri: u, at: Date.now() } : null;
   }
   native("audio.local", { action: "skip" }).catch(() => {});      // the old song goes quiet right away
+  Feed.stop();                                                     // a list being fed into Spotify's queue ends here
   const fallback = body.fallback; if (fallback) { body = { ...body }; delete body.fallback; }
+  // The playlist (or album, or Liked Songs) a list of songs comes from, if it has one: see Feed.
+  const host = body.feedHost; if (host !== undefined) { body = { ...body }; delete body.feedHost; }
   // A specific speaker (after the engine restarts, Spotify may still point at the old, dead session).
   const dev = body.device_id; if (dev) { body = { ...body }; delete body.device_id; }
   const playPath = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
   S.altContext = null;
+  // A list of songs from one playlist: play the playlist itself, at the first song, and feed the list's
+  // order into Spotify's queue. Spotify refuses plain song lists for Cadenza's speaker more and more, and
+  // with the real playlist playing, everything that asks "what's playing?" gets the right answer.
+  if (host && body.uris && body.uris.length > 1) {
+    const from = body.offset && body.offset.uri ? Math.max(0, body.uris.indexOf(body.offset.uri)) : 0;
+    const list = body.uris.slice(from);
+    const inHost = { context_uri: host, offset: { uri: list[0] } };
+    if (body.position_ms > 0) inHost.position_ms = body.position_ms;
+    let rh = await api("PUT", playPath, inHost);
+    if (rh.status === 404) { const id = await ourDevice(); if (id) rh = await api("PUT", `/me/player/play?device_id=${enc(id)}`, inHost); }
+    if (rh.status >= 200 && rh.status < 300) {
+      Feed.start(list, host);
+      if (label) toast("▶ " + upper(label));
+      setTimeout(poll, 400);
+      return true;
+    }
+  }
   let r = await api("PUT", playPath, body);
   if (r.status === 404) {
     const id = await ourDevice();
     if (id) r = await api("PUT", `/me/player/play?device_id=${enc(id)}`, body);
   }
-  // Since November 2026 Spotify sometimes refuses a plain list of songs for Cadenza's speaker
-  // ("Restriction violated") while it still takes albums and playlists. Then play the first song inside
-  // its own album (from that song on), and put the next few songs of the list in the queue.
+  // Since November 2026 Spotify refuses plain lists of songs for Cadenza's speaker ("Restriction
+  // violated") while it still takes albums and playlists. Then play the first song inside its own album
+  // (from that song on), and feed the rest of the list into Spotify's queue as it plays (see Feed).
   if (r.status === 403 && body.uris && body.uris.length && /restriction/i.test(errMsg(r))) {
-    const alt = await asAlbumPlay(body.uris, body.position_ms);
+    const from = body.offset && body.offset.uri ? Math.max(0, body.uris.indexOf(body.offset.uri)) : 0;
+    const list = body.uris.slice(from);
+    const alt = await asAlbumPlay(list, body.position_ms);
     if (alt) {
       const devId = dev || await ourDevice();
       const r2 = await api("PUT", devId ? `/me/player/play?device_id=${enc(devId)}` : playPath, alt.body);
       if (r2.status >= 200 && r2.status < 300) {
         r = r2;
         S.altContext = alt.body.context_uri;                     // (autoplay knows this album isn't your choice)
-        // Queue the rest only once Spotify says the song is playing: queued too early (while Cadenza's
-        // speaker is still waking up) Spotify answers "no active device" and drops them.
-        (async () => {
-          for (let n = 0; n < 6; n++) {
-            await wait(700);
-            const s = await api("GET", "/me/player?additional_types=track,episode");
-            if (s.status === 200 && s.body && s.body.item) {
-              for (const u of alt.queue) { await api("POST", `/me/player/queue?uri=${enc(u)}`); await wait(250); }
-              return;
-            }
-            if (n === 2) await api("PUT", devId ? `/me/player/play?device_id=${enc(devId)}` : playPath, alt.body);   // it didn't take: once more
-          }
-        })().catch(() => {});
+        if (list.length > 1) Feed.start(list, alt.body.context_uri);
       }
     }
   }
@@ -1080,6 +1090,99 @@ async function asAlbumPlay(uris, positionMs) {
   return { body, queue: uris.slice(1, 9).filter((u) => /^spotify:track:/.test(u)) };
 }
 
+/* ---------- Feeding a list of songs into Spotify's queue ----------
+   Spotify won't take a plain list of songs for Cadenza's speaker any more, but it takes playlists and
+   albums. So a list (true shuffle's order, a DJ set, a blend, a picked-up spot) plays as its first song
+   inside a "host" (the playlist the songs come from, or else the first song's album), and the rest of the
+   list goes into Spotify's queue one song ahead, as each song starts. Queued songs play before the host
+   carries on, so the host only shows through if the queue runs dry (skipping very fast); then Cadenza
+   plays the list's next song itself. Spotify can't take songs back out of its queue, so one left there
+   when you play something else is skipped if it comes up. */
+const Feed = {
+  active: false, order: [], at: 0, host: null, qd: [], sent: new Set(), grace: 0, queueing: false, timer: 0, strays: null,
+  AHEAD: 1,
+  start(order, host) {
+    this.stop();
+    this.order = order.slice(); this.at = 0; this.host = host; this.qd = []; this.sent = new Set();
+    this.active = true; this.grace = Date.now() + 8000;
+    this.queueNext();
+  },
+  stop() {
+    if (this.active && this.qd.length) this.strays = { uris: new Set(this.qd), until: Date.now() + 15 * 60e3 };
+    this.active = false; this.order = []; this.qd = []; clearTimeout(this.timer);
+  },
+  /** Keep the list's next song waiting in Spotify's queue. */
+  async queueNext() {
+    if (!this.active || this.queueing) return;
+    if (UpNext.items.length || UpNext.fed) return;               // your Up Next goes first; the list resumes after
+    // Not until Spotify says a song is playing here: queued earlier, it answers "no active device".
+    const p = S.player;
+    if (!(p && p.item && p.is_playing)) { clearTimeout(this.timer); this.timer = setTimeout(() => this.queueNext(), 1200); return; }
+    this.queueing = true;
+    try {
+      while (this.active && this.qd.length < this.AHEAD) {
+        const next = this.order[this.at + 1 + this.qd.length];
+        if (!next) break;
+        if (this.sent.has(next)) { this.qd.push(next); continue; }   // still in Spotify's queue from before
+        const r = await api("POST", `/me/player/queue?uri=${enc(next)}`);
+        if (!this.active) break;
+        if (r.status >= 300) {
+          // A failed answer doesn't always mean it failed: look before trying again, or it goes in twice.
+          const q = await api("GET", "/me/player/queue");
+          if (q.status === 200 && q.body && (q.body.queue || []).some((t) => t && t.uri === next)) { this.sent.add(next); this.qd.push(next); continue; }
+          clearTimeout(this.timer);
+          if (r.status !== 429) this.timer = setTimeout(() => this.queueNext(), 2500);
+          break;
+        }
+        this.sent.add(next); this.qd.push(next);
+      }
+    } finally { this.queueing = false; }
+  },
+  /** The song changed. True when it's the host carrying on (the queue ran dry) and Cadenza has moved on
+   *  to the list's next song itself: then nothing else should react to this song. */
+  onTrack(uri, fromUpNext) {
+    if (!uri) return false;
+    if (!this.active) {
+      if (this.strays && Date.now() < this.strays.until && this.strays.uris.has(uri)) {
+        this.strays.uris.delete(uri); cmd("next"); return true;      // a song left in the queue from a list you'd left
+      }
+      return false;
+    }
+    if (fromUpNext) { this.grace = Date.now() + 6000; this.queueNext(); return false; }
+    const i = this.order.indexOf(uri);
+    if (i >= 0) {
+      this.at = i;
+      this.qd = this.qd.filter((u) => this.order.indexOf(u) > i);
+      this.queueNext();
+      return false;
+    }
+    const p = S.player;
+    if (Date.now() < this.grace) return false;
+    if (this.host && p && p.context === this.host && this.at + 1 < this.order.length) { this.playNext(); return true; }
+    this.stop();                                                 // the list is over, or something else is playing
+    return false;
+  },
+  /** Play the list's next song now (Next with nothing queued yet, or the queue ran dry). */
+  async playNext() {
+    if (!this.active || this.at + 1 >= this.order.length) return { status: 404 };
+    this.at += 1; this.qd = []; this.grace = Date.now() + 8000;
+    const uri = this.order[this.at];
+    const dev = await ourDevice();
+    const path = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
+    // In the host if the song is in it (true shuffle's playlist), else inside the song's own album.
+    let r = this.host && !/^spotify:album:/.test(this.host) ? await api("PUT", path, { context_uri: this.host, offset: { uri } }) : { status: 400 };
+    if (r.status >= 300) {
+      const alt = await asAlbumPlay([uri], 0);
+      r = alt ? await api("PUT", path, alt.body) : await api("PUT", path, { uris: [uri] });
+      if (alt && r.status < 300) { this.host = alt.body.context_uri; S.altContext = this.host; }
+    }
+    setTimeout(poll, 400);
+    return r;
+  },
+  /** Next, pressed while a list is being fed: Spotify's next if a song is queued, else Cadenza's. */
+  skip() { return this.qd.length ? api("POST", "/me/player/next") : this.playNext(); },
+};
+
 /** Q / "Add to queue": the song goes into Cadenza's own Up Next (which you can reorder and edit). */
 async function queueTrack(t, front) {
   if (!t || !isTrack(t)) return;
@@ -1104,7 +1207,8 @@ async function cmd(id) {
     case "next":
       if (p && p.item) Radio.skipFrom = { uri: p.item.uri, at: Date.now() };     // nothing next? autoplay takes over (Radio.ended)
       native("audio.local", { action: "skip" }).catch(() => {});
-      r = Radio.active && !UpNext.items.length && !UpNext.fed ? await Radio.skip() : await api("POST", "/me/player/next");
+      r = Radio.active && !UpNext.items.length && !UpNext.fed ? await Radio.skip()
+        : Feed.active && !UpNext.items.length && !UpNext.fed ? await Feed.skip() : await api("POST", "/me/player/next");
       // Spotify forgot which speaker was playing (it answers "no active device"): hand playback back to
       // Cadenza's speaker, then skip there.
       if (r && r.status === 404) {
@@ -1122,6 +1226,15 @@ async function cmd(id) {
       if (on && TrueShuffle.enabled() && await TrueShuffle.fromNowPlaying()) break;   // Cadenza shuffles it, truly at random
       r = await api("PUT", `/me/player/shuffle?state=${on}`);
       if (r.status < 300 && p) p.shuffle_state = on;
+      // Spotify says yes, but the speaker can still refuse (librespot won't shuffle autoplay's songs).
+      if (r.status < 300) setTimeout(async () => {
+        const s = await api("GET", "/me/player?additional_types=track,episode");
+        if (s.status === 200 && s.body && s.body.shuffle_state !== on && !TrueShuffle.active) {
+          if (S.player) S.player.shuffle_state = s.body.shuffle_state;
+          Controls.render();
+          toast("SHUFFLE ISN'T AVAILABLE FOR THIS: PLAY A PLAYLIST OR ALBUM FIRST", true);
+        }
+      }, 1500);
       break;
     }
     case "repeat": {
@@ -1265,7 +1378,8 @@ function setPlayer(p) {
     Radio.refreshQueue();                                       // the Queue page follows skips and song changes
     const fromUpNext = UpNext.onTrack(uri);
     Taste.onTrack(p && p.item, fromUpNext);                     // before autoplay moves on, so it knows which songs were its picks
-    views.playlist.markPlaying(); views.album.markPlaying(); DJ.onTrack(uri, fromUpNext); Radio.onTrack(uri, fromUpNext); TrueShuffle.onTrack(uri, fromUpNext);
+    views.playlist.markPlaying(); views.album.markPlaying();
+    if (!Feed.onTrack(uri, fromUpNext)) { DJ.onTrack(uri, fromUpNext); Radio.onTrack(uri, fromUpNext); TrueShuffle.onTrack(uri, fromUpNext); }
     checkLiked(uri);
     if (p && p.item) PlayCounts.exactFor(p.item);
     if (current() && current().name === "lyrics") views.lyrics.load();
@@ -5232,7 +5346,13 @@ const TrueShuffle = {
   },
   /** ⌘S while a playlist, album or Liked Songs plays: shuffle it from here on. */
   async fromNowPlaying() {
-    const ctx = S.player && S.player.context;
+    let ctx = S.player && S.player.context;
+    // Spotify reports no playlist (autoplay took over, or the song was played from its album because Spotify
+    // refused it on its own): the playlist you were in last is the one to shuffle.
+    if (!ctx || ctx === S.altContext || !LastPlayed.isList(ctx)) {
+      const last = LastPlayed.get();
+      ctx = last && last.lastContext && last.lastContext.uri;
+    }
     if (!ctx) return false;
     let src = null;
     const [, type, id] = ctx.split(":");
@@ -5259,7 +5379,8 @@ const TrueShuffle = {
     }
     // Start at the first song by its URI: if Spotify's own shuffle is still on (it can't always be switched
     // off before a fresh engine is ready), an offset by position would start at a random song instead.
-    const body = { uris: this.chunk, offset: { uri: this.chunk[0] } };
+    // It plays inside the playlist itself, with the shuffled order fed through the queue (see Feed).
+    const body = { uris: this.chunk, offset: { uri: this.chunk[0] }, feedHost: this.hostUri() };
     if (positionMs > 0) body.position_ms = Math.round(positionMs);
     if (this.device) { body.device_id = this.device; this.device = null; }
     const ok = await playBody(body, label ? "TRUE SHUFFLE · " + label : null, false, false, true);
@@ -5274,6 +5395,33 @@ const TrueShuffle = {
     if (S.player) S.player.shuffle_state = true;
     Controls.render(); views.home.update();
     return true;
+  },
+  /** The playlist is already playing (picked up after Cadenza restarted): shuffle the rest of it from the
+   *  song that's on, without starting that song again. */
+  async attach(ctx, cur) {
+    if (this.active || !ctx) return;
+    const [, type, id] = ctx.split(":");
+    const src = /:collection$/.test(ctx) ? { kind: "liked", name: "Liked Songs", uri: ctx }
+      : type === "album" ? { kind: "album", id, uri: ctx, name: "this album" }
+      : (S.playlists || []).find((pl) => pl.uri === ctx) || { id, uri: ctx, name: "this playlist" };
+    const list = await this.uris(src);
+    if (!list || list.length < 2 || this.active) return;
+    const order = [cur, ...this.permute([...new Set(list)].filter((u) => u !== cur))];
+    this.src = src; this.order = order; this.at = 0;
+    this.chunk = order.slice(0, this.CHUNK); this.pos = 0;
+    this.active = true; this.ending = false; this.grace = Date.now() + 8000;
+    await api("PUT", "/me/player/shuffle?state=false");
+    Feed.start(this.chunk, ctx);
+    if (S.player) S.player.shuffle_state = true;
+    Controls.render();
+  },
+  /** The playlist, album or Liked Songs being shuffled, as Spotify names it. */
+  hostUri() {
+    const src = this.src;
+    if (!src) return null;
+    if (src.kind === "liked") return S.me && S.me.id ? `spotify:user:${S.me.id}:collection` : src.uri || null;
+    if (src.kind === "album") return src.uri || (src.id ? "spotify:album:" + src.id : null);
+    return src.uri || (src.id ? "spotify:playlist:" + src.id : null);
   },
   /** Shuffle off: carry on through the playlist in its own order, from the song that's on. */
   async off() {
@@ -8576,16 +8724,21 @@ const LastPlayed = {
       // then the rest of that playlist from where you left it (shuffled if you were shuffling).
       const list = await this.listTracks(v.lastContext.uri);
       if (list && list.length) {
+        const ctx = v.lastContext.uri;
         const at = list.indexOf(v.lastContext.track);
         let rest = at >= 0 ? list.slice(at + 1).concat(list.slice(0, at + 1)) : list;
         rest = rest.filter((u) => u !== v.uri);
         if (v.shuffle) rest = TrueShuffle.permute(rest);
-        r = await api("PUT", path, { uris: [v.uri, ...rest].slice(0, 200), position_ms: pos });
-        if (r.status < 300) {
+        const order = [v.uri, ...rest].slice(0, 200);
+        // The song is in the playlist: the playlist itself plays, from it. If not (it came from song radio,
+        // say), the song plays first, with the playlist fed in after it (see Feed).
+        const ok = await playBody({ uris: order, position_ms: pos, device_id: dev, feedHost: list.includes(v.uri) ? ctx : null }, null, false, false, true);
+        r = { status: ok ? 204 : 500 };
+        if (ok) {
           lone = false; toast("PICKING UP WHERE YOU LEFT OFF · YOUR PLAYLIST IS NEXT");
           // A shuffled list is Cadenza's shuffle, so let true shuffle own it. Otherwise turning shuffle off
           // would only switch off Spotify's (already off) shuffle, and the list would stay shuffled.
-          if (v.shuffle) TrueShuffle.adopt(v.lastContext.uri, [v.uri, ...rest], 200);
+          if (v.shuffle) TrueShuffle.adopt(ctx, order, 200);
         }
       } else {
         // Spotify won't list that playlist's songs (it isn't yours): go back into the playlist itself.
@@ -8596,6 +8749,10 @@ const LastPlayed = {
     if (!r || r.status >= 300) {
       r = await api("PUT", path, v.context ? { context_uri: v.context, offset: { uri: v.uri }, position_ms: pos } : plain);
       if (v.context && (r.status === 400 || r.status === 404)) { r = await api("PUT", path, plain); lone = true; }
+      // You were shuffling this playlist with true shuffle: it carries on shuffled from this song.
+      else if (r.status < 300 && v.shuffle && this.isList(v.context) && TrueShuffle.enabled()) {
+        setTimeout(() => TrueShuffle.attach(v.context, v.uri), 1200);
+      }
     }
     // A song on its own (it came from song radio, the DJ, search…): line up similar songs behind it, so
     // Next and the end of the song have somewhere to go.
@@ -9127,7 +9284,7 @@ motionQuery.addEventListener("change", applyMotion);
 
 async function boot() {
   // Testing hook: the browser demo, and development builds of the app started with a probe script.
-  if (!bridge || window.cadenzaProbe) window.__dbg = { native, S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
+  if (!bridge || window.cadenzaProbe) window.__dbg = { native, Feed, playBody, S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); Taste.tick(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
@@ -9306,8 +9463,13 @@ const Demo = (() => {
     if (method === "GET" && p === "/me/player/queue") return ok({ currently_playing: player.item, queue: tracks.slice(1) });
     if (method === "GET" && p === "/me/player/devices") return ok({ devices: [{ id: "cadenza", name: "Cadenza", is_active: true }] });
     if (method === "PUT" && p === "/me/player/pause") { player.is_playing = false; return ok(null, 204); }
+    if (method === "GET" && /^\/tracks\/[^/]+$/.test(p)) {
+      const t = tracks.find((x) => x.uri.endsWith(":" + p.split("/")[2]));
+      return t ? ok({ ...t, album: { ...t.album, uri: "spotify:album:" + t.album.id } }) : ok({ error: { status: 404 } }, 404);
+    }
     if (method === "PUT" && p === "/me/player/play") {
       player.is_playing = true;
+      if (body) player.context = body.context_uri || null;
       if (body && body.uris) player.item = tracks.find((t) => t.uri === body.uris[0]) || player.item;
       if (body && body.offset) player.item = tracks.find((t) => t.uri === body.offset.uri) || player.item;
       if (body) { player.progress_ms = 0; at = Date.now(); }
@@ -9337,7 +9499,12 @@ const Demo = (() => {
     native(cmd, args) {
       switch (cmd) {
         case "api": (window.__calls = window.__calls || []).push(args.method + " " + args.path);
+          if (args.method === "PUT" && args.body) (window.__bodies = window.__bodies || []).push(args.body);   // (for tests)
           if (window.__force429 && args.path.startsWith("/me/player?")) return Promise.resolve({ status: 429, body: { retryAfter: 20 } });
+          // Testing: refuse plain song lists the way Spotify does since November 2026.
+          if (window.__refuseLists && args.method === "PUT" && args.path.startsWith("/me/player/play") && args.body && args.body.uris) {
+            return Promise.resolve({ status: 403, body: { error: { status: 403, message: "Player command failed: Restriction violated", reason: "UNKNOWN" } } });
+          }
           return new Promise((res) => setTimeout(() => apiRoute(args.method, args.path, args.body).then(res), +(new URLSearchParams(location.search).get("lat") || 60)));
         case "auth.status": return Promise.resolve({ loggedIn: !/setup/.test(location.hash), clientId: settings.clientId, redirectURI: "http://127.0.0.1:8888", missingScopes: [] });
         case "auth.login": return new Promise((res) => setTimeout(() => res({ ok: true }), 800));
