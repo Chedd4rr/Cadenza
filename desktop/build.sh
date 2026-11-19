@@ -10,8 +10,9 @@ cd "$(dirname "$0")"
 
 # On ARM Windows, part of Cadenza (ring, used for HTTPS) can only be compiled with clang, which comes with
 # LLVM. Microsoft's own compiler can't do it there.
-case "$(uname -s)-$(uname -m)" in
-  MINGW*-aarch64|MSYS*-aarch64|MINGW*-arm64|MSYS*-arm64)
+# (Ask Rust, not uname: Git Bash's own tools are x64 programs even on ARM, so uname says x86_64.)
+case "$(rustc -vV | sed -n 's/^host: //p')" in
+  aarch64-pc-windows-*)
     [ -d "/c/Program Files/LLVM/bin" ] && export PATH="/c/Program Files/LLVM/bin:$PATH"
     if ! command -v clang >/dev/null 2>&1; then
       echo "On ARM Windows Cadenza needs clang. Install it with:  winget install LLVM.LLVM"
