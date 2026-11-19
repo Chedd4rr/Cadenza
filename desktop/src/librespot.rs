@@ -93,6 +93,9 @@ impl Librespot {
                 keeper.run_device_check();
             }
         }).ok();
+        // Start from an empty events file: what's in it is from the last time Cadenza ran, and reading it
+        // would replay those songs as if they were playing now.
+        files::write_privately(b"", &me.events_file());
         // Read librespot's player events as they come (a few times a second is plenty).
         let watcher = Arc::clone(&me);
         std::thread::Builder::new().name("cadenza-events".into()).spawn(move || loop {
@@ -335,9 +338,11 @@ impl Librespot {
     fn prepare_event_hook(&self, g: &mut Inner) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         // librespot splits --onevent on spaces, so the script must live somewhere without any.
-        let mut hook = std::env::temp_dir().join("cadenza-librespot-event.sh");
+        // (Test mode has its own, or the two apps would keep rewriting each other's.)
+        let name = if files::test_mode() { "cadenza-test-librespot-event.sh" } else { "cadenza-librespot-event.sh" };
+        let mut hook = std::env::temp_dir().join(name);
         if hook.display().to_string().contains(char::is_whitespace) {
-            hook = PathBuf::from(format!("/tmp/cadenza-{}-librespot-event.sh", user_tag()));
+            hook = PathBuf::from(format!("/tmp/{}-{name}", user_tag()));
         }
         let events = self.events_file();
         let target = format!("'{}'", events.display().to_string().replace('\'', "'\\''"));

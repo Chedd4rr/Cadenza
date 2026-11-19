@@ -2,6 +2,8 @@
 # Builds Cadenza for Windows, Linux or macOS (the Tauri app) on the computer you run it on.
 #   ./build.sh          the installers (Linux: .deb and .AppImage; Windows: setup .exe; macOS: .dmg)
 #   ./build.sh --run    build and open it straight away, for trying changes
+#   ./build.sh --test   the same, in test mode: beside your normal Cadenza, with its own copy of your data
+#                       and its own speaker, "Cadenza (test)", for comparing the two
 # Needs Rust (https://rustup.rs). On Linux also the system libraries listed in desktop/README.md.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -10,6 +12,10 @@ cd "$(dirname "$0")"
 
 if [ "${1:-}" = "--run" ]; then
   cargo run
+  exit 0
+fi
+if [ "${1:-}" = "--test" ]; then
+  CADENZA_TEST=1 cargo run
   exit 0
 fi
 

@@ -63,7 +63,9 @@ impl Settings {
     pub fn client_id(&self) -> String { self.string("clientId") }
     pub fn device_name(&self) -> String {
         let n = self.string("deviceName");
-        if n.is_empty() { "Cadenza".into() } else { n }
+        let n = if n.is_empty() { "Cadenza".to_string() } else { n };
+        // In test mode Spotify lists it as a separate speaker, so you can move the music between the two.
+        if crate::files::test_mode() && !n.ends_with("(test)") { format!("{n} (test)") } else { n }
     }
     pub fn bitrate(&self) -> i64 {
         let b = self.int("bitrate");

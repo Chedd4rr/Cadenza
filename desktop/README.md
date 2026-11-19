@@ -54,6 +54,7 @@ Then, from this folder:
 
 ```
 ./build.sh --run    # build and open it
+./build.sh --test   # the same, in test mode (below)
 ./build.sh          # build the installers (.deb and .AppImage, or the Windows setup .exe)
 ```
 
@@ -64,6 +65,21 @@ To see what it's doing, start it with `CADENZA_LOG=1` set: it then prints the en
 call, every Spotify request with its answer, and a sound report every few seconds. `cargo test` runs the
 tests (the EQ curves, the limiter, the visualizer levels, the history import, the history log, translation
 models, Last.fm signing, covers).
+
+## Test mode: comparing it with the Mac app
+
+`./build.sh --test` runs this app beside your normal Cadenza without the two getting in each other's way:
+
+- It has its own folder ("Cadenza Test" next to the normal one; on Linux `~/.local/share/cadenza-test`).
+  The first time, it copies your sign-ins, taste profile, history and saved page data into it, and on a Mac
+  your settings from the Mac app (Client ID, EQ, crossfade, theme…). It only ever reads your real folder,
+  that once, and never writes to it.
+- Its speaker is called "Cadenza (test)", so Spotify lists the two apps separately.
+- It never touches the other app's librespot.
+
+To compare the sound, open both, play a song, and move it between "Cadenza" and "Cadenza (test)" on the
+Devices page (or from your phone): Spotify carries on at the same spot. Delete the test folder to start
+the test copy over from your current data.
 
 ## Where it keeps your data
 

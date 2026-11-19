@@ -5,15 +5,31 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The folder for settings, logins, history and the taste profile.
+/// Test mode (`./build.sh --test`, or CADENZA_TEST=1): the app runs beside your normal Cadenza with its own
+/// folder and its own speaker name, so it can't touch your real data or the other app's engine.
+pub fn test_mode() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CADENZA_TEST").map_or(false, |v| !v.is_empty() && v != "0"))
+}
+
+/// Your normal Cadenza folder (where test mode copies its starting data from).
 /// - macOS: ~/Library/Application Support/Cadenza (the same folder the Swift app uses, so nothing moves)
 /// - Windows: %APPDATA%\Cadenza
 /// - Linux: ~/.local/share/cadenza
+pub fn real_dir() -> PathBuf {
+    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    if cfg!(target_os = "linux") { base.join("cadenza") } else { base.join("Cadenza") }
+}
+
+/// The folder for settings, logins, history and the taste profile: your normal one, or in test mode a
+/// separate "Cadenza Test" folder beside it.
 pub fn support_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        let dir = if cfg!(target_os = "linux") { base.join("cadenza") } else { base.join("Cadenza") };
+        let real = real_dir();
+        let dir = if !test_mode() { real }
+                  else if cfg!(target_os = "linux") { real.with_file_name("cadenza-test") }
+                  else { real.with_file_name("Cadenza Test") };
         let _ = fs::create_dir_all(&dir);
         // Only your account can open the folder at all, whatever the files inside were saved with.
         #[cfg(unix)]

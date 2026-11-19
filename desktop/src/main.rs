@@ -16,6 +16,7 @@ mod settings;
 mod sound;
 mod spotify_history;
 mod store;
+mod testmode;
 mod translation;
 
 use serde_json::Value;
@@ -88,6 +89,7 @@ fn main() {
             let http = reqwest::Client::builder()
                 .user_agent(format!("Cadenza/{} (https://github.com/Chedd4rr/Cadenza)", env!("CARGO_PKG_VERSION")))
                 .build()?;
+            testmode::prepare();                                       // (test mode only: its first start)
             let settings = Arc::new(settings::Settings::load());
             let store = store::Store::load();
             let auth = Arc::new(auth::Auth::new(settings.clone(), http.clone()));
@@ -106,7 +108,7 @@ fn main() {
 
             let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base());
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("Cadenza")
+                .title(if files::test_mode() { "Cadenza (test)" } else { "Cadenza" })
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)
                 .center()

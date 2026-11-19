@@ -3,7 +3,8 @@
 #
 # It only runs when started by hand because on a private repository build time comes out of a monthly
 # allowance, and the Mac runners cost about ten times as much as Linux ones. Roughly, one run costs:
-# Linux $0.12, Windows $0.30, macOS $1.55, of the $12 a month a free account includes.
+# Linux $0.12, Windows $0.30, macOS $1.55, of the $12 a month a free account includes. The first run on
+# each system takes longer (librespot is built from scratch, then kept in the cache).
 name: Desktop app
 
 on:
@@ -48,7 +49,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Linux libraries
         if: matrix.name == 'linux'
@@ -64,7 +65,7 @@ jobs:
           workspaces: desktop
 
       - name: Cache the librespot build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cadenza-librespot
           key: librespot-${{ matrix.name }}-${{ hashFiles('desktop/librespot.sh', 'patches/*.patch') }}
@@ -72,14 +73,16 @@ jobs:
       - name: Build librespot
         run: CADENZA_CACHE="$HOME/.cadenza-librespot" ./desktop/librespot.sh
 
+      # Tauri's build tool, as a ready-made download (compiling it from source took about 10 minutes).
+      - uses: cargo-bins/cargo-binstall@main
       - name: Install Tauri's build tool
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo binstall tauri-cli --version "^2" --no-confirm
 
       - name: Build the app
         working-directory: desktop
         run: cargo tauri build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: cadenza-${{ matrix.name }}
           retention-days: 7

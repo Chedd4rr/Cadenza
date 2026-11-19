@@ -317,7 +317,8 @@ async fn cover_data_url(core: &Core, link: &str) -> Option<String> {
 
 fn diagnostics(core: &Core) -> String {
     let mut out = vec![
-        format!("Cadenza {} (Tauri, {} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH),
+        format!("Cadenza {} (Tauri, {} {}){}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
+                if crate::files::test_mode() { ", test mode" } else { "" }),
         format!("signed in to Spotify: {}", core.auth.is_logged_in()),
         String::new(),
     ];
