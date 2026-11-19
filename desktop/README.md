@@ -66,7 +66,7 @@ Phase 5, Windows, is under way: the Windows-only parts are written (below) and n
 
 ## Building it
 
-You need [Rust](https://rustup.rs). On Linux, also these libraries (Ubuntu and Debian names):
+You need [Rust](https://rustup.rs). On Windows, also the Visual Studio Build Tools ("Desktop development with C++") and Git for Windows (run the commands in Git Bash), and on ARM Windows LLVM (`winget install LLVM.LLVM`). On Linux, also these libraries (Ubuntu and Debian names):
 
 ```
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libasound2-dev libssl-dev libxdo-dev

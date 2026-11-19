@@ -8,6 +8,19 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# On ARM Windows, part of Cadenza (ring, used for HTTPS) can only be compiled with clang, which comes with
+# LLVM. Microsoft's own compiler can't do it there.
+case "$(uname -s)-$(uname -m)" in
+  MINGW*-aarch64|MSYS*-aarch64|MINGW*-arm64|MSYS*-arm64)
+    [ -d "/c/Program Files/LLVM/bin" ] && export PATH="/c/Program Files/LLVM/bin:$PATH"
+    if ! command -v clang >/dev/null 2>&1; then
+      echo "On ARM Windows Cadenza needs clang. Install it with:  winget install LLVM.LLVM"
+      echo "then open Git Bash again and rerun this."
+      exit 1
+    fi
+    ;;
+esac
+
 ./librespot.sh
 
 if [ "${1:-}" = "--run" ]; then
