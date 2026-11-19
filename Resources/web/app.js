@@ -4796,9 +4796,11 @@ function rpcWorker(fn) {
 function cld3Worker() {
   let M = null, handle = 0, size = 0, find = null;
   const api = {
-    init({ glue }) {
+    init({ glue, url }) {
       return new Promise((resolve, reject) => {
-        (0, eval)(glue);                                   // defines the module factory as `Module`
+        // Defines the module factory as `Module`. In the app the file is loaded straight from cadenza-files://
+        // (so the page's security policy can forbid eval); the browser demo has only its text.
+        if (url) importScripts(url); else (0, eval)(glue);
         const factory = self.Module;
         factory({
           onRuntimeInitialized() {
@@ -4847,7 +4849,7 @@ function bergamotWorker() {
   };
   const yaml = (o) => Object.entries(o).map(([k, v]) => `${k}: ${v}`).join("\n") + "\n";
   const api = {
-    init({ glue, wasm }) {
+    init({ glue, url, wasm }) {
       return new Promise((resolve, reject) => {
         self.Module = {
           instantiateWasm(info, accept) {
@@ -4859,7 +4861,7 @@ function bergamotWorker() {
           onAbort: (e) => reject(new Error(String(e))),
           print() {}, printErr() {},
         };
-        (0, eval)(glue);
+        if (url) importScripts(url); else (0, eval)(glue);   // (as in cld3Worker)
       });
     },
     has({ key }) { return models.has(key); },
@@ -4909,7 +4911,8 @@ const Translator = {
     if (!this.detector) {
       this.detector = (async () => {
         const w = rpcWorker(cld3Worker);
-        await w.call("init", { glue: await this.fetchOk(this.base() + "cld3/cld3.js", "text") });
+        const src = this.base() + "cld3/cld3.js";
+        await w.call("init", bridge ? { url: src } : { glue: await this.fetchOk(src, "text") });
         return w;
       })().catch((e) => { this.detector = null; throw e; });
     }
@@ -4921,9 +4924,10 @@ const Translator = {
   async start() {
     if (!this.engine) {
       this.engine = (async () => {
-        const [glue, wasm] = await Promise.all([this.fetchOk(this.base() + "bergamot/bergamot-translator-worker.js", "text"), this.fetchOk(this.base() + "bergamot/bergamot-translator-worker.wasm")]);
+        const src = this.base() + "bergamot/bergamot-translator-worker.js";
+        const [glue, wasm] = await Promise.all([bridge ? null : this.fetchOk(src, "text"), this.fetchOk(this.base() + "bergamot/bergamot-translator-worker.wasm")]);
         const w = rpcWorker(bergamotWorker);
-        await w.call("init", { glue, wasm }, [wasm]);
+        await w.call("init", bridge ? { url: src, wasm } : { glue, wasm }, [wasm]);
         return w;
       })().catch((e) => { this.engine = null; throw e; });
     }
@@ -7828,7 +7832,7 @@ const SYS_GROUPS = {
   connections: { label: "Connections", get keys() {
     return ["discord", ...(S.settings.builtinDiscord ? [] : ["discordAppId"]), "lastfmUser", ...(S.settings.builtinLastfm ? [] : ["lastfmKey"]), "geniusToken"];
   } },
-  prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "playlistTags", "retag", "trModels", "updateRepo", "autoUpdate"] },
+  prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "reduceMotion", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "playlistTags", "retag", "trModels", "updateRepo", "autoUpdate"] },
   engine: { label: "Engine settings", get keys() {
     return ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId",
             ...(S.settings.builtinLastfm ? ["lastfmKey"] : []), ...(S.settings.builtinDiscord ? ["discordAppId"] : []), "activity"];
@@ -7913,6 +7917,7 @@ views.system = {
       { key: "menuBar", label: "Menu-bar player", type: "toggle", on: S.settings.menuBar !== false, value: "Album cover in the menu bar with a mini player" },
       { key: "mediaKeys", label: "Media keys", type: "toggle", on: !!s.mediaKeys, value: s.mediaKeys && !s.mediaKeysTrusted ? "Allow Cadenza in Settings → Privacy → Accessibility" : "Play/pause, next and previous keys" },
       { key: "globalHotkey", label: "⌥⌘P shortcut", type: "toggle", on: !!s.globalHotkey, value: "Show or hide Cadenza from anywhere" },
+      { key: "reduceMotion", label: "Reduce motion", type: "cycle", value: { system: `Following ${ON_MAC ? "your Mac's" : "the system's"} setting (${motionQuery.matches ? "on" : "off"} now)`, on: "On: slides, fades and moving backgrounds are still", off: "Off: full animations" }[motionSetting()], go: "CHANGE" },
       { key: "openAtLogin", label: "Open at login", type: "toggle", on: !!s.openAtLogin, value: ON_MAC ? "Start with your Mac" : "Start with your computer" },
       { key: "commands", label: "Commands", type: "action", value: "Every shortcut and command in one list", go: "OPEN  ⌘/" },
       { key: "stage", label: "Stage mode", type: "action", value: "Full screen: big cover, synced lyrics and the visualizer", go: "OPEN  F" },
@@ -8014,6 +8019,10 @@ views.system = {
       const steps = [0, 3, 6, 9, 12], v = S.settings.crossfade ?? 6;
       const next = steps[(steps.indexOf(v) + 1) % steps.length] ?? 6;
       return this.set("crossfade", next).then(() => toast(next ? `CROSSFADE: ${next} SECONDS (FROM THE NEXT SONG)` : "CROSSFADE OFF"));
+    }
+    if (o.key === "reduceMotion") {                               // following the system → on → off
+      const next = { system: "on", on: "off", off: "system" }[motionSetting()];
+      return this.set("reduceMotion", next).then(() => { applyMotion(); toast(next === "system" ? "REDUCE MOTION: FOLLOWING THE SYSTEM" : "REDUCE MOTION " + upper(next)); });
     }
     if (o.key === "sfxVolume") {
       const steps = [25, 55, 85], v = S.settings.sfxVolume ?? 55;
@@ -8264,11 +8273,118 @@ function openSearch() {
   else go("search");
 }
 
+/* =====================================================================
+   SHORTCUTS YOU CAN CHANGE (on the keyboard page: select one and press E)
+   ===================================================================== */
+// The shortcuts that work everywhere. Keys inside a page (P to play a playlist, X to remove…) stay as
+// they are. A shortcut is written like "Meta+Shift+F": Meta is ⌘ on a Mac and Ctrl elsewhere (the app
+// swaps the two keys on Windows and Linux before the page sees them). The Mac menu and the show/hide
+// shortcut, which the native side handles, follow these too (desktop/src/menu.rs keeps the same defaults).
+const volumeBy = (d) => { setVolume(((S.player && S.player.volume) ?? 50) + d); toast("VOLUME " + S.player?.volume + "%"); };
+const Shortcuts = {
+  defs: [
+    { id: "toggle", label: "Play / pause", def: "Space", run: (e) => { if (!e.repeat) cmd("toggle"); } },
+    { id: "next", label: "Next song", def: "Meta+ArrowRight", run: () => cmd("next") },
+    { id: "previous", label: "Previous song", def: "Meta+ArrowLeft", run: () => cmd("previous") },
+    { id: "volumeUp", label: "Volume up", def: "Meta+ArrowUp", run: () => volumeBy(5) },
+    { id: "volumeDown", label: "Volume down", def: "Meta+ArrowDown", run: () => volumeBy(-5) },
+    { id: "shuffle", label: "Shuffle on / off", def: "Meta+S", run: () => { pop(Controls.btn.shuffle); cmd("shuffle").then(() => Controls.render()); } },
+    { id: "repeat", label: "Cycle repeat", def: "Meta+R", run: () => { pop(Controls.btn.repeat); cmd("repeat").then(() => Controls.render()); } },
+    { id: "like", label: "Like this song", def: "L", run: () => toggleLike() },
+    { id: "copyLink", label: "Copy the song's link", def: "C", run: () => { const it = S.player && S.player.item; if (it) copyLink(it.uri, it.name); } },
+    { id: "songMenu", label: "Song menu (queue, add, go to)", def: "M", run: (e, c) => { const sel = c && c.view.list && c.view.list.cur; TrackMenu.show(isTrack(sel) ? sel : S.player && S.player.item && S.player.item.raw); } },
+    { id: "palette", label: "Command palette: find any action", def: "Meta+K", run: () => { if (!Drawer.isOpen && !Modal.isOpen) Palette.open(); } },
+    { id: "search", label: "Search Spotify", def: "Meta+F", run: () => openSearch() },
+    { id: "searchKey", label: "Search Spotify (one key)", def: "/", run: (e, c) => (c && c.name === "builder" ? views.builder.focusSearch() : openSearch()) },
+    { id: "stage", label: "Stage mode (full screen)", def: "Meta+Shift+F", run: () => Stage.toggle() },
+    { id: "stageKey", label: "Stage mode (one key)", def: "F", run: () => Stage.toggle(), late: true },
+    { id: "theme", label: "Switch theme", def: "Meta+T", run: () => switchTheme() },
+    { id: "system", label: "System settings", def: "Meta+,", run: (e, c) => { if (!c || c.name !== "system") go("system"); } },
+    { id: "commands", label: "Keyboard shortcuts (this list)", def: "Meta+/", run: (e, c) => { if (!c || c.name !== "commands") go("commands"); } },
+    { id: "mini", label: "Floating mini player", def: "Meta+Shift+M", run: () => native("mini.toggle").catch(() => {}) },
+    { id: "diagnostics", label: "Copy diagnostics (for a bug report)", def: "Meta+Shift+D", run: () => copyDiagnostics(), always: true },
+    { id: "showHide", label: "Show / hide Cadenza from any app", def: "Meta+Alt+P", native: true },
+  ],
+  map: {},
+  capturing: null,
+  def(id) { return this.defs.find((d) => d.id === id); },
+  /** Your shortcuts: the saved changes over the defaults ("" means none). */
+  load() {
+    const saved = (S.settings && typeof S.settings.shortcuts === "object" && S.settings.shortcuts) || {};
+    for (const d of this.defs) this.map[d.id] = typeof saved[d.id] === "string" ? saved[d.id] : d.def;
+  },
+  /** The shortcut a key press makes, in the same form: "Meta+Shift+F". Letters and digits by their place on
+   *  the keyboard, so other layouts and the Alt key don't change them. Null for a lone modifier key. */
+  combo(e) {
+    if (["Meta", "Control", "Alt", "Shift", "CapsLock", "Fn", "OS"].includes(e.key)) return null;
+    let key = e.code && e.code.startsWith("Key") ? e.code.slice(3) : e.code && e.code.startsWith("Digit") ? e.code.slice(5)
+      : e.code && e.code.startsWith("Numpad") ? e.code
+      : e.key === " " ? "Space" : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    // With Shift, the punctuation keys report their shifted character (⇧/ is "?"): use the unshifted one.
+    const unshift = { Slash: "/", Comma: ",", Period: ".", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Minus: "-", Equal: "=", Backquote: "`", Backslash: "\\" };
+    if (unshift[e.code]) key = unshift[e.code];
+    return [e.metaKey && "Meta", e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", key].filter(Boolean).join("+");
+  },
+  /** How a shortcut is shown: ⌘ ⇧ F (the app turns ⌘ ⌥ ⇧ into Ctrl, Alt and Shift on Windows and Linux). */
+  text(combo) {
+    if (!combo) return "NONE";
+    const names = { Meta: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧", Space: "SPACE", ArrowRight: "→", ArrowLeft: "←", ArrowUp: "↑", ArrowDown: "↓" };
+    return combo.split("+").map((p) => names[p] || p.toUpperCase()).join(" ");
+  },
+  /** The action a key press is for, if any. */
+  match(e) {
+    const c = this.combo(e);
+    if (!c) return null;
+    return this.defs.find((d) => !d.native && this.map[d.id] === c) || null;
+  },
+  /** A shortcut that's only letters/digits/punctuation with no ⌘ or Ctrl: it only works outside text boxes. */
+  single(combo) { return !!combo && !/(^|\+)(Meta|Ctrl)\+/.test(combo); },
+  // Keys that already mean something everywhere, or to the system: they can't be taken.
+  taken: ["Escape", "Backspace", "Enter", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Shift+Enter",
+          "Meta+C", "Meta+V", "Meta+X", "Meta+A", "Meta+Z", "Meta+Shift+Z", "Meta+Q", "Meta+W", "Meta+H", "Meta+M", "Meta+Alt+H", "Meta+Ctrl+F"],
+  // Keys pages use for their own things: allowed, but there the page's use comes first.
+  pageKeys: ["P", "T", "X", "R", "D", "N", "S", "G", "H", "I", "B", "O", "Q", "A", "E", "V", "U", "0", "[", "]", "+"],
+  async set(id, combo) {
+    const d = this.def(id);
+    if (!d) return;
+    if (combo && this.taken.includes(combo)) { toast(this.text(combo) + " IS KEPT FOR TYPING AND THE SYSTEM: PICK ANOTHER", true); return false; }
+    const owner = combo && this.defs.find((x) => x.id !== id && this.map[x.id] === combo);
+    if (owner) this.map[owner.id] = "";
+    this.map[id] = combo;
+    const changes = {};
+    for (const x of this.defs) if (this.map[x.id] !== x.def) changes[x.id] = this.map[x.id];
+    try { const st = await native("settings.set", { key: "shortcuts", value: changes }); if (st) S.settings = st; } catch (e) { S.settings.shortcuts = changes; }
+    const msg = combo ? `${upper(d.label)}: ${this.text(combo)}` : `${upper(d.label)}: NO SHORTCUT`;
+    const extra = owner ? ` (${upper(owner.label)} NOW HAS NONE)` : combo && this.single(combo) && this.pageKeys.includes(combo) ? " (SOME PAGES USE IT TOO: THERE, THEIRS COMES FIRST)" : "";
+    toast(msg + extra);
+    return true;
+  },
+  async resetAll() {
+    for (const d of this.defs) this.map[d.id] = d.def;
+    try { const st = await native("settings.set", { key: "shortcuts", value: {} }); if (st) S.settings = st; } catch (e) { S.settings.shortcuts = {}; }
+    toast("EVERY SHORTCUT IS BACK TO THE ORIGINAL");
+  },
+  /** On the keyboard page: the next key press becomes this shortcut. Esc cancels, ⌫ removes it. */
+  capture(id, done) { this.capturing = { id, done }; },
+  onCapture(e) {
+    const { id, done } = this.capturing;
+    if (e.key === "Escape") { this.capturing = null; done(); return; }
+    if (e.key === "Backspace" || e.key === "Delete") { this.capturing = null; this.set(id, "").then(done); return; }
+    const c = this.combo(e);
+    if (!c) return;                                       // a modifier on its own: wait for the rest
+    this.capturing = null;
+    this.set(id, c).then(done);
+  },
+};
+
 document.addEventListener("keydown", (e) => {
   const typing = !!(e.target && e.target.matches && e.target.matches("input, textarea"));
-  // ⇧⌘D copies the diagnostics from anywhere (even mid-palette or in stage mode), for a bug report.
-  // (Not ⌥⌘D: macOS uses that to hide the Dock.)
-  if (e.metaKey && e.shiftKey && !e.altKey && e.code === "KeyD") { e.preventDefault(); copyDiagnostics(); return; }
+  // Choosing a new shortcut on the keyboard page: this key press is it.
+  if (Shortcuts.capturing) { e.preventDefault(); e.stopPropagation(); Shortcuts.onCapture(e); return; }
+  const sc = Shortcuts.match(e);
+  // Copy diagnostics works from anywhere (even mid-palette or in stage mode), for a bug report.
+  // (Its default is ⇧⌘D, not ⌥⌘D: macOS uses that to hide the Dock.)
+  if (sc && sc.always) { e.preventDefault(); sc.run(e, current()); return; }
   if (Palette.isOpen) { if (Palette.onKey(e)) e.preventDefault(); return; }
   if (Stage.isOpen && !Modal.isOpen) { if (Stage.onKey(e)) e.preventDefault(); return; }
   if (Modal.isOpen) { if (Modal.onKey(e)) e.preventDefault(); return; }
@@ -8277,18 +8393,7 @@ document.addEventListener("keydown", (e) => {
   if (!c) return;
   if (e.metaKey || e.ctrlKey) {
     if (!S.loggedIn) return;
-    if (e.metaKey && e.key === "ArrowUp") { e.preventDefault(); setVolume(((S.player && S.player.volume) ?? 50) + 5); toast("VOLUME " + S.player?.volume + "%"); }
-    else if (e.metaKey && e.key === "ArrowDown") { e.preventDefault(); setVolume(((S.player && S.player.volume) ?? 50) - 5); toast("VOLUME " + S.player?.volume + "%"); }
-    else if (e.metaKey && e.key === "ArrowRight") { e.preventDefault(); cmd("next"); }
-    else if (e.metaKey && e.key === "ArrowLeft") { e.preventDefault(); cmd("previous"); }
-    else if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "f") { e.preventDefault(); Stage.toggle(); }
-    else if (e.metaKey && e.key === "f") { e.preventDefault(); openSearch(); }
-    else if (e.metaKey && e.key === ",") { e.preventDefault(); if (c.name !== "system") go("system"); }
-    else if (e.metaKey && e.key === "/") { e.preventDefault(); if (c.name !== "commands") go("commands"); }
-    else if (e.metaKey && e.key === "k") { e.preventDefault(); if (!Drawer.isOpen && !Modal.isOpen) Palette.open(); }
-    else if (e.metaKey && e.key === "t") { e.preventDefault(); switchTheme(); }
-    else if (e.metaKey && e.key === "s") { e.preventDefault(); pop(Controls.btn.shuffle); cmd("shuffle").then(() => Controls.render()); }
-    else if (e.metaKey && e.key === "r") { e.preventDefault(); pop(Controls.btn.repeat); cmd("repeat").then(() => Controls.render()); }
+    if (sc) { e.preventDefault(); sc.run(e, c); }
     return;                                        // ⌘C / ⌘V / ⌘A etc. pass through
   }
   if (busy && ["Enter", "Escape", "Backspace"].includes(e.key) && !typing) {
@@ -8296,19 +8401,13 @@ document.addEventListener("keydown", (e) => {
     if (!e.repeat) pendingKey = { key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, at: Date.now() };
     return;
   }
-  if (!typing && c.name !== "setup") {
-    if (e.key === " ") { e.preventDefault(); if (!e.repeat) cmd("toggle"); return; }
-    if (e.key === "/") { e.preventDefault(); if (c.name === "builder") views.builder.focusSearch(); else openSearch(); return; }
-    if (c.name !== "search" && !e.altKey) {
-      const k = e.key.toLowerCase();
-      const sel = c.view.list && c.view.list.cur;
-      if (k === "l") { e.preventDefault(); toggleLike(); return; }
-      if (k === "c") { e.preventDefault(); const it = S.player && S.player.item; if (it) copyLink(it.uri, it.name); return; }
-      if (k === "m") { e.preventDefault(); TrackMenu.show(isTrack(sel) ? sel : S.player && S.player.item && S.player.item.raw); return; }
-    }
-  }
+  // One-key shortcuts (no ⌘ or Ctrl) work outside text boxes. The original ones (Space, /, L, C, M) come
+  // before the page's own keys, as always; one you've changed, or a "late" one like F, comes after them,
+  // so it never takes a key a page uses. Letters don't count on the search page, where you type.
+  const oneKey = sc && !typing && c.name !== "setup" && (!/^[A-Z0-9]$/.test(Shortcuts.map[sc.id]) || c.name !== "search");
+  if (oneKey && !sc.late && Shortcuts.map[sc.id] === sc.def) { e.preventDefault(); sc.run(e, c); return; }
   if (c.view.onKey && c.view.onKey(e, typing)) { e.preventDefault(); return; }
-  if (!typing && c.name !== "setup" && c.name !== "search" && !e.altKey && e.key.toLowerCase() === "f") { e.preventDefault(); Stage.toggle(); return; }
+  if (oneKey) { e.preventDefault(); sc.run(e, c); return; }
   if (!typing && (e.key === "Escape" || e.key === "Backspace")) { e.preventDefault(); back(); }
 });
 
@@ -8739,17 +8838,13 @@ const Stage = {
     if (i !== this.cur) { this.cur = i; this.setLyric(i); }
   },
   onKey(e) {
-    const k = e.key.toLowerCase();
-    if (e.key === "Escape" || (k === "f" && !e.metaKey) || (e.metaKey && e.shiftKey && k === "f")) { this.close(); return true; }
-    if (e.metaKey && k === "k") { this.close().then(() => Palette.open()); return true; }
-    if (e.metaKey && e.key === "ArrowRight") { cmd("next"); return true; }
-    if (e.metaKey && e.key === "ArrowLeft") { cmd("previous"); return true; }
-    if (e.metaKey && e.key === "ArrowUp") { setVolume(((S.player && S.player.volume) ?? 50) + 5); toast("VOLUME " + S.player?.volume + "%"); return true; }
-    if (e.metaKey && e.key === "ArrowDown") { setVolume(((S.player && S.player.volume) ?? 50) - 5); toast("VOLUME " + S.player?.volume + "%"); return true; }
+    // Your shortcuts for leaving, the palette, playback, volume and like; everything else is ignored here.
+    const sc = Shortcuts.match(e);
+    if (e.key === "Escape" || (sc && (sc.id === "stage" || sc.id === "stageKey"))) { this.close(); return true; }
+    if (sc && sc.id === "palette") { this.close().then(() => Palette.open()); return true; }
+    if (sc && ["toggle", "next", "previous", "volumeUp", "volumeDown", "like"].includes(sc.id)) { sc.run(e); return true; }
     if (e.metaKey) return false;                                   // ⌘Q, ⌘H… still work
-    if (e.key === " ") { if (!e.repeat) cmd("toggle"); return true; }
-    if (k === "l") { toggleLike(); return true; }
-    return true;                                                   // everything else is ignored on stage
+    return true;
   },
 };
 Stage.el.addEventListener("mousemove", () => Stage.wake());
@@ -8827,25 +8922,23 @@ async function handleLink(action, q) {
 /* =====================================================================
    COMMANDS: every shortcut in one list (System → Commands, ⌘/ or the Controls menu)
    ===================================================================== */
+/** A row for a shortcut you can change: its keys come from Shortcuts, and choosing it runs the action. */
+const scRow = (group, id, run) => {
+  const d = Shortcuts.def(id);
+  return [group, d.label, "", run || (d.run ? () => d.run({}, current()) : undefined), [id]];
+};
 const COMMANDS = [
-  ["PLAYBACK", "Play / pause", "SPACE", () => cmd("toggle")],
-  ["PLAYBACK", "Next song", "⌘ →", () => cmd("next")],
-  ["PLAYBACK", "Previous song", "⌘ ←", () => cmd("previous")],
-  ["PLAYBACK", "Shuffle on / off", "⌘ S", () => cmd("shuffle").then(() => Controls.render())],
-  ["PLAYBACK", "Cycle repeat", "⌘ R", () => cmd("repeat").then(() => Controls.render())],
-  ["PLAYBACK", "Volume up / down", "⌘ ↑  ⌘ ↓"],
-  ["PLAYBACK", "Like this song", "L", () => toggleLike()],
-  ["PLAYBACK", "Copy the song's link", "C", () => { const it = S.player && S.player.item; if (it) copyLink(it.uri, it.name); }],
-  ["PLAYBACK", "Song menu (queue, add, go to)", "M"],
-  ["ANYWHERE", "Command palette: find any action", "⌘ K", () => Palette.open()],
-  ["ANYWHERE", "Stage mode (full screen)", "F  ·  ⌘ ⇧ F", () => Stage.open()],
-  ["ANYWHERE", "Search Spotify", "⌘ F  ·  /", () => openSearch()],
-  ["ANYWHERE", "Switch theme", "⌘ T", () => switchTheme()],
-  ["ANYWHERE", "Copy diagnostics (for a bug report)", "⇧ ⌘ D", () => copyDiagnostics()],
+  ["KEYS", "Change a shortcut: select it and press E, or click its keys", "E"],
+  ["KEYS", "Put every shortcut back the way it was", "", () => Shortcuts.resetAll().then(() => views.commands.refresh())],
+  scRow("PLAYBACK", "toggle"), scRow("PLAYBACK", "next"), scRow("PLAYBACK", "previous"),
+  scRow("PLAYBACK", "volumeUp"), scRow("PLAYBACK", "volumeDown"), scRow("PLAYBACK", "shuffle"), scRow("PLAYBACK", "repeat"),
+  scRow("PLAYBACK", "like"), scRow("PLAYBACK", "copyLink"), scRow("PLAYBACK", "songMenu"),
+  scRow("ANYWHERE", "palette"), scRow("ANYWHERE", "stage", () => Stage.open()), scRow("ANYWHERE", "stageKey", () => Stage.open()),
+  scRow("ANYWHERE", "search"), scRow("ANYWHERE", "searchKey", () => openSearch()), scRow("ANYWHERE", "theme"),
+  scRow("ANYWHERE", "diagnostics"),
   ["ANYWHERE", "Back", "ESC  ·  ⌫"],
-  ["ANYWHERE", "System settings", "⌘ ,", () => go("system")],
-  ["ANYWHERE", "This list", "⌘ /"],
-  ["ANYWHERE", "Show / hide Cadenza from any app", "⌥ ⌘ P"],
+  scRow("ANYWHERE", "system"), scRow("ANYWHERE", "commands", () => null),
+  scRow("ANYWHERE", "showHide"),
   ["ANYWHERE", "Full screen window", "⌃ ⌘ F"],
   ["LISTS", "Move / choose", "↑ ↓  ·  ⏎"],
   ["LISTS", "Add a song to Up Next (Cadenza's own queue)", "Q"],
@@ -8886,20 +8979,23 @@ const COMMANDS = [
   ["TASTE", "Let a banned artist back into autoplay", "X", () => go("taste")],
   ["FRIENDS", "Play their song  ·  blend  ·  profile", "⏎  ·  B  ·  O", () => go("friends")],
   ["FRIENDS", "Add  ·  remove a friend", "+  ·  X"],
-  ["ANYWHERE", "Floating mini player", "⇧ ⌘ M", () => native("mini.toggle").catch(() => {})],
-  ["ANYWHERE", "Sleep timer (in the palette)", "⌘ K", () => { Palette.open(); setTimeout(() => { $("pal-q").value = "sleep"; Palette.filter(); }, 60); }],
+  scRow("ANYWHERE", "mini"),
+  ["ANYWHERE", "Sleep timer (in the palette)", "", () => { Palette.open(); setTimeout(() => { $("pal-q").value = "sleep"; Palette.filter(); }, 60); }, ["palette"]],
   ...LINKS.map(([what, url]) => ["LINKS", "Link: " + what, url]),
 ];
 views.commands = {
   el: $("v-commands"),
-  keys: () => [["↑↓", "SELECT"], ["⏎", "RUN"], ["ESC", "BACK", back]],
+  keys: () => [["↑↓", "SELECT"], ["⏎", "RUN"], ["E", "CHANGE KEY", () => views.commands.change(views.commands.list.cur)], ["ESC", "BACK", back]],
   list: new List($("cmd-list"), {
     render: (c) => {
       const r = h("div", "opt st cmd" + (c[3] ? "" : " info"));
       const inn = h("div", "in");
       inn.append(h("span", "k", c[1]), h("span", "v", ""), h("span", "go", c[3] ? "RUN" : c[0]));
       const keys = inn.querySelector(".v");
-      c[2].split(/\s+·\s+/).forEach((combo) => {
+      // A shortcut you can change shows its current keys, and clicking them changes it.
+      const text = c[4] ? c[4].map((id) => Shortcuts.text(Shortcuts.map[id])).join("  ·  ") : c[2];
+      if (c[4]) { r.classList.add("remap"); keys.title = "Click to change"; keys.onclick = (ev) => { ev.stopPropagation(); views.commands.change(c); }; }
+      (text ? text.split(/\s+·\s+/) : []).forEach((combo) => {
         const g = h("span", "combo");
         combo.split(/\s{2,}/).forEach((part, i) => { if (i) g.append(h("span", "sep", "/")); part.trim().split(" ").forEach((key) => g.append(h("kbd", null, key))); });
         keys.append(g);
@@ -8917,12 +9013,30 @@ views.commands = {
   },
   run(c) {
     if (!c) return;
-    if (!c[3]) return toast(c[1].toUpperCase() + ": " + c[2]);
+    if (!c[3]) return toast(c[1].toUpperCase() + ": " + (c[4] ? Shortcuts.text(Shortcuts.map[c[4][0]]) : c[2]));
     c[3]();
+  },
+  /** Redraws the list where it was (after a shortcut changed). */
+  refresh() {
+    const i = this.list.i;
+    this.list.set(COMMANDS);
+    this.list.select(Math.min(i, this.list.items.length - 1), false);
+  },
+  /** Waits for the new keys for this row's shortcut. While it waits, the Mac menu's shortcuts and the
+   *  show/hide shortcut are set aside, or they'd catch the keys first. */
+  change(c) {
+    if (!c || !c[4]) return toast("THIS ONE CAN'T BE CHANGED", true);
+    const i = this.list.items.indexOf(c);
+    if (i >= 0) this.list.select(i, false);
+    const row = this.list.rows[this.list.i], v = row && row.querySelector(".v");
+    if (v) { v.textContent = ""; v.append(h("span", "combo capture", "PRESS THE NEW KEYS · ESC CANCELS · ⌫ REMOVES")); }
+    native("shortcuts.capture", { on: true }).catch(() => {});
+    Shortcuts.capture(c[4][0], () => { native("shortcuts.capture", { on: false }).catch(() => {}); this.refresh(); });
   },
   onKey(e) {
     if (this.list.nav(e)) return true;
     if (e.key === "Enter") { pop(this.list.rows[this.list.i]); this.run(this.list.cur); return true; }
+    if (e.key.toLowerCase() === "e" && !e.metaKey && !e.altKey) { this.change(this.list.cur); return true; }
     return false;
   },
 };
@@ -8997,19 +9111,30 @@ function clock() {
   setText("c-dow", d.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase());
   setText("c-time", d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
 }
+/** Reduce motion: on, off, or (the default) following the system's own setting. While it's on, slides,
+ *  fades and moving backgrounds are instant or still; the visualizer and progress bars still show the music. */
+const motionQuery = matchMedia("(prefers-reduced-motion: reduce)");
+function motionSetting() {
+  const v = S.settings.reduceMotion;
+  return v === "on" || v === true ? "on" : v === "off" ? "off" : "system";
+}
 function applyMotion() {
-  reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;   // follows the Mac's own Reduce Motion setting
+  const m = motionSetting();
+  reduced = m === "on" || (m === "system" && motionQuery.matches);
   document.body.classList.toggle("reduce", reduced);
 }
+motionQuery.addEventListener("change", applyMotion);
 
 async function boot() {
-  if (!bridge) window.__dbg = { S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
+  // Testing hook: the browser demo, and development builds of the app started with a probe script.
+  if (!bridge || window.cadenzaProbe) window.__dbg = { native, S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); Taste.tick(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
   Controls.init();
   try { const s = await native("settings.get"); if (s) S.settings = s; } catch (e) { /* defaults */ }
   applyMotion();
+  Shortcuts.load();
   Tags.init();
   Taste.load();
   EQ.load().then(() => views.home.update());

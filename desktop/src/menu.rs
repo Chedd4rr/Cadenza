@@ -1,27 +1,31 @@
 //! The Mac's menu bar, the same as the Swift app's: Cadenza, Edit (so ⌘C, ⌘V and ⌘A work in text
 //! boxes), Controls (the main commands with their shortcuts; each one runs in the page, as if you had
 //! pressed its keys) and Window. Windows and Linux have no menu bar: everything is on the page.
+//!
+//! The Controls shortcuts are yours (the keyboard page changes them), so the menu is built again when they
+//! change. Only ones with ⌘ (or Ctrl) become menu shortcuts: a plain key like Space or L would be taken away
+//! from text boxes, so those are shown in the item's title instead.
 
 use serde_json::json;
 use std::sync::Arc;
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Manager, Wry};
 
-/// (title, command, shortcut). "-" is a separator. Space, L and ⌘←/→ can't be menu shortcuts without
-/// taking them away from text boxes, so their titles list them instead.
+/// (title, command, shortcut name on the keyboard page). "-" is a separator. ⌘←/→ stay out of the menu
+/// (as in the Swift app) so they keep moving the cursor in text boxes; their titles show them.
 const CONTROLS: &[(&str, &str, &str)] = &[
-    ("Play / Pause    (Space)", "toggle", ""),
-    ("Next Song    (⌘→)", "next", ""),
-    ("Previous Song    (⌘←)", "previous", ""),
-    ("Shuffle", "shuffle", "Cmd+S"),
-    ("Repeat", "repeat", "Cmd+R"),
-    ("Like Song    (L)", "like", ""),
+    ("Play / Pause", "toggle", "toggle"),
+    ("Next Song", "next", "next"),
+    ("Previous Song", "previous", "previous"),
+    ("Shuffle", "shuffle", "shuffle"),
+    ("Repeat", "repeat", "repeat"),
+    ("Like Song", "like", "like"),
     ("-", "", ""),
-    ("Stage Mode", "stage", "Cmd+Shift+F"),
-    ("Floating Mini Player", "mini", "Cmd+Shift+M"),
-    ("Command Palette…", "palette", "Cmd+K"),
-    ("Search", "search", "Cmd+F"),
-    ("Switch Theme", "theme", "Cmd+T"),
+    ("Stage Mode", "stage", "stage"),
+    ("Floating Mini Player", "mini", "mini"),
+    ("Command Palette…", "palette", "palette"),
+    ("Search", "search", "search"),
+    ("Switch Theme", "theme", "theme"),
     ("-", "", ""),
     ("Home", "go:home", ""),
     ("Library", "go:library", ""),
@@ -31,13 +35,16 @@ const CONTROLS: &[(&str, &str, &str)] = &[
     ("Friends", "go:friends", ""),
     ("EQ", "go:eq", ""),
     ("DJ", "go:dj", ""),
-    ("System", "go:system", "Cmd+Comma"),
-    ("Keyboard Shortcuts", "go:commands", "Cmd+Slash"),
+    ("System", "go:system", "system"),
+    ("Keyboard Shortcuts", "go:commands", "commands"),
     ("-", "", ""),
     ("Check for Updates…", "update", ""),
 ];
 
-pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+/// `plain`: no menu shortcuts at all (while you choose a new one on the keyboard page, so the menu doesn't
+/// catch the keys first).
+pub fn build(app: &AppHandle, plain: bool) -> tauri::Result<Menu<Wry>> {
+    let settings = app.try_state::<Arc<crate::Core>>().map(|c| c.settings.clone());
     let about = AboutMetadata { name: Some("Cadenza".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
     let cadenza = Submenu::with_items(app, "Cadenza", true, &[
         &PredefinedMenuItem::about(app, Some("About Cadenza"), Some(about))?,
@@ -58,10 +65,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         &PredefinedMenuItem::select_all(app, None)?,
     ])?;
     let controls = Submenu::new(app, "Controls", true)?;
-    for (title, cmd, keys) in CONTROLS {
+    for (title, cmd, id) in CONTROLS {
         if *title == "-" { controls.append(&PredefinedMenuItem::separator(app)?)?; continue; }
-        let keys = if keys.is_empty() { None } else { Some(*keys) };
-        controls.append(&MenuItem::with_id(app, format!("cmd:{cmd}"), *title, true, keys)?)?;
+        let combo = match (&settings, id.is_empty()) { (Some(s), false) => crate::shortcuts::get(s, id), _ => String::new() };
+        let in_menu = !plain && !matches!(*cmd, "next" | "previous") && crate::shortcuts::has_command_key(&combo);
+        let accel = if in_menu { crate::shortcuts::accelerator(&combo) } else { None };
+        let title = if accel.is_none() && !combo.is_empty() { format!("{title}    ({})", crate::shortcuts::label(&combo)) } else { title.to_string() };
+        controls.append(&MenuItem::with_id(app, format!("cmd:{cmd}"), title, true, accel.as_deref())?)?;
     }
     let window = Submenu::with_items(app, "Window", true, &[
         &PredefinedMenuItem::minimize(app, None)?,

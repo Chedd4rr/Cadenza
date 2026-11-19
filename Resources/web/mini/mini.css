@@ -342,3 +342,6 @@ body[data-style="theme"] #stick, body[data-style="mp3"] #dev { display: none; }
   box-shadow: 0 2px 0 rgb(0 0 0 / .3), inset 0 1px 0 rgb(255 255 255 / .5); }
 .keys button:active { transform: translateY(1px); box-shadow: 0 1px 0 rgb(0 0 0 / .3); }
 .liked .keys #slike { color: #ff2d55; }
+
+/* Reduce motion (set in Cadenza, or the system's setting): no sliding, scrolling or fading. */
+body.reduce *, body.reduce *::before, body.reduce *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }

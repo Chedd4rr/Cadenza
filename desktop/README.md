@@ -46,6 +46,15 @@ app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed r
   opening it again brings back the one that's running.
 - Settings, the taste profile and the saved page data, in private files.
 - Ctrl does what ⌘ does on the Mac, and the shortcut hints on screen say Ctrl, Alt and Shift.
+- Shortcuts you can change: on the keyboard page (⌘/ or Ctrl+/), select one and press E (or click its
+  keys), then press the new ones. Esc cancels, ⌫ removes it, and one row puts them all back. The Mac's
+  menu bar and the show/hide shortcut follow your changes. Keys inside pages (P, T, X…) stay as they are.
+- Reduce motion (System → Preferences): follows the system's setting, or on or off. While it's on, slides,
+  fades and moving backgrounds are still, in the mini player too.
+- After 3 minutes with nothing playing, the sound output rests (so it doesn't keep your speakers or
+  Bluetooth headphones busy playing silence), and comes back the moment music does.
+- Security: a strict content policy for the page (no outside scripts, no eval), only the window permission
+  the mini player needs, and librespot's player-events script kept in a folder only you can write to.
 
 ### On Windows
 

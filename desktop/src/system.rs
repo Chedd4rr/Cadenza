@@ -48,6 +48,7 @@ struct State {
     info_at: Option<Instant>,
     art_url: String,
     art_data: String,               // the cover as a 480 px JPEG data: URL, for the mini player
+    art_sent: bool,                 // the mini player already has it (it's ~50 KB, so it's sent once)
     last_song: Option<String>,       // for notifications: only when the song itself changes
     page_ready: bool,
     pending_links: Vec<String>,
@@ -130,6 +131,11 @@ impl System {
     // MARK: media keys and Now Playing
 
     fn start_media_controls(self: &Arc<Self>) {
+        // MPRIS needs the desktop session's message bus; without one the library panics.
+        if cfg!(target_os = "linux") && std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            log::info!("media keys: no desktop session bus, so no MPRIS");
+            return;
+        }
         let me = self.clone();
         let slot = self.controls.clone();
         #[cfg(windows)]
@@ -196,7 +202,7 @@ impl System {
             st.info = info.clone();
             st.info_at = Some(Instant::now());
             let art = info.get("art").and_then(Value::as_str).unwrap_or("").to_string();
-            let new_art = if art != st.art_url { st.art_url = art.clone(); st.art_data.clear(); Some(art) } else { None };
+            let new_art = if art != st.art_url { st.art_url = art.clone(); st.art_data.clear(); st.art_sent = false; Some(art) } else { None };
             let key = info.get("title").and_then(Value::as_str).filter(|t| !t.is_empty())
                 .map(|t| format!("{t}|{}", info.get("artist").and_then(Value::as_str).unwrap_or("")));
             let first = st.last_song.is_none();
@@ -237,6 +243,7 @@ impl System {
                 let mut st = me.st.lock().unwrap();
                 if st.art_url != url { return; }           // a newer song came along meanwhile
                 st.art_data = data;
+                st.art_sent = false;
             }
             me.push_mini();
             if let Some(tray) = me.app.tray_by_id(TRAY_ID) {
@@ -351,6 +358,7 @@ impl System {
                         if payload.event() == tauri::webview::PageLoadEvent::Finished {
                             if let Some(sys) = w.app_handle().try_state::<Arc<System>>() {
                                 let _ = w.eval("window.mini && mini.setVisible(true)");
+                                sys.st.lock().unwrap().art_sent = false;      // a new page: it has no cover yet
                                 sys.push_mini();
                             }
                         }
@@ -401,7 +409,13 @@ impl System {
     /// What's playing, for the mini page: the same fields as the Mac app sends it.
     pub fn push_mini(&self) {
         let Some(w) = self.app.get_webview_window("mini") else { return };
-        let (info, at, art) = { let st = self.st.lock().unwrap(); (st.info.clone(), st.info_at, st.art_data.clone()) };
+        // While it's hidden nothing is sent: showing it sends everything.
+        if !w.is_visible().unwrap_or(true) { return; }
+        let (info, at, art) = {
+            let mut st = self.st.lock().unwrap();
+            let art = if st.art_sent { None } else { st.art_sent = true; Some(st.art_data.clone()) };
+            (st.info.clone(), st.info_at, art)
+        };
         let mut payload = serde_json::Map::new();
         for key in ["title", "artist", "album", "playing", "liked", "volume", "duration", "position", "theme"] {
             if let Some(v) = info.get(key).filter(|v| !v.is_null()) { payload.insert(key.into(), v.clone()); }
@@ -413,9 +427,12 @@ impl System {
             if let Some(d) = info.get("duration").and_then(Value::as_f64).filter(|d| *d > 0.0) { now = now.min(d); }
             payload.insert("position".into(), json!(now));
         }
-        payload.insert("art".into(), json!(art));
+        if let Some(art) = art { payload.insert("art".into(), json!(art)); }      // left out: keep the one it has
         let style = if self.core.lock().unwrap().as_ref().map_or(false, |c| c.settings.string("miniStyle") == "mp3") { "mp3" } else { "theme" };
         payload.insert("style".into(), json!(style));
+        // Reduce motion: "on" or "off" as set on the System page, or null to follow the system's setting.
+        let reduce = self.core.lock().unwrap().as_ref().map(|c| c.settings.get("reduceMotion")).unwrap_or(Value::Null);
+        payload.insert("reduce".into(), match reduce.as_str() { Some("on") => json!(true), Some("off") => json!(false), _ => if reduce == json!(true) { json!(true) } else { Value::Null } });
         let _ = w.eval(format!("window.mini && mini.apply({})", Value::Object(payload)));
     }
 

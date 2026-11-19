@@ -190,7 +190,9 @@ impl Api {
                 g.blocks.insert(endpoint, until);
                 g.blocked_until = Some(g.blocked_until.map_or(until, |b| b.max(until)));
             }
-            let text = g.log.join("\n");
+            // Saved for "Spotify activity" after a block, without what you searched for.
+            let hide = regex::Regex::new(r"([?&]q=)[^&\s]*").unwrap();
+            let text = hide.replace_all(&g.log.join("\n"), "${1}(hidden)").into_owned();
             files::write_privately(text.as_bytes(), &files::path("spotify-requests.log"));
         }
         (status, json, retry_after)

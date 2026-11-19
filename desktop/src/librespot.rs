@@ -358,10 +358,13 @@ impl Librespot {
         // librespot splits --onevent on spaces, so the script must live somewhere without any.
         // (Test mode has its own, or the two apps would keep rewriting each other's.)
         let name = if files::test_mode() { "cadenza-test-librespot-event.sh" } else { "cadenza-librespot-event.sh" };
-        let mut hook = std::env::temp_dir().join(name);
-        if hook.display().to_string().contains(char::is_whitespace) {
-            hook = PathBuf::from(format!("/tmp/{}-{name}", user_tag()));
-        }
+        // The script is run as you, so it must be somewhere nobody else can write: a shared /tmp would let
+        // another account on the computer swap in its own script. See private_hook_dir.
+        let Some(dir) = private_hook_dir() else {
+            push_log(g, "Couldn't set up player events: no private folder without spaces in its name.".into());
+            return None;
+        };
+        let hook = dir.join(name);
         let events = self.events_file();
         let target = format!("'{}'", events.display().to_string().replace('\'', "'\\''"));
         let script = format!(r#"#!/bin/sh
@@ -372,7 +375,15 @@ n=$(printf '%s' "$NAME" | tr '\n\t' '  ')
 al=$(printf '%s' "$ALBUM" | tr '\n\t' '  ')
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI" "$TRACK_ID" "$n" "$a" "$al" "$c" "$DURATION_MS" "$POSITION_MS" "$VOLUME" "$SHUFFLE$REPEAT" "$(date +%H:%M:%S)" >> {target}
 "#);
-        if std::fs::write(&hook, script).is_err() || std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).is_err() {
+        // Written to a new file and renamed into place, so nothing already at that name is ever followed.
+        let tmp = dir.join(format!(".{name}.{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)
+            .and_then(|mut f| { use std::io::Write; f.write_all(script.as_bytes()) })
+            .and_then(|_| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)))
+            .and_then(|_| std::fs::rename(&tmp, &hook));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
             push_log(g, "Couldn't set up player events.".into());
             return None;
         }
@@ -912,9 +923,25 @@ fn restrict(_p: &Path, _mode: u32) {
     }
 }
 
+/// A folder only you can write to, with no spaces in its path (librespot splits --onevent on spaces):
+/// the per-user runtime folder on Linux, macOS's per-user temporary folder, Cadenza's own data folder, or
+/// a cadenza-<your id> folder in /tmp that Cadenza made and only you can open.
 #[cfg(unix)]
-fn user_tag() -> String {
-    std::env::var("UID").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "user".into())
+fn private_hook_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // SAFETY: getuid has no preconditions and can't fail.
+    let me = unsafe { libc::getuid() };
+    let spaced = |p: &Path| p.display().to_string().contains(char::is_whitespace);
+    // Yours, a real folder (not a link), and nobody else can write in it.
+    let private = |p: &Path| std::fs::symlink_metadata(p).map(|m| m.is_dir() && m.uid() == me && m.mode() & 0o022 == 0).unwrap_or(false);
+    let mut candidates: Vec<PathBuf> = vec![];
+    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR") { candidates.push(run.into()); }
+    if cfg!(target_os = "macos") { candidates.push(std::env::temp_dir()); }   // /var/folders/…/T, per user
+    candidates.push(files::support_dir().to_path_buf());
+    if let Some(dir) = candidates.into_iter().find(|d| !spaced(d) && private(d)) { return Some(dir); }
+    let own = PathBuf::from(format!("/tmp/cadenza-{me}"));
+    if std::fs::create_dir(&own).is_ok() { let _ = std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o700)); }
+    private(&own).then_some(own)
 }
 
 /// Older librespot versions quit on an option they don't know, so check its --help first (once per path).
@@ -966,11 +993,23 @@ fn hook_program() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     if !spaced(&exe) { return Some(exe); }
     if let Some(short) = short_path(&exe).filter(|p| !spaced(p)) { return Some(short); }
-    let dir = PathBuf::from(std::env::var_os("ProgramData")?).join("Cadenza");
-    let dir = if spaced(&dir) { short_path(&dir).filter(|p| !spaced(p))? } else { dir };
-    std::fs::create_dir_all(&dir).ok()?;
-    let copy = dir.join("cadenza-event.exe");
-    // If the copy is in use (the other Cadenza's librespot is running it), the one there still works.
+    // C:\ProgramData is shared by every account on the PC, and a folder someone else made there is theirs to
+    // change. So the copy goes in a folder with a name nobody can guess, made by Cadenza itself (which makes
+    // it yours) and remembered in Cadenza's private data folder for next time.
+    let base = PathBuf::from(std::env::var_os("ProgramData")?);
+    let base = if spaced(&base) { short_path(&base).filter(|p| !spaced(p))? } else { base };
+    let remembered = files::path("event-hook-folder.txt");
+    let mut dir = std::fs::read_to_string(&remembered).ok().map(|s| PathBuf::from(s.trim())).filter(|d| d.starts_with(&base) && d.is_dir());
+    if dir.is_none() {
+        use rand::Rng;
+        let name: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(20).map(char::from).collect();
+        let fresh = base.join(format!("cadenza-{}", name.to_lowercase()));
+        std::fs::create_dir(&fresh).ok()?;                   // fails if it already exists: then it isn't ours
+        files::write_privately(fresh.display().to_string().as_bytes(), &remembered);
+        dir = Some(fresh);
+    }
+    let copy = dir?.join("cadenza-event.exe");
+    // If the copy is in use (the other Cadenza's librespot is running it), the one there is ours and still works.
     if std::fs::copy(&exe, &copy).is_err() && !copy.exists() { return None; }
     Some(copy)
 }

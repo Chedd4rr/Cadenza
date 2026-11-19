@@ -10,7 +10,20 @@
     "withGlobalTauri": false,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval' cadenza-files: http://cadenza-files.localhost",
+        "worker-src": "'self' blob:",
+        "connect-src": "'self' ipc: http://ipc.localhost cadenza-files: http://cadenza-files.localhost",
+        "img-src": "'self' https: data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "media-src": "'self' data: blob:",
+        "object-src": "'none'",
+        "frame-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
+      }
     },
     "macOSPrivateApi": true
   },

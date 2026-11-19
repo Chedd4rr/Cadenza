@@ -21,6 +21,7 @@ mod macaudio;
 mod menu;
 mod migrate;
 mod settings;
+mod shortcuts;
 mod sound;
 mod spotify_history;
 mod store;
@@ -57,6 +58,7 @@ const SHIM: &str = r#"
     value: Object.freeze({ postMessage: (m) => invoke("native", { cmd: String(m.cmd), args: m.args || {} }) }),
   });
   window.cadenzaPlatform = "__OS__";
+  if (__PROBE__) window.cadenzaProbe = true;   // (development builds started with CADENZA_PROBE: see app.js)
   window.cadenzaFiles = "__FILES__";
   // The page's shortcuts are written for the Mac's ⌘ key. On Windows and Linux, Ctrl does that job, so
   // each key and mouse event is shown to the page with the two swapped before anything else sees it.
@@ -164,7 +166,9 @@ fn main() {
             });
             app.manage(core.clone());
 
-            let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base());
+            let probing = cfg!(debug_assertions) && std::env::var_os("CADENZA_PROBE").is_some();
+            let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base())
+                .replace("__PROBE__", if probing { "true" } else { "false" });
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title(if files::test_mode() { "Cadenza (test)" } else { "Cadenza" })
                 .inner_size(1440.0, 900.0)
@@ -187,10 +191,10 @@ fn main() {
             system.start(core.clone());
             #[cfg(target_os = "macos")]
             {
-                app.set_menu(menu::build(&handle)?)?;
+                app.set_menu(menu::build(&handle, false)?)?;
                 app.on_menu_event(|app, e| menu::picked(app, e.id().as_ref()));
             }
-            apply_hotkey(&handle, settings.bool("globalHotkey"));
+            apply_hotkey(&handle);
             loginitem::tidy(&handle);
 
             // cadenza:// links. Registered with the system here too, so they also work in a development build.
@@ -251,13 +255,26 @@ fn main() {
         });
 }
 
-/// The global shortcut: Option-⌘-P on a Mac, Ctrl+Alt+P elsewhere, shows or hides Cadenza from anywhere.
-pub fn apply_hotkey(app: &tauri::AppHandle, on: bool) {
+/// The global shortcut that shows or hides Cadenza from any app: Option-⌘-P on a Mac and Ctrl+Alt+P
+/// elsewhere, unless you changed it on the keyboard page; off if you turned it off in System.
+pub fn apply_hotkey(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    let key = "Alt+CommandOrControl+P";
     let gs = app.global_shortcut();
-    let _ = gs.unregister(key);
-    if on { if let Err(e) = gs.register(key) { log::warn!("couldn't set the global shortcut: {e}"); } }
+    let _ = gs.unregister_all();                               // it's the only one Cadenza has
+    let Some(core) = app.try_state::<Arc<Core>>() else { return };
+    if !core.settings.bool("globalHotkey") { return; }
+    let combo = shortcuts::get(&core.settings, "showHide");
+    if !shortcuts::has_command_key(&combo) && !combo.contains("Alt+") { return; }   // a plain key would be taken from every app
+    let Some(key) = shortcuts::accelerator(&combo) else { return };
+    if let Err(e) = gs.register(key.as_str()) { log::warn!("couldn't set the global shortcut {key}: {e}"); }
+}
+
+/// The Mac menu again, with your current shortcuts (or none, while you choose a new one).
+pub fn rebuild_menu(app: &tauri::AppHandle, plain: bool) {
+    #[cfg(target_os = "macos")]
+    match menu::build(app, plain) { Ok(m) => { let _ = app.set_menu(m); } Err(e) => log::warn!("couldn't rebuild the menu: {e}") }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = (app, plain); }
 }
 
 /// Serves `cadenza-files://app/vendor/…` (the translator's code, from the page's own folder) and

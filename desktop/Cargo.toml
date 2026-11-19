@@ -40,6 +40,13 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 md-5 = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
+# The Mac's login items (SMAppService), through Objective-C.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Development builds (./build.sh --run) keep debugging information only for Cadenza's own code, not for the
 # hundreds of libraries it uses: that alone is most of the build folder's size (several GB otherwise).
 [profile.dev]
@@ -50,13 +57,6 @@ debug = false
 
 # They still optimise Cadenza's own code and the audio libraries, so the sound plays smoothly. Everything
 # else stays quick to compile.
-# The Mac's login items (SMAppService), through Objective-C.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [profile.dev.package.cadenza]
 opt-level = 2
 

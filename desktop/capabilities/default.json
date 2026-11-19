@@ -1,13 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What Cadenza's own windows may use. The page talks to the app through one command (native), the mini player through another (mini); the mini player may also move its own window.",
+  "description": "What Cadenza's own windows may use: nothing beyond Cadenza's two commands (native for the page, mini for the mini player), which need no permission here, and moving the mini player's window. Tauri's default set (opening windows, menus, reading paths and the like) isn't granted: the page never uses it.",
   "windows": [
     "main",
     "mini"
   ],
   "permissions": [
-    "core:default",
     "core:window:allow-start-dragging"
   ]
 }

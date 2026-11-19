@@ -160,6 +160,19 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
                 Err(m) => json!({"ok": false, "message": m}),
             }
         }
+        // Choosing a new shortcut: the Mac menu's shortcuts and the show/hide shortcut step aside meanwhile,
+        // or they'd catch the keys before the page.
+        "shortcuts.capture" => {
+            let on = b(args, "on", false);
+            crate::rebuild_menu(window.app_handle(), on);
+            if on {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let _ = window.app_handle().global_shortcut().unregister_all();
+            } else {
+                crate::apply_hotkey(window.app_handle());
+            }
+            json!(true)
+        }
         "lastfm.setUser" => {
             let r = core.lastfm.set_user(&s(args, "user")).await;
             if r.is_ok() { let _ = std::fs::remove_file(files::path("lastfm-plays.json")); }   // the old account's plays
@@ -259,9 +272,11 @@ fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
     match key {
         "manageLibrespot" => if managed { core.librespot.start() } else { core.librespot.stop() },
         "librespotPath" | "deviceName" | "bitrate" | "normalize" | "autoplay" => if managed { core.librespot.restart() },
-        "globalHotkey" => crate::apply_hotkey(window.app_handle(), core.settings.bool("globalHotkey")),
+        "globalHotkey" => crate::apply_hotkey(window.app_handle()),
+        // Your shortcuts changed on the keyboard page: the Mac menu and the show/hide shortcut follow.
+        "shortcuts" => { crate::rebuild_menu(window.app_handle(), false); crate::apply_hotkey(window.app_handle()); }
         "menuBar" => core.system.set_tray(core.settings.bool("menuBar")),
-        "miniStyle" => core.system.push_mini(),
+        "miniStyle" | "reduceMotion" => core.system.push_mini(),
         "discord" | "discordAppId" => {
             let d = Arc::clone(&core.discord);
             std::thread::spawn(move || d.restart());

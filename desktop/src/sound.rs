@@ -33,6 +33,12 @@ const BUFFER_FRAMES_MAX: u32 = 8192;
 /// so pause and skip feel instant, and because librespot only writes as fast as this is used, it keeps
 /// librespot playing in real time.
 const QUEUE_FRAMES: usize = 4096;
+/// After this long with no music, the output rests (see output_thread). CADENZA_REST_SECS changes it, for testing.
+const REST_AFTER_MS: u64 = 3 * 60 * 1000;
+fn rest_after_ms() -> u64 {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MS.get_or_init(|| std::env::var("CADENZA_REST_SECS").ok().and_then(|v| v.parse::<u64>().ok()).map_or(REST_AFTER_MS, |s| s * 1000))
+}
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -209,6 +215,7 @@ struct Shared {
     emit: Emit,
     /// When sound last arrived from librespot (ms since 1970).
     last_audio: AtomicU64,
+    resting: AtomicBool,                // the output is paused because nothing has played for a while
     /// The output stopped working (unplugged, the sound server restarted): open it again.
     broken: AtomicBool,
     output: Mutex<String>,
@@ -240,7 +247,7 @@ impl Sound {
     pub fn start(settings: Arc<Settings>, emit: Emit) -> Arc<Self> {
         let s = Arc::new(Shared {
             st: Mutex::new(State::new()), settings, emit,
-            last_audio: AtomicU64::new(0), broken: AtomicBool::new(false),
+            last_audio: AtomicU64::new(0), resting: AtomicBool::new(false), broken: AtomicBool::new(false),
             output: Mutex::new("none yet".into()), log: Mutex::new(vec![]),
             received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
             last_callback: AtomicU64::new(0), buffer_frames: AtomicU32::new(BUFFER_FRAMES), rate: AtomicU32::new(RATE),
@@ -607,13 +614,20 @@ impl Sound {
                 if !last_list.is_empty() { (self.s.emit)("outputs", Value::Null); }
                 last_list = sig;
             }
-            self.check_device();
+            // The output in use is the one the list marks, so the system isn't asked a second time (on
+            // Linux each question starts a `pactl`).
+            let current = list.iter().find(|o| o["isDefault"] == true)
+                .map(|o| (o["uid"].as_str().unwrap_or("").to_string(), o["name"].as_str().unwrap_or("").to_string()));
+            self.check_device_now(current);
             std::thread::sleep(Duration::from_secs(3));
         }
     }
 
-    fn check_device(&self) {
-        let (id, name) = current_device(&self.s);
+    fn check_device(&self) { self.check_device_now(None); }
+
+    /// `known`: the output in use, if the caller already knows it.
+    fn check_device_now(&self, known: Option<(String, String)>) {
+        let (id, name) = known.unwrap_or_else(|| current_device(&self.s));
         let changed = self.s.device.lock().unwrap().0 != id;
         if !changed { return; }
         let first = self.s.device.lock().unwrap().0.is_empty();
@@ -769,13 +783,38 @@ fn output_thread(s: Arc<Shared>) {
                 s.last_callback.store(now_ms(), Ordering::Relaxed);
                 let (mut stalled, mut resize) = (false, false);
                 s.too_slow.store(false, Ordering::SeqCst);
+                let mut resting = false;
                 while !s.broken.load(Ordering::SeqCst) {
                     if s.too_slow.swap(false, Ordering::SeqCst) { resize = true; break; }
-                    std::thread::sleep(Duration::from_millis(250));
+                    std::thread::sleep(Duration::from_millis(if resting { 100 } else { 250 }));
+                    // Resting: after a few minutes with no music, the output is paused (it otherwise keeps the
+                    // sound hardware, or your Bluetooth headphones, busy playing silence), and it comes back
+                    // as soon as music does. While paused locally, what's queued waits for the resume.
+                    let idle = now_ms().saturating_sub(s.last_audio.load(Ordering::Relaxed)) > rest_after_ms();
+                    let (holding, queued) = { let st = s.st.lock().unwrap(); (st.holding, st.voices.iter().any(|v| !v.is_empty())) };
+                    if !resting && idle && (holding || !queued) {
+                        if stream.pause().is_ok() {
+                            resting = true;
+                            s.resting.store(true, Ordering::Relaxed);
+                            note(&s, "Nothing has played for a few minutes: resting the sound output until music comes back.".into());
+                        }
+                        continue;
+                    }
+                    if resting {
+                        if !idle || (!holding && queued) {
+                            let _ = stream.play();
+                            resting = false;
+                            s.resting.store(false, Ordering::Relaxed);
+                            s.last_callback.store(now_ms(), Ordering::Relaxed);     // (so the watchdog gives it a moment)
+                            note(&s, "Music again: the sound output is back on.".into());
+                        }
+                        continue;
+                    }
                     let since = now_ms().saturating_sub(s.last_callback.load(Ordering::Relaxed));
                     if opened.elapsed() > Duration::from_secs(3) && since > 2000 { stalled = true; break; }
                 }
                 drop(stream);
+                s.resting.store(false, Ordering::Relaxed);
                 if resize { continue; }
                 if stalled {
                     reopens.retain(|t| t.elapsed() < Duration::from_secs(60));
@@ -915,8 +954,9 @@ fn levels_thread(s: Arc<Shared>) {
     let mut was_silent = false;
     let mut samples = vec![0f32; dsp::FFT_SIZE];
     loop {
+        // About 30 times a second while a page shows meters; otherwise just a look a few times a second.
+        if !s.meter_on.load(Ordering::Relaxed) { std::thread::sleep(Duration::from_millis(250)); continue; }
         std::thread::sleep(Duration::from_millis(33));
-        if !s.meter_on.load(Ordering::Relaxed) { continue; }
         {
             let tap = s.tap.lock().unwrap();
             if tap.is_empty() { continue; }
@@ -930,7 +970,9 @@ fn levels_thread(s: Arc<Shared>) {
         let silent = spec.iter().all(|&v| v == 0.0);
         if silent && was_silent { continue; }
         was_silent = silent;
-        (s.emit)("eq.levels", json!({"spec": spec, "eq": eq}));
+        // Three decimals is far finer than any meter can show, and a third of the text to send 30 times a second.
+        let short = |v: Vec<f64>| v.into_iter().map(|x| (x * 1000.0).round() / 1000.0).collect::<Vec<_>>();
+        (s.emit)("eq.levels", json!({"spec": short(spec), "eq": short(eq)}));
     }
 }
 
@@ -946,7 +988,7 @@ fn report(s: Arc<Shared>) {
         let played = s.played.swap(0, Ordering::Relaxed);
         let peak = f32::from_bits(s.peak.swap(0, Ordering::Relaxed) as u32);
         if received == 0 && played == 0 {
-            if !quiet_reported && !s.output.lock().unwrap().starts_with("none") {
+            if !quiet_reported && !s.resting.load(Ordering::Relaxed) && !s.output.lock().unwrap().starts_with("none") {
                 quiet_reported = true;
                 note(&s, if called == 0 { "Sound report: the output isn't asking for sound at all.".into() }
                          else { "Sound report: the output is running; nothing from librespot yet.".into() });

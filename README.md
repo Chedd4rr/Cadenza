@@ -111,7 +111,9 @@ history and EQs come over by themselves. The old app is kept as
 ## Using it
 
 Everything works from the keyboard; the mouse and trackpad work too. The bottom of each page shows its
-keys, and ⌘/ lists every one.
+keys, and ⌘/ lists every one. The shortcuts that work everywhere (play/pause, skip, volume, like, the
+palette, search, stage mode, the show/hide shortcut and the rest) can be changed there: select one and
+press E, or click its keys, then press the new ones. The menu bar follows your changes.
 
 | Key | Does |
 |---|---|
@@ -242,7 +244,14 @@ Raycast, Alfred or Terminal (`open "cadenza://next"`) can control it.
 
 Everything stays on your Mac, in `~/Library/Application Support/Cadenza/`, a folder only your account
 can open. Cadenza talks to Spotify, and to Last.fm, Discord, Genius, LRCLIB and Mozilla only for the
-features that use them.
+features that use them. What each one gets: Last.fm your username and the songs and artists it looks up;
+LRCLIB and Genius the song (or lyric line) whose lyrics you open or search; Mozilla nothing about you (it
+only downloads translation models, and translating happens on your computer); Discord, only when you turn
+its status on, what's playing, through the Discord app on your computer.
+
+The page that draws the interface can only reach Cadenza's own commands, under a strict content policy (no
+scripts from anywhere else, nothing run from text), and never sees your passwords, tokens or keys. Your
+Spotify sign-in is only ever sent to Spotify's own servers.
 
 | File | Holds |
 |---|---|

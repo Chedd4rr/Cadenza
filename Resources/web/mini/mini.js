@@ -40,6 +40,8 @@ function apply(info) {
   const themeChanged = document.body.dataset.theme !== theme || document.body.dataset.style !== style;
   document.body.dataset.theme = theme;
   document.body.dataset.style = style;
+  // Reduce motion, as set in Cadenza (null: follow the system's setting).
+  document.body.classList.toggle("reduce", info.reduce === true || (info.reduce == null && matchMedia("(prefers-reduced-motion: reduce)").matches));
 
   const title = info.title || "", artist = info.artist || "", album = info.album || "";
   $("title").textContent = title || "Nothing playing";
@@ -63,7 +65,7 @@ function apply(info) {
   $("lcdState").textContent = S.playing ? "▶ PLAY" : title ? "❚❚ PAUSE" : "■ STOP";
 
   if (themeChanged) restyle(theme);
-  setArt(info.art || "");
+  if ("art" in info) setArt(info.art || "");          // (left out when it hasn't changed)
   renderVolume();
   tick();
   marquee();

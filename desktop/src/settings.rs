@@ -12,6 +12,7 @@ pub const KEYS: &[&str] = &[
     "librespotPath", "deviceName", "bitrate", "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin",
     "themedCovers", "sfx", "sfxVolume", "normalize", "eqPerDevice", "autoplay", "trueShuffle", "crossfade",
     "geniusToken", "discord", "discordAppId", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate",
+    "shortcuts",
 ];
 
 /// Settings that are passwords or tokens. They live in secrets.json and are never sent back to the page.
@@ -23,10 +24,11 @@ fn defaults() -> Map<String, Value> {
     let v = json!({
         "theme": "tide", "notifications": true, "menuBar": true, "miniStyle": "theme", "playlistTags": true,
         "clientId": "", "manageLibrespot": true, "librespotPath": "", "deviceName": "Cadenza", "bitrate": 320,
-        "mediaKeys": true, "globalHotkey": true, "reduceMotion": false, "themedCovers": false, "volume": 70,
+        "mediaKeys": true, "globalHotkey": true, "reduceMotion": "system", "themedCovers": false, "volume": 70,
         "sfx": true, "sfxVolume": 55, "normalize": true, "eqPerDevice": true, "autoplay": true,
         "trueShuffle": true, "crossfade": 6, "discord": false, "discordAppId": "", "lastfmKey": "",
         "updateRepo": DEFAULT_REPO, "autoUpdate": true, "openAtLogin": false,
+        "shortcuts": {},
     });
     match v { Value::Object(m) => m, _ => Map::new() }
 }
