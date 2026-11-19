@@ -34,8 +34,16 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 md-5 = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
-# Development builds (./build.sh --run) still optimise Cadenza's own code and the audio libraries, so the
-# sound plays smoothly. Everything else stays quick to compile.
+# Development builds (./build.sh --run) keep debugging information only for Cadenza's own code, not for the
+# hundreds of libraries it uses: that alone is most of the build folder's size (several GB otherwise).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# They still optimise Cadenza's own code and the audio libraries, so the sound plays smoothly. Everything
+# else stays quick to compile.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
