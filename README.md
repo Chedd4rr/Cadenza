@@ -478,8 +478,10 @@ AirPods").
   (usually after sleep or a network change). If it still doesn't appear, check System → Engine settings.
 - **Songs skip by themselves** and the log shows `error audio key 0 2`: Spotify refused to unlock that
   song (a [known librespot issue](https://github.com/librespot-org/librespot/issues/1649)). Cadenza asks
-  again a few times, then moves on and keeps the music going. If nearly every song is refused, Spotify
-  is refusing your account for now; skipping less for a while helps.
+  again a few times, then moves on and keeps the music going. Skipping a lot quickly is the usual cause:
+  Spotify stops handing out keys when asked too often. Cadenza gathers fast skips into one jump, and if
+  Spotify refuses three songs in a row it pauses for a few seconds before carrying on. If nearly every
+  song is refused, Spotify is refusing your account for now; skipping less for a while helps.
 - **"Restriction violated":** since November 2026 Spotify refuses plain lists of songs (and sometimes a
   single song) for Cadenza's speaker, while it still plays playlists and albums. So Cadenza plays the
   playlist itself (or, for a song on its own, its album) and feeds the order it wants, like true

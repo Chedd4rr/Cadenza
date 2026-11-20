@@ -328,6 +328,20 @@ impl Librespot {
         self.set_state(&mut g, "stopped");
     }
 
+    /// Restart engine (System → Engine settings, or the palette): if music was playing here, pick it back up
+    /// at the same song and second afterwards, as an automatic restart does.
+    pub fn restart_keep_playing(self: &Arc<Self>) {
+        let spot = {
+            let mut g = self.inner.lock().unwrap();
+            push_log(&mut g, "Restarting the audio engine (you asked).".into());
+            if Self::playing_here(&g) { Self::position_snapshot(&g) } else { None }
+        };
+        match spot {
+            Some(s) => { let mut s = s; if let Some(m) = s.as_object_mut() { m.remove("at"); } self.restart_then_resume(Some(s), 15.0) }
+            None => self.restart(),
+        }
+    }
+
     pub fn restart(self: &Arc<Self>) {
         {
             let mut g = self.inner.lock().unwrap();

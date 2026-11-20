@@ -994,6 +994,8 @@ async function findDevice() {
   return { id: d && d.id, mine: !!mine };
 }
 async function ourDevice() {
+  // Remembered for a minute: asking Spotify for its device list on every skip adds up fast.
+  if (ourDevice.id && Date.now() - ourDevice.at < 60000) return ourDevice.id;
   let d = await findDevice();
   if (!d.mine && S.settings.manageLibrespot !== false) {
     // Spotify has lost Cadenza as a speaker (usually after sleep or a network change). Have the engine
@@ -1002,6 +1004,7 @@ async function ourDevice() {
     const r = await native("engine.ensure").catch(() => null);
     for (let n = 0; r && r.ok && !d.mine && n < 8; n++) { await wait(800); d = await findDevice(); }
   }
+  if (d.mine) { ourDevice.id = d.id; ourDevice.at = Date.now(); } else ourDevice.id = null;
   return d.id;
 }
 
@@ -1047,6 +1050,7 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   }
   let r = await api("PUT", playPath, sendBody);
   if (r.status === 404) {
+    ourDevice.id = null;
     const id = await ourDevice();
     if (id) r = await api("PUT", `/me/player/play?device_id=${enc(id)}`, sendBody);
   }
@@ -1173,10 +1177,15 @@ const Feed = {
     if (!this.active || this.at + 1 >= this.order.length) return { status: 404 };
     this.at += 1; this.qd = []; this.grace = Date.now() + 8000;
     const uri = this.order[this.at];
-    const dev = await ourDevice();
-    const path = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
+    let dev = await ourDevice();
+    let path = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
     // In the host if the song is in it (true shuffle's playlist), else inside the song's own album.
     let r = this.host && !/^spotify:album:/.test(this.host) ? await api("PUT", path, { context_uri: this.host, offset: { uri } }) : { status: 400 };
+    if (r.status === 404) {                                       // the speaker's ID changed (the engine restarted)
+      ourDevice.id = null; dev = await ourDevice();
+      path = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
+      if (this.host && !/^spotify:album:/.test(this.host)) r = await api("PUT", path, { context_uri: this.host, offset: { uri } });
+    }
     if (r.status >= 300) {
       const alt = await asAlbumPlay([uri], 0);
       r = alt ? await api("PUT", path, alt.body) : await api("PUT", path, { uris: [uri] });
@@ -1200,8 +1209,45 @@ const Feed = {
     if (TrueShuffle.active) { const k = TrueShuffle.chunk.indexOf(uri); if (k >= 0) TrueShuffle.chunk.splice(k, 1); TrueShuffle.order = TrueShuffle.order.filter((u) => u !== uri); }
     return true;
   },
-  /** Next, pressed while a list is being fed: Spotify's next if a song is queued, else Cadenza's. */
-  skip() { return this.qd.length ? api("POST", "/me/player/next") : this.playNext(); },
+  /** Next, pressed while a list is being fed. One press: Spotify's next if a song is queued, else Cadenza's.
+   *  Several in quick succession are gathered into one jump that many songs ahead, so Spotify is asked for
+   *  one song's key instead of one per press (asked too often, it starts refusing them). */
+  skip() {
+    this.skips = (this.skips || 0) + 1;
+    clearTimeout(this.skipT);
+    return new Promise((res) => {
+      this.skipT = setTimeout(async () => {
+        const n = this.skips; this.skips = 0;
+        if (n === 1) return res(this.qd.length ? await api("POST", "/me/player/next") : await this.playNext());
+        const target = Math.min(this.at + n, this.order.length - 1);
+        this.at = target - 1;
+        res(await this.playNext());
+      }, 350);
+    });
+  },
+};
+
+/* ---------- When Spotify refuses songs one after another ----------
+   Spotify won't hand out a song's key when asked too often (usually after skipping a lot). librespot then
+   skips that song and asks for the next one's straight away, and the next, so the refusals feed on
+   themselves and nothing plays. After three refusals within 20 seconds, Cadenza pauses for a few seconds
+   (no more asking), then carries on with the next song. */
+const Refusals = {
+  times: [], cooling: false,
+  note() {
+    const now = Date.now();
+    this.times = this.times.filter((t) => now - t < 20000).concat(now);
+    if (this.times.length < 3 || this.cooling) return;
+    this.cooling = true; this.times = [];
+    toast("SPOTIFY IS REFUSING SONGS FOR A MOMENT · WAITING A FEW SECONDS", true);
+    api("PUT", "/me/player/pause").catch(() => {});
+    setTimeout(async () => {
+      this.cooling = false;
+      if (Feed.active) await Feed.playNext();
+      else await api("POST", "/me/player/next");
+      setTimeout(poll, 600);
+    }, 8000);
+  },
 };
 
 /** Q / "Add to queue": the song goes into Cadenza's own Up Next (which you can reorder and edit). */
@@ -8987,7 +9033,7 @@ window.app = {
       if (window.__rest) window.__rest(S.asleep);
       if (!S.asleep) { shownImage = undefined; applyNow(); tick(true); poll(); }
     }
-    else if (event === "engine.resume" && data) Resume.run(data);
+    else if (event === "engine.resume" && data) { ourDevice.id = null; Resume.run(data); }   // (a new engine has a new speaker ID)
     else if (event === "translate.progress" && data && data.total) {
       // A language model is downloading (the first time you translate from or into a language).
       const pct = Math.floor((data.got / data.total) * 100), now = Date.now();
@@ -9000,6 +9046,8 @@ window.app = {
       S.lastRefusal = Date.now();
       // librespot skips it, so it's no longer waiting in Spotify's queue.
       Radio.qd = Radio.qd.filter((u) => u !== data.uri);
+      Feed.qd = Feed.qd.filter((u) => u !== data.uri);
+      Refusals.note();
     }
     else if (event === "refresh") poll();
     else if (event === "like") toggleLike();
