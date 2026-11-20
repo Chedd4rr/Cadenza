@@ -1020,6 +1020,10 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   const fallback = body.fallback; if (fallback) { body = { ...body }; delete body.fallback; }
   // The playlist (or album, or Liked Songs) a list of songs comes from, if it has one: see Feed.
   const host = body.feedHost; if (host !== undefined) { body = { ...body }; delete body.feedHost; }
+  // The whole list, for feeding (true shuffle's order can be thousands of songs); Spotify's plain-list form
+  // takes only the first few hundred.
+  const allUris = body.uris;
+  const sendBody = allUris && allUris.length > 300 ? { ...body, uris: allUris.slice(0, 300) } : body;
   // A specific speaker (after the engine restarts, Spotify may still point at the old, dead session).
   const dev = body.device_id; if (dev) { body = { ...body }; delete body.device_id; }
   const playPath = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
@@ -1041,17 +1045,17 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
       return true;
     }
   }
-  let r = await api("PUT", playPath, body);
+  let r = await api("PUT", playPath, sendBody);
   if (r.status === 404) {
     const id = await ourDevice();
-    if (id) r = await api("PUT", `/me/player/play?device_id=${enc(id)}`, body);
+    if (id) r = await api("PUT", `/me/player/play?device_id=${enc(id)}`, sendBody);
   }
   // Since November 2026 Spotify refuses plain lists of songs for Cadenza's speaker ("Restriction
   // violated") while it still takes albums and playlists. Then play the first song inside its own album
   // (from that song on), and feed the rest of the list into Spotify's queue as it plays (see Feed).
-  if (r.status === 403 && body.uris && body.uris.length && /restriction/i.test(errMsg(r))) {
-    const from = body.offset && body.offset.uri ? Math.max(0, body.uris.indexOf(body.offset.uri)) : 0;
-    const list = body.uris.slice(from);
+  if (r.status === 403 && allUris && allUris.length && /restriction/i.test(errMsg(r))) {
+    const from = body.offset && body.offset.uri ? Math.max(0, allUris.indexOf(body.offset.uri)) : 0;
+    const list = allUris.slice(from);
     const alt = await asAlbumPlay(list, body.position_ms);
     if (alt) {
       const devId = dev || await ourDevice();
@@ -1102,9 +1106,9 @@ const Feed = {
   active: false, order: [], at: 0, host: null, qd: [], sent: new Set(), grace: 0, queueing: false, timer: 0, strays: null,
   AHEAD: 1,
   skipIf: null,                                                  // songs of the list not to queue (true shuffle: heard already)
-  start(order, host) {
+  start(order, host, from = 0) {
     this.stop();
-    this.order = order.slice(); this.at = 0; this.host = host; this.qd = []; this.sent = new Set();
+    this.order = order.slice(); this.at = Math.max(0, from); this.host = host; this.qd = []; this.sent = new Set();
     this.active = true; this.grace = Date.now() + 8000;
     this.queueNext();
   },
@@ -5353,7 +5357,7 @@ const TrueShuffle = {
     this.heard.add(uri); if (key) this.heard.add(key);
     return before;
   },
-  CHUNK: 100,
+  CHUNK: 1e6,                                                    // the whole order: it's fed into Spotify's queue one song at a time
   enabled: () => S.settings.trueShuffle !== false,
   /** A uniformly random whole number in [0, n), with no bias (numbers past the last full multiple are redrawn). */
   rand(n) {
@@ -5419,8 +5423,10 @@ const TrueShuffle = {
     let order = this.permute([...new Set(list)]);
     const cur = keepCurrent && S.player && S.player.item && S.player.item.uri;
     if (cur) order = [cur, ...order.filter((u) => u !== cur)];       // the song on now keeps playing; the rest is shuffled
-    this.src = src; this.order = order; this.at = 0; this.heard = new Set();
-    return this.play(src.name, cur ? progressNow() : 0);
+    this.src = src; this.order = order; this.at = 0; this.heard = new Set(); this.endAfter = null;
+    const ok = await this.play(src.name, cur ? progressNow() : 0);
+    if (ok) this.save();
+    return ok;
   },
   /** ⌘S while a playlist, album or Liked Songs plays: shuffle it from here on. */
   async fromNowPlaying() {
@@ -5483,14 +5489,25 @@ const TrueShuffle = {
     const src = /:collection$/.test(ctx) ? { kind: "liked", name: "Liked Songs", uri: ctx }
       : type === "album" ? { kind: "album", id, uri: ctx, name: "this album" }
       : (S.playlists || []).find((pl) => pl.uri === ctx) || { id, uri: ctx, name: "this playlist" };
-    const list = await this.uris(src);
-    if (!list || list.length < 2 || this.active) return;
-    const order = [cur, ...this.permute([...new Set(list)].filter((u) => u !== cur))];
-    this.src = src; this.order = order; this.at = 0; this.heard = new Set([cur]);
-    this.chunk = order.slice(0, this.CHUNK); this.pos = 0;
+    // The same shuffle as before, if it's saved: it carries on from this song.
+    let saved = null;
+    try { saved = await native("store.get", { key: "trueShuffleState" }); } catch (e) { saved = null; }
+    let order, pos = 0;
+    if (saved && saved.ctx === ctx && Array.isArray(saved.order) && saved.order.includes(cur)) {
+      order = saved.order; pos = order.indexOf(cur);
+      this.uris(src).catch(() => {});                             // (for the Queue page's song details)
+    } else {
+      const list = await this.uris(src);
+      if (!list || list.length < 2 || this.active) return;
+      order = [cur, ...this.permute([...new Set(list)].filter((u) => u !== cur))];
+    }
+    if (this.active) return;
+    this.src = src; this.order = order; this.at = 0; this.heard = new Set(order.slice(0, pos + 1)); this.endAfter = null;
+    this.chunk = order; this.pos = pos;
     this.active = true; this.ending = false; this.grace = Date.now() + 8000;
     await api("PUT", "/me/player/shuffle?state=false");
-    Feed.start(this.chunk, ctx);
+    Feed.start(this.chunk, ctx, pos);
+    Feed.skipIf = (u) => this.active && this.heard.has(u);
     if (S.player) S.player.shuffle_state = true;
     Controls.render();
   },
@@ -5505,7 +5522,7 @@ const TrueShuffle = {
   /** Shuffle off: carry on through the playlist in its own order, from the song that's on. */
   async off() {
     const src = this.src, it = S.player && S.player.item, looping = this.repeat;
-    this.stop();
+    this.stop(); this.forget();
     if (S.player) S.player.shuffle_state = false;
     Controls.render();
     toast("SHUFFLE OFF");
@@ -5524,7 +5541,7 @@ const TrueShuffle = {
       : type === "album" ? { kind: "album", id, uri: ctx, name: "this album" }
       : (S.playlists || []).find((pl) => pl.uri === ctx) || { id, uri: ctx, name: "this playlist" };
     this.src = src; this.order = order; this.at = 0; this.heard = new Set();
-    this.chunk = order.slice(0, sent); this.pos = 0;
+    this.chunk = order; this.pos = 0;
     this.active = true; this.ending = false; this.grace = Date.now() + 8000;
     if (S.player) S.player.shuffle_state = true;
     Controls.render();
@@ -5541,7 +5558,44 @@ const TrueShuffle = {
     }
     this.play(null, 0);
   },
+  /** Remember the order and where it's at, so reopening Cadenza carries on with the same shuffle. */
+  save() {
+    const ctx = this.hostUri();
+    if (!ctx || !this.order.length) return;
+    native("store.set", { key: "trueShuffleState", value: { ctx, order: this.order.slice(0, 5000), pos: this.pos, at: Date.now() } }).catch(() => {});
+  },
+  forget() { native("store.set", { key: "trueShuffleState", value: null }).catch(() => {}); },
+  /** The last song of the shuffle has started. With repeat on, a fresh shuffle follows it; otherwise
+   *  autoplay (from your taste profile) takes over from this song, so the playlist doesn't just start again
+   *  in its own order. */
+  lastSong(uri) {
+    const rep = this.repeat || (S.player && S.player.repeat_state === "context");
+    if (rep) {
+      const fresh = this.permute(this.order.filter((u) => u !== uri));
+      this.order = [uri, ...fresh]; this.chunk = this.order; this.at = 0; this.pos = 0;
+      this.heard = new Set(); this.hear(uri, S.player && S.player.item);
+      Feed.start(this.order, this.hostUri(), 0);
+      this.save();
+      toast("LAST SONG OF THE SHUFFLE · A NEW SHUFFLE FOLLOWS");
+      return;
+    }
+    const item = S.player && S.player.item;
+    const t = this.meta.get(uri) || (item && item.uri === uri && item.raw) || null;
+    const host = this.hostUri();
+    Feed.stop(); this.stop(); this.forget();
+    if (S.player) S.player.shuffle_state = false;
+    Controls.render();
+    if (Radio.enabled() && t) {
+      S.altContext = host;                                       // (if the playlist shows through, autoplay moves on)
+      Radio.begin(t);
+      toast("LAST SONG OF THE PLAYLIST · AUTOPLAY TAKES IT FROM HERE");
+    } else {
+      this.endAfter = uri;                                       // no autoplay: stop when this song ends
+    }
+  },
   onTrack(uri, fromUpNext) {
+    // Autoplay is off and the shuffle's last song has ended: the playlist would start again in its own order.
+    if (!this.active && this.endAfter && uri && uri !== this.endAfter) { this.endAfter = null; api("PUT", "/me/player/pause"); return; }
     if (!this.active || !uri) return;
     const it = S.player && S.player.item;
     if (fromUpNext) { this.hear(uri, it); return; }               // your Up Next songs slot in between (and count as heard)
@@ -5550,7 +5604,14 @@ const TrueShuffle = {
     const again = this.hear(uri, it);
     if (again && Date.now() > this.replayUntil && !(S.player && S.player.repeat_state === "track") && Date.now() > this.grace - 6000) { cmd("next"); return; }
     const i = this.chunk.indexOf(uri);
-    if (i >= 0) { this.pos = i; return; }
+    if (i >= 0) {
+      this.pos = i;
+      this.save();
+      // The last song (by the feeder's list, which leaves out songs skipped as heard already).
+      const last = Feed.active ? Feed.order.length > 1 && Feed.at === Feed.order.length - 1 && Feed.order[Feed.at] === uri : i === this.chunk.length - 1 && this.chunk.length > 1;
+      if (last) this.lastSong(uri);
+      return;
+    }
     if (Date.now() < this.grace) return;
     // Past the last song of this stretch (Spotify's autoplay stepped in): carry on with the shuffle.
     if (this.pos >= this.chunk.length - 1) return this.next();
@@ -9560,6 +9621,11 @@ const Demo = (() => {
       if (body) { player.progress_ms = 0; at = Date.now(); }
       return ok(null, 204);
     }
+    if (method === "POST" && p === "/me/player/queue") { (window.__demoQueue = window.__demoQueue || []).push(q.get("uri")); return ok(null, 200); }
+    if (method === "POST" && p === "/me/player/next" && (window.__demoQueue || []).length) {   // queued songs first, like Spotify
+      const u = window.__demoQueue.shift(); player.item = tracks.find((t) => t.uri === u) || player.item; player.progress_ms = 0; at = Date.now();
+      return ok(null, 204);
+    }
     if (method === "POST" && (p === "/me/player/next" || p === "/me/player/previous")) {
       const i = tracks.indexOf(player.item);
       player.item = tracks[(i + (p.endsWith("next") ? 1 : tracks.length - 1)) % tracks.length]; player.progress_ms = 0; at = Date.now();
@@ -9597,7 +9663,8 @@ const Demo = (() => {
         case "outputs.set": outputs.forEach((o) => (o.isDefault = o.uid === args.uid)); return Promise.resolve(true);
         case "settings.get": return Promise.resolve({ ...settings });
         case "settings.set": settings[args.key] = args.value; return Promise.resolve({ ...settings });
-        case "store.get": return Promise.resolve(null);
+        case "store.get": return Promise.resolve((window.__store || {})[args.key] ?? null);   // (kept in memory, for tests)
+        case "store.set": (window.__store = window.__store || {})[args.key] = args.value; return Promise.resolve(true);
         case "history.get": {                                 // a couple of months of made-up plays
           const out = []; let seed = 7; const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
           for (let d = 60; d >= 0; d--) for (let k = 0, n = Math.floor(rnd() * 9); k < n; k++) {

@@ -50,7 +50,10 @@ engine.
 - A DJ that builds sets from what you've had on repeat, old favourites, forgotten Liked Songs and deep
   cuts, and introduces each part on screen. With Last.fm it also brings back songs you used to play
   constantly and what you were playing this week a year ago.
-- True shuffle: every order equally likely, every song once before any repeats.
+- True shuffle: the playlist is shuffled once when you start it (every order equally likely), and that
+  order is followed to the end, even if you quit and reopen Cadenza. Every song plays once, and the Queue
+  page shows the whole order. When it runs out, autoplay carries on from your taste (or, with repeat on,
+  a fresh shuffle starts).
 - Up Next, Cadenza's own queue you can reorder, and a sleep timer that fades out.
 - Cadenza's own sound engine: a ten-band EQ with presets and a boost (with a limiter so loud parts never
   distort), a crossfade between songs, and pause, skip and seek that respond at once. Each output device
