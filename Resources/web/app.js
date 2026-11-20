@@ -1218,12 +1218,27 @@ const Feed = {
     return new Promise((res) => {
       this.skipT = setTimeout(async () => {
         const n = this.skips; this.skips = 0;
+        if (!this.active) return res(await cmd("next"));             // the list ended while the presses were gathered
+        if (this.at >= this.order.length - 1) return res(await this.ranOut());
         if (n === 1) return res(this.qd.length ? await api("POST", "/me/player/next") : await this.playNext());
         const target = Math.min(this.at + n, this.order.length - 1);
         this.at = target - 1;
         res(await this.playNext());
       }, 350);
     });
+  },
+  /** Next, pressed on the list's last song. Autoplay takes over from it straight away (it waits for its
+   *  first song if it's still looking), instead of Spotify running off the end of the playlist and stopping. */
+  async ranOut() {
+    const it = S.player && S.player.item;
+    if (TrueShuffle.active && it) TrueShuffle.lastSong(it.uri);
+    else {
+      const host = this.host, t = it && it.raw;
+      this.stop();
+      if (Radio.enabled() && !DJ.active && t && t.uri) { S.altContext = host; Radio.begin(t); }
+    }
+    if (this.active) return this.playNext();                      // repeat is on: a fresh shuffle started
+    return Radio.active ? Radio.skip() : api("POST", "/me/player/next");
   },
 };
 
@@ -1244,6 +1259,7 @@ const Refusals = {
     setTimeout(async () => {
       this.cooling = false;
       if (Feed.active) await Feed.playNext();
+      else if (Radio.active) { Radio.qd = []; Radio.nudgedAt = Date.now(); await Radio.advance(); }   // autoplay's own next pick
       else await api("POST", "/me/player/next");
       setTimeout(poll, 600);
     }, 8000);
@@ -7035,11 +7051,37 @@ const Radio = {
    *  the next song from its own line-up, so the music never stops. */
   async skip() {
     if (this.qd.length) return api("POST", "/me/player/next");
-    const n = this.order[this.at + 1];
-    if (!n) return api("POST", "/me/player/next");
+    if (!this.order[this.at + 1]) {
+      // Autoplay has only just started (you skipped past the end of a playlist) and hasn't found a song yet.
+      // Asking Spotify for its next song now would run off the end and stop everything, so pause and wait
+      // for autoplay's first find. More presses meanwhile do nothing.
+      if (this.finding) return { status: 204 };
+      toast("AUTOPLAY IS FINDING SONGS LIKE THIS ONE…");
+      api("PUT", "/me/player/pause").catch(() => {});
+    }
+    const n = await this.nextSong();
+    if (!n) { if (this.active) toast("AUTOPLAY FOUND NOTHING TO PLAY NEXT", true); return { status: 204 }; }
+    if (this.order[this.at + 1] !== n) return { status: 204 };     // something else moved on meanwhile
     this.at += 1; this.grace = Date.now() + 6000;
     const ok = await playBody({ uris: [n.uri] }, null, false, true);
     return { status: ok ? 204 : 500 };
+  },
+  /** The next song in the line-up, waiting (up to 15 s) for the lookup if it hasn't found one yet. */
+  finding: null,
+  nextSong() {
+    const now = this.order[this.at + 1];
+    if (now) return Promise.resolve(now);
+    if (this.finding) return this.finding;
+    if (!this.building) this.extend(this.order[this.at] || {});
+    const t0 = Date.now();
+    this.finding = new Promise((res) => {
+      const iv = setInterval(() => {
+        const n = this.order[this.at + 1];
+        const gaveUp = (!this.building && !this.wantMore) || Date.now() - t0 > 15000;
+        if (n || !this.active || gaveUp) { clearInterval(iv); this.finding = null; res(this.active && n ? n : null); }
+      }, 150);
+    });
+    return this.finding;
   },
   indexOf(uri) {
     let i = this.order.findIndex((t) => t.uri === uri);
@@ -7079,7 +7121,7 @@ const Radio = {
   /** Safety net, once a second: if a song has ended and nothing came next, move on ourselves. */
   watch() {
     const p = S.player, it = p && p.item;
-    if (!this.active || !it) return;
+    if (!this.active || !it || this.finding) return;              // (already waiting for the next song)
     if (this.ended(p)) {
       if (!this.stall) this.stall = Date.now();
       // Skipping fast can outrun Spotify's queue; then the music just stops. Move on at once in that case.
@@ -7119,10 +7161,10 @@ const Radio = {
     // after the engine restarted), forget them and play the next song directly.
     if (this.qd.length && Date.now() - this.nudgedAt > 10000) { this.nudgedAt = Date.now(); await cmd("next"); return; }
     this.qd = [];
-    const next = this.order[this.at + 1];
-    if (!next) { await this.extend(this.order[this.at] || {}); }
-    const n = this.order[this.at + 1];
+    // Still looking (autoplay only just began): wait for its first find rather than giving up.
+    const n = await this.nextSong();
     if (!n) return this.stop();
+    if (this.order[this.at + 1] !== n) return;                    // a skip played it meanwhile
     this.at += 1; this.grace = Date.now() + 6000;
     await playBody({ uris: [n.uri] }, null, false, true);
   },

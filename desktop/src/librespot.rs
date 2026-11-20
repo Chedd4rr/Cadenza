@@ -639,9 +639,12 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         let mut g = self.inner.lock().unwrap();
         g.last_song_refusal = Some(Instant::now());
         g.refusals.retain(|_, t| t.elapsed() < Duration::from_secs(600));
-        if uri.is_empty() || g.refusals.contains_key(&uri) { return; }
-        g.refusals.insert(uri.clone(), Instant::now());
-        push_log(&mut g, format!("Spotify won't unlock {uri} right now; librespot skips it and the next song plays."));
+        if uri.is_empty() { return; }
+        // Logged once per song, but the page hears about every refusal: it counts them to stop a chain of
+        // them, and a chain often goes back through songs that were refused a few minutes earlier.
+        if g.refusals.insert(uri.clone(), Instant::now()).is_none() {
+            push_log(&mut g, format!("Spotify won't unlock {uri} right now; librespot skips it and the next song plays."));
+        }
         drop(g);
         (self.emit)("engine.refused", json!({"uri": uri}));
     }
