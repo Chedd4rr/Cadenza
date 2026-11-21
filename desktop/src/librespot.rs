@@ -61,6 +61,10 @@ struct Inner {
     last_hold: Option<Instant>,
     /// Bumped by anything you do, so a wait after a refused song doesn't then skip over your choice.
     hold_token: u64,
+    /// While waiting after a refused song: until when, and how many more Next presses came meanwhile (done
+    /// together when the wait ends, instead of each one asking Spotify for another key straight away).
+    hold_until: Option<Instant>,
+    hold_skips: u32,
     flowing_ticks: u32,
     stall_since: Option<Instant>,
     device_check_at: Option<(Instant, String)>,
@@ -119,8 +123,10 @@ impl Librespot {
                 if gap > Duration::from_secs(20) && sleeper.is_playing_here() {
                     sleeper.sound.local_pause();
                     sleeper.note("The computer was asleep: pausing.");
-                    let api = sleeper.api.clone();
-                    tauri::async_runtime::spawn(async move { api.request("PUT", "/me/player/pause", None).await; });
+                    let me = sleeper.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if !me.direct_request("PUT", "/me/player/pause") { me.api.request("PUT", "/me/player/pause", None).await; }
+                    });
                 }
             }
         }).ok();
@@ -530,6 +536,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             let p = &mut g.player;
             match event {
                 "track_changed" => {
+                    g.hold_streak = 0;                          // a song loaded: Spotify is handing out keys again
                     // A song that failed to load was to be tried again after this one: if librespot moved on
                     // past it, go back for it.
                     if let Some(failed) = g.pending_retry.take() {
@@ -678,7 +685,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                 }
                 if attempt == 0 {
                     me.note("Spotify didn't pause: asking again.");
-                    me.api.request("PUT", "/me/player/pause", None).await;
+                    if !me.direct_request("PUT", "/me/player/pause") { me.api.request("PUT", "/me/player/pause", None).await; }
                 } else {
                     me.note("Spotify kept playing after being asked to pause: playing here too so nothing gets stuck.");
                     me.sound.local_resume();
@@ -703,7 +710,27 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             if let Some(dev) = a.get("device_id").and_then(Value::as_str) {
                 if dev != crate::embedded::device_id(&self.settings.device_name()) { return no("another device"); }
             }
+            // Next while waiting after a refused song: counted, and done when the wait ends.
+            let waiting = g.hold_until.map_or(false, |t| Instant::now() < t);
+            if action == "next" && waiting {
+                g.hold_skips += 1;
+                let left = g.hold_until.map(|t| t.saturating_duration_since(Instant::now()).as_secs_f64()).unwrap_or(0.0);
+                let n = g.hold_skips + 1;
+                drop(g);
+                (self.emit)("engine.held", json!({"wait_ms": (left * 1000.0) as u64, "skips": n}));
+                return json!({"ok": true});
+            }
+            // Play while waiting: go on now (with any Next presses counted meanwhile).
+            if action == "play" && waiting {
+                let n = g.hold_skips + 1;
+                g.hold_until = None; g.hold_skips = 0; g.hold_token += 1;
+                drop(g);
+                let _ = e.direct(crate::embedded::Direct::Next(n));
+                let _ = e.direct(crate::embedded::Direct::Play);
+                return json!({"ok": true});
+            }
             g.hold_token += 1;                                  // you chose something: a waiting skip is off
+            g.hold_until = None; g.hold_skips = 0;
             (e, Self::active_here(&g))
         };
         let s = |k: &str| a.get(k).and_then(Value::as_str).map(String::from);
@@ -735,6 +762,22 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             Ok(()) => json!({"ok": true}),
             Err(e) => { self.note(format!("The built-in engine couldn't do that ({action}): {e}")); no(&e) }
         }
+    }
+
+    /// One of Spotify's web-interface playback requests (media keys, the tray, the mini player, a pause
+    /// after sleep), done in the built-in engine when it can. True when it was.
+    pub fn direct_request(self: &Arc<Self>, method: &str, path: &str) -> bool {
+        let (p, q) = path.split_once('?').unwrap_or((path, ""));
+        let qv = |k: &str| url::form_urlencoded::parse(q.as_bytes()).find(|(a, _)| a == k).map(|(_, v)| v.to_string());
+        let (action, args) = match (method, p) {
+            ("POST", "/me/player/next") => ("next", json!({})),
+            ("POST", "/me/player/previous") => ("previous", json!({})),
+            ("PUT", "/me/player/play") => ("play", json!({})),
+            ("PUT", "/me/player/pause") => ("pause", json!({})),
+            ("PUT", "/me/player/seek") => ("seek", json!({"position": qv("position_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)})),
+            _ => return false,
+        };
+        self.direct(action, &args).get("ok").and_then(Value::as_bool).unwrap_or(false)
     }
 
     /// Next. A single press skips at once. Presses that follow quickly are gathered and done together once
@@ -785,14 +828,22 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         g.last_hold = Some(Instant::now());
         let wait = if refused { let w = WAITS[(g.hold_streak as usize).min(WAITS.len() - 1)]; g.hold_streak += 1; w } else { 300 };
         let token = g.hold_token;
+        g.hold_until = Some(Instant::now() + Duration::from_millis(wait));
+        g.hold_skips = 0;
         push_log(&mut g, format!("Spotify won't play {uri}{}: moving on in {:.1} s.", if refused { " right now" } else { "" }, wait as f64 / 1000.0));
         drop(g);
         if refused { (self.emit)("engine.held", json!({"uri": uri, "wait_ms": wait})); }
         let me = Arc::clone(self);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(wait));
-            if me.inner.lock().unwrap().hold_token != token { return; }   // you picked something meanwhile
-            let _ = engine.direct(crate::embedded::Direct::Next(1));
+            let n = {
+                let mut g = me.inner.lock().unwrap();
+                if g.hold_token != token { return; }               // you picked something meanwhile
+                g.hold_until = None;
+                std::mem::take(&mut g.hold_skips) + 1
+            };
+            if n > 1 { me.note(format!("Skipping {n} songs ahead (Next was pressed while waiting).")); }
+            let _ = engine.direct(crate::embedded::Direct::Next(n));
             let _ = engine.direct(crate::embedded::Direct::Play);
         });
     }

@@ -84,6 +84,7 @@ async function api(method, path, body) {
    of songs) don't apply. Anything the engine can't do here (another device is playing, the old separate
    program is the engine) goes to the web interface as before. */
 const Direct = {
+  done: 0, fell: 0, why: "",                                     // (for diagnostics)
   on: () => S.settings.engine !== "program" && S.settings.manageLibrespot !== false,
   /** The same request, done in the engine: a 204-style answer, or null to use the web interface. */
   async run(method, path, body) {
@@ -114,7 +115,8 @@ const Direct = {
     else if (method === "POST" && p === "/me/player/queue") Object.assign(args, { action: "queue", uri: q.get("uri") });
     else return null;
     const r = await native("player.direct", args).catch(() => null);
-    if (!r || !r.ok) return null;
+    if (!r || !r.ok) { this.fell++; this.why = `${args.action}: ${(r && r.reason) || "no answer"}`; return null; }
+    this.done++;
     (window.__direct = window.__direct || []).push(args.action);   // (for tests)
     setTimeout(poll, 500);
     return { status: 204, body: null, direct: true };
@@ -5431,7 +5433,8 @@ async function copyDiagnostics() {
   let text = "";
   try { text = await native("diagnostics"); } catch (e) { text = ""; }
   const extra = `\n== page ==\ntheme ${Theme.current && Theme.current.id} · view ${current() && current().name} · playing ${!!(S.player && S.player.is_playing)} · `
-    + `item ${S.player && S.player.item ? S.player.item.uri : "none"} · position ${Math.round(progressNow() / 1000)}s · local ${Local.active()} · DJ ${DJ.active} · radio ${Radio.active} · up next ${UpNext.items.length}${UpNext.fed ? " (1 handed over)" : ""} · sleep ${Sleep.on ? Sleep.label() : "off"}`;
+    + `item ${S.player && S.player.item ? S.player.item.uri : "none"} · position ${Math.round(progressNow() / 1000)}s · local ${Local.active()} · DJ ${DJ.active} · radio ${Radio.active} · up next ${UpNext.items.length}${UpNext.fed ? " (1 handed over)" : ""} · sleep ${Sleep.on ? Sleep.label() : "off"}`
+    + `\nstraight to the engine: ${Direct.done} · through Spotify instead: ${Direct.fell}${Direct.why ? ` (last: ${Direct.why})` : ""}`;
   try { await native("clipboard", { text: (text || "") + extra }); } catch (e) { try { await navigator.clipboard.writeText((text || "") + extra); } catch (_) { /* demo */ } }
   toast("DIAGNOSTICS COPIED · PASTE THEM INTO A MESSAGE");
 }
@@ -9144,7 +9147,8 @@ window.app = {
     else if (event === "engine.held" && data) {
       // The built-in engine paused on a song Spotify wouldn't play and waits a moment before the next.
       const s = Math.round((data.wait_ms || 0) / 1000);
-      if (s >= 3) toast(`SPOTIFY IS REFUSING SONGS FOR A MOMENT · NEXT ONE IN ${s} S`, true);
+      if (data.skips > 1) toast(`WAITING FOR SPOTIFY · SKIPPING ${data.skips} AHEAD IN ${Math.max(1, s)} S · PLAY GOES NOW`, true);
+      else if (s >= 3) toast(`SPOTIFY IS REFUSING SONGS FOR A MOMENT · NEXT ONE IN ${s} S`, true);
     }
     else if (event === "refresh") poll();
     else if (event === "like") toggleLike();

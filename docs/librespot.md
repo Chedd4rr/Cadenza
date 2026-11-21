@@ -51,7 +51,10 @@ interface. Two more things only work this way:
   asked too often, Spotify starts refusing).
 - **Refused songs:** the engine pauses on a song Spotify won't play (see the hold-refused patch) and Cadenza
   moves on after 1.5 s, then 3, 6, 12, 20 and 30 s if it keeps happening, instead of librespot asking for
-  one key after another while Spotify only refuses more.
+  one key after another while Spotify only refuses more. Next pressed during the wait is counted and done
+  when it ends (one jump); Play goes on straight away. A song that loads resets the waits.
+
+Media keys, the tray, the mini player and the pause after the computer sleeps go straight to the engine too.
 
 The separate program is still built and bundled for now. System → Engine settings → Engine switches between
 the two (it restarts the engine).

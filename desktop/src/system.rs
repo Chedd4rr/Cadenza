@@ -123,7 +123,8 @@ impl System {
     /// Ask Spotify, then tell the page to look again a moment later.
     async fn send(&self, method: &str, path: &str) {
         let core = self.core();
-        core.api.request(method, path, None).await;
+        // Straight in the built-in engine when it's the one playing; otherwise through Spotify.
+        if !core.librespot.direct_request(method, path) { core.api.request(method, path, None).await; }
         tokio::time::sleep(Duration::from_millis(250)).await;
         (core.emit)("refresh", Value::Null);
     }
