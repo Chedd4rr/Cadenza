@@ -115,6 +115,8 @@ const Direct = {
     else if (method === "POST" && p === "/me/player/queue") Object.assign(args, { action: "queue", uri: q.get("uri") });
     else return null;
     const r = await native("player.direct", args).catch(() => null);
+    // Play with nothing loaded (the list ran out): like Spotify's "no active device", so Play starts something.
+    if (r && r.reason === "nothing loaded") return { status: 404, body: null, direct: true };
     if (!r || !r.ok) { this.fell++; this.why = `${args.action}: ${(r && r.reason) || "no answer"}`; return null; }
     this.done++;
     (window.__direct = window.__direct || []).push(args.action);   // (for tests)
@@ -1331,7 +1333,8 @@ async function cmd(id) {
       if (p) { p.progress_ms = progressNow(); p.is_playing = !playing; S.stamp = Date.now(); renderNow(); views.home.update(); }
       native("audio.local", { action: playing ? "pause" : "play" }).catch(() => {});   // sound stops/starts instantly
       r = await api("PUT", playing ? "/me/player/pause" : "/me/player/play");
-      if (r.status === 404 && !playing) {
+      if (r.status === 404 && !playing && Radio.active) { await Radio.advance(); r = { status: 204 }; }   // autoplay carries on
+      else if (r.status === 404 && !playing) {
         const dev = await ourDevice();
         if (dev) r = await LastPlayed.resumeOn(dev);
       }
@@ -9134,7 +9137,13 @@ window.app = {
       const pct = Math.floor((data.got / data.total) * 100), now = Date.now();
       if (pct >= 100 || now - (this.trT || 0) > 1500) { this.trT = now; toast(`DOWNLOADING THE LANGUAGE (${Math.round(data.total / 1048576)} MB) · ${pct}%`); }
     }
-    else if (event === "engine.end") { S.queueEndAt = Date.now(); setTimeout(() => { Radio.checkEnd(); Radio.watch(); }, 1200); }
+    else if (event === "engine.end") {
+      S.queueEndAt = Date.now();
+      // The built-in engine ran out of songs while autoplay was going (skipping faster than songs were
+      // handed over): autoplay plays its next one itself, at once.
+      if (Direct.on() && Radio.active && !Radio.finding) { Radio.qd = []; Radio.nudgedAt = Date.now(); Radio.advance(); }
+      else setTimeout(() => { Radio.checkEnd(); Radio.watch(); }, 1200);
+    }
     else if (event === "engine.refused" && data && data.uri) {
       // One song Spotify won't unlock right now. librespot already moves on; autoplay leaves it out for a while.
       (S.refused || (S.refused = new Map())).set(data.uri, Date.now());

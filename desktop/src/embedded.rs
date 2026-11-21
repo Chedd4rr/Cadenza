@@ -187,7 +187,10 @@ impl Engine {
             Ok(c) => c,
             Err(e) => return format!("couldn't open its folder: {e}"),
         };
-        let session_config = SessionConfig { device_id: device_id(&cfg.name), autoplay: Some(cfg.autoplay), ..SessionConfig::default() };
+        // Spotify's own autoplay stays off: Cadenza's autoplay takes over when anything runs out (Radio in
+        // app.js), and librespot's attempts at it after a list of songs only got "400 Bad Request" back.
+        let _ = cfg.autoplay;
+        let session_config = SessionConfig { device_id: device_id(&cfg.name), autoplay: Some(false), ..SessionConfig::default() };
 
         // Your login from before (made by either engine), or sign in now in the browser.
         let credentials = match cache.credentials() {

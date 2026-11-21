@@ -65,6 +65,8 @@ struct Inner {
     /// together when the wait ends, instead of each one asking Spotify for another key straight away).
     hold_until: Option<Instant>,
     hold_skips: u32,
+    /// A song is loaded in the engine (false once it stopped with nothing left to play): Play can resume.
+    track_loaded: bool,
     flowing_ticks: u32,
     stall_since: Option<Instant>,
     device_check_at: Option<(Instant, String)>,
@@ -334,6 +336,12 @@ impl Librespot {
             restrict(&self.cache_dir(), 0o700);
         }
         if text.contains("no more tracks left in queue") { (self.emit)("engine.end", json!({})); }
+        // The built-in engine: another device (your phone, say) took over.
+        if text.contains("device became inactive") && g.embedded.is_some() {
+            g.player.insert("active".into(), json!(false));
+            g.track_loaded = false;
+            self.emit_player(&mut g);
+        }
         // A key timeout is a hiccup: worth trying the song again. A refusal ("Unable to load key", once the
         // bundled librespot has given up retrying) means Spotify won't unlock that one song right now.
         if text.contains("audio key response timeout") { g.last_key_failure = Some(Instant::now()); }
@@ -536,6 +544,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             let p = &mut g.player;
             match event {
                 "track_changed" => {
+                    g.track_loaded = true;
                     g.hold_streak = 0;                          // a song loaded: Spotify is handing out keys again
                     // A song that failed to load was to be tried again after this one: if librespot moved on
                     // past it, go back for it.
@@ -589,7 +598,11 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                         p.insert("progress_ms".into(), json!(prog + (now_ms() - g.pos_at) as i64));
                     }
                     g.pos_at = now_ms();
-                    g.player.insert("active".into(), json!(false));
+                    // The built-in engine stops when its list runs out but stays the device playing (it
+                    // says "device became inactive" when another one takes over). The program's "stopped"
+                    // meant it had let go.
+                    if g.embedded.is_none() { g.player.insert("active".into(), json!(false)); }
+                    g.track_loaded = false;
                     g.player.insert("is_playing".into(), json!(false));
                     g.last_stop_at = Some(Instant::now());
                     changed = true;
@@ -703,7 +716,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     pub fn direct(self: &Arc<Self>, action: &str, a: &Value) -> Value {
         use crate::embedded::Direct;
         let no = |why: &str| json!({"ok": false, "reason": why});
-        let (engine, active) = {
+        let (engine, active, loaded) = {
             let mut g = self.inner.lock().unwrap();
             let Some(e) = g.embedded.clone() else { return no("not the built-in engine") };
             if g.state != "running" { return no("the engine isn't connected yet"); }
@@ -731,7 +744,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             }
             g.hold_token += 1;                                  // you chose something: a waiting skip is off
             g.hold_until = None; g.hold_skips = 0;
-            (e, Self::active_here(&g))
+            (e, Self::active_here(&g), g.track_loaded)
         };
         let s = |k: &str| a.get(k).and_then(Value::as_str).map(String::from);
         let n = |k: &str| a.get(k).and_then(Value::as_u64);
@@ -747,6 +760,8 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                 repeat: s("repeat").unwrap_or_else(|| "off".into()),
             },
             _ if !active => return no("another device is playing"),
+            // Nothing loaded (the list ran out): the page starts something instead.
+            "play" if !loaded => return no("nothing loaded"),
             "play" => Direct::Play,
             "pause" => Direct::Pause,
             "next" => return self.direct_next(engine),
