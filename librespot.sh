@@ -8,6 +8,8 @@
 # - Plus the patches in patches/ (each one explains itself). Right now:
 #   - librespot-skip-refused: when Spotify refuses a song's key (error audio key 0 2), skip the song at
 #     once, instead of downloading it anyway, failing to read it and throwing away a good cached copy.
+#   - librespot-hold-refused: lets an app make librespot pause on a song it can't play instead of skipping
+#     on (only Cadenza's built-in engine turns it on; this program behaves as before).
 # - Pipe output only, no speaker code: Cadenza plays all sound through its own engine.
 #
 # The source and the finished program are kept in ~/Library/Developer/Cadenza/librespot, outside this

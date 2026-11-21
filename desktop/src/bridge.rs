@@ -61,6 +61,10 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         // MARK: the engine
         "librespot.status" => core.librespot.status(),
         "librespot.restart" => { core.librespot.restart_keep_playing(); json!(true) }
+        "player.direct" => {
+            let action = args.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+            core.librespot.direct(&action, &args)
+        }
         "engine.ensure" => json!({"ok": core.librespot.check_device().await}),
         "librespot.transferHere" => {
             let play = b(args, "play", true);

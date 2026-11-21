@@ -60,6 +60,7 @@ const quietTime = () => Date.now() - launchedAt > 90000 && Date.now() - lastInpu
 
 async function api(method, path, body) {
   if (method !== "GET") PageCache.drop(path);
+  if (method !== "GET" && path.startsWith("/me/player")) { const d = await Direct.run(method, path, body); if (d) return d; }
   let r;
   try { r = await native("api", { method, path, body: body === undefined ? null : body }); }
   catch (e) { console.error(e); r = null; }
@@ -75,6 +76,50 @@ async function api(method, path, body) {
   }
   return r;
 }
+
+/* ---------- Playing directly in the built-in engine ----------
+   With the built-in engine (librespot inside Cadenza), play, pause, skip, seek, volume, shuffle, repeat
+   and the queue go straight to it instead of through Spotify's web interface and back down. That's
+   instant, Cadenza knows the result at once, and Spotify's web-interface rules (like refusing plain lists
+   of songs) don't apply. Anything the engine can't do here (another device is playing, the old separate
+   program is the engine) goes to the web interface as before. */
+const Direct = {
+  on: () => S.settings.engine !== "program" && S.settings.manageLibrespot !== false,
+  /** The same request, done in the engine: a 204-style answer, or null to use the web interface. */
+  async run(method, path, body) {
+    if (!this.on()) return null;
+    const [p, qs] = path.split("?"), q = new URLSearchParams(qs || "");
+    const args = { device_id: q.get("device_id") || undefined };
+    if (method === "PUT" && p === "/me/player/play") {
+      if (body && (body.uris || body.context_uri)) {
+        const pl = S.player || {};
+        Object.assign(args, {
+          action: "load", tracks: body.uris || [], context: body.context_uri || undefined,
+          from_uri: body.offset && body.offset.uri || undefined,
+          from_index: body.offset && body.offset.position != null ? body.offset.position : undefined,
+          position: body.position_ms || 0,
+          // A list of songs plays in Cadenza's order; a playlist or album keeps Spotify's shuffle if it's on.
+          shuffle: !!(body.context_uri && pl.shuffle_state && !TrueShuffle.active),
+          repeat: pl.repeat_state || "off",
+        });
+      } else args.action = "play";
+    }
+    else if (method === "PUT" && p === "/me/player/pause") args.action = "pause";
+    else if (method === "POST" && p === "/me/player/next") args.action = "next";
+    else if (method === "POST" && p === "/me/player/previous") args.action = "previous";
+    else if (method === "PUT" && p === "/me/player/seek") Object.assign(args, { action: "seek", position: +q.get("position_ms") || 0 });
+    else if (method === "PUT" && p === "/me/player/volume") Object.assign(args, { action: "volume", volume: +q.get("volume_percent") || 0 });
+    else if (method === "PUT" && p === "/me/player/shuffle") Object.assign(args, { action: "shuffle", state: q.get("state") === "true" });
+    else if (method === "PUT" && p === "/me/player/repeat") Object.assign(args, { action: "repeat", state: q.get("state") || "off" });
+    else if (method === "POST" && p === "/me/player/queue") Object.assign(args, { action: "queue", uri: q.get("uri") });
+    else return null;
+    const r = await native("player.direct", args).catch(() => null);
+    if (!r || !r.ok) return null;
+    (window.__direct = window.__direct || []).push(args.action);   // (for tests)
+    setTimeout(poll, 500);
+    return { status: 204, body: null, direct: true };
+  },
+};
 
 const fmtWait = (secs) => { secs = Math.max(1, Math.ceil(secs)); return secs < 90 ? secs + "S" : secs < 5400 ? Math.ceil(secs / 60) + " MIN" : (secs / 3600).toFixed(1) + " HOURS"; };
 function errMsg(r) {
@@ -1026,7 +1071,8 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   // The whole list, for feeding (true shuffle's order can be thousands of songs); Spotify's plain-list form
   // takes only the first few hundred.
   const allUris = body.uris;
-  const sendBody = allUris && allUris.length > 300 ? { ...body, uris: allUris.slice(0, 300) } : body;
+  // (The built-in engine takes the whole list directly.)
+  const sendBody = allUris && allUris.length > 300 && !Direct.on() ? { ...body, uris: allUris.slice(0, 300) } : body;
   // A specific speaker (after the engine restarts, Spotify may still point at the old, dead session).
   const dev = body.device_id; if (dev) { body = { ...body }; delete body.device_id; }
   const playPath = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
@@ -1034,7 +1080,8 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   // A list of songs from one playlist: play the playlist itself, at the first song, and feed the list's
   // order into Spotify's queue. Spotify refuses plain song lists for Cadenza's speaker more and more, and
   // with the real playlist playing, everything that asks "what's playing?" gets the right answer.
-  if (host && body.uris && body.uris.length > 1) {
+  // (Not needed with the built-in engine: it plays the list itself.)
+  if (host && body.uris && body.uris.length > 1 && !Direct.on()) {
     const from = body.offset && body.offset.uri ? Math.max(0, body.uris.indexOf(body.offset.uri)) : 0;
     const list = body.uris.slice(from);
     const inHost = { context_uri: host, offset: { uri: list[0] } };
@@ -1250,6 +1297,7 @@ const Feed = {
 const Refusals = {
   times: [], cooling: false,
   note() {
+    if (Direct.on()) return;                                      // the built-in engine waits by itself (engine.held)
     const now = Date.now();
     this.times = this.times.filter((t) => now - t < 20000).concat(now);
     if (this.times.length < 3 || this.cooling) return;
@@ -9093,6 +9141,11 @@ window.app = {
       Feed.qd = Feed.qd.filter((u) => u !== data.uri);
       Refusals.note();
     }
+    else if (event === "engine.held" && data) {
+      // The built-in engine paused on a song Spotify wouldn't play and waits a moment before the next.
+      const s = Math.round((data.wait_ms || 0) / 1000);
+      if (s >= 3) toast(`SPOTIFY IS REFUSING SONGS FOR A MOMENT · NEXT ONE IN ${s} S`, true);
+    }
     else if (event === "refresh") poll();
     else if (event === "like") toggleLike();
     else if (event === "volume") setVolume(data && data.value);
@@ -9749,6 +9802,19 @@ const Demo = (() => {
             return Promise.resolve({ status: 403, body: { error: { status: 403, message: "Player command failed: Restriction violated", reason: "UNKNOWN" } } });
           }
           return new Promise((res) => setTimeout(() => apiRoute(args.method, args.path, args.body).then(res), +(new URLSearchParams(location.search).get("lat") || 60)));
+        // The built-in engine, played directly (tests turn it on with window.__directOn): done on the made-up player.
+        case "player.direct": {
+          (window.__directCalls = window.__directCalls || []).push(args);
+          if (!window.__directOn) return Promise.resolve({ ok: false });
+          const q = (k, v) => `${k}=${encodeURIComponent(v)}`;
+          const route = {
+            load: () => apiRoute("PUT", "/me/player/play", args.context ? { context_uri: args.context, offset: args.from_uri ? { uri: args.from_uri } : undefined } : { uris: args.tracks, offset: args.from_uri ? { uri: args.from_uri } : undefined }),
+            play: () => apiRoute("PUT", "/me/player/play"), pause: () => apiRoute("PUT", "/me/player/pause"),
+            next: () => apiRoute("POST", "/me/player/next"), previous: () => apiRoute("POST", "/me/player/previous"),
+            queue: () => apiRoute("POST", "/me/player/queue?" + q("uri", args.uri)),
+          }[args.action];
+          return (route ? route() : Promise.resolve()).then(() => ({ ok: true }));
+        }
         case "auth.status": return Promise.resolve({ loggedIn: !/setup/.test(location.hash), clientId: settings.clientId, redirectURI: "http://127.0.0.1:8888", missingScopes: [] });
         case "auth.login": return new Promise((res) => setTimeout(() => res({ ok: true }), 800));
         case "outputs.list": return Promise.resolve(outputs.map((o) => ({ ...o })));

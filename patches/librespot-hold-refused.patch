@@ -1,0 +1,38 @@
+Let Cadenza decide what happens after a song that can't be played.
+
+Normally, when the song that should be playing can't be (most often because Spotify refused its key,
+"error audio key 0 2"), librespot skips to the next one straight away, and if that's refused too, the next,
+and so on: Spotify only refuses more, and nothing plays. With this patch, an app can turn on
+HOLD_ON_UNAVAILABLE so librespot pauses instead and logs "Holding: the current track is unavailable". The
+app then waits a moment and moves on itself. It's off unless an app turns it on, so the librespot program
+behaves exactly as before. librespot.sh applies this file.
+
+diff --git a/connect/src/spirc.rs b/connect/src/spirc.rs
+--- a/connect/src/spirc.rs
++++ b/connect/src/spirc.rs
+@@ -146,6 +146,11 @@
+ // to reduce updates to remote, we group some request by waiting for a set amount of time
+ const UPDATE_STATE_DELAY: Duration = Duration::from_millis(200);
+ 
++/// When true, a track that can't be played (Spotify refused its key, say) pauses playback instead of
++/// skipping to the next track, so the app decides when to move on. Off unless the app turns it on.
++/// (Cadenza patch.)
++pub static HOLD_ON_UNAVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
+ /// The spotify connect handle
+ pub struct Spirc {
+     commands: mpsc::UnboundedSender<SpircCommand>,
+@@ -896,7 +901,12 @@
+             PlayerEvent::Unavailable { track_id, .. } => {
+                 self.handle_unavailable(&track_id)?;
+                 if self.connect_state.current_track(|t| &t.uri) == &track_id.to_uri() {
+-                    self.handle_next(None)?
++                    if HOLD_ON_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
++                        warn!("Holding: the current track is unavailable <{}>", track_id.to_uri());
++                        self.handle_pause();
++                    } else {
++                        self.handle_next(None)?
++                    }
+                 }
+             }
+             _ => return Ok(()),

@@ -52,6 +52,15 @@ struct Inner {
     last_device_fix: Option<Instant>,
     last_rescue: Option<Instant>,
     last_stop_at: Option<Instant>,
+    // Playing directly in the built-in engine (see "playing directly" below).
+    skip_last: Option<Instant>,
+    skip_pending: u32,
+    skip_flushing: bool,
+    /// Songs Spotify wouldn't play in a row, and when the last one was (for how long to wait).
+    hold_streak: u32,
+    last_hold: Option<Instant>,
+    /// Bumped by anything you do, so a wait after a refused song doesn't then skip over your choice.
+    hold_token: u64,
     flowing_ticks: u32,
     stall_since: Option<Instant>,
     device_check_at: Option<(Instant, String)>,
@@ -61,7 +70,7 @@ fn within(t: Option<Instant>, secs: u64) -> bool { t.map_or(false, |t| t.elapsed
 
 /// Things noticed while holding the lock, done once it's let go.
 enum Then {
-    CheckSound, Retry(String), RetryLater(String), Dropped(String, bool), Refused(String),
+    CheckSound, Retry(String), RetryLater(String), Dropped(String, bool), Refused(String), Held(String),
     // The sound engine: a new song (its length), a position report (ms, length), a jump, and letting go of
     // sound Cadenza is holding when Spotify says it's playing.
     NewSong(Option<i64>), Position(i64, Option<i64>), Seeked, ReleaseIfHeld,
@@ -324,6 +333,11 @@ impl Librespot {
         if text.contains("audio key response timeout") { g.last_key_failure = Some(Instant::now()); }
         if let Some(c) = loading.captures(text) { g.loading_uri = c[1].to_string(); }
         if text.contains("Unable to load key") { let u = g.loading_uri.clone(); then.push(Then::Refused(u)); }
+        // The built-in engine paused on a song it couldn't play, instead of skipping on (Cadenza's patch).
+        if let Some(i) = text.find("Holding: the current track is unavailable <") {
+            let uri = text[i..].split('<').nth(1).unwrap_or("").trim_end_matches('>').to_string();
+            then.push(Then::Held(uri));
+        }
         // Spotify closed librespot's connection. librespot only notices about 30 s later and comes back
         // without your playlist, so don't wait for it.
         if text.contains("Connection to server closed") || text.contains("Spirc shut down unexpectedly") {
@@ -673,6 +687,116 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         });
     }
 
+    // MARK: playing directly
+
+    /// Does something with the music straight in the built-in engine, instead of through Spotify's web
+    /// interface. {"ok": false} means the page should use the web interface instead: the separate program
+    /// is the engine, it isn't connected yet, the request is for another device, or (for anything but
+    /// starting something new) another device is the one playing.
+    pub fn direct(self: &Arc<Self>, action: &str, a: &Value) -> Value {
+        use crate::embedded::Direct;
+        let no = |why: &str| json!({"ok": false, "reason": why});
+        let (engine, active) = {
+            let mut g = self.inner.lock().unwrap();
+            let Some(e) = g.embedded.clone() else { return no("not the built-in engine") };
+            if g.state != "running" { return no("the engine isn't connected yet"); }
+            if let Some(dev) = a.get("device_id").and_then(Value::as_str) {
+                if dev != crate::embedded::device_id(&self.settings.device_name()) { return no("another device"); }
+            }
+            g.hold_token += 1;                                  // you chose something: a waiting skip is off
+            (e, Self::active_here(&g))
+        };
+        let s = |k: &str| a.get(k).and_then(Value::as_str).map(String::from);
+        let n = |k: &str| a.get(k).and_then(Value::as_u64);
+        let d = match action {
+            "load" => Direct::Load {
+                tracks: a.get("tracks").and_then(Value::as_array).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+                context: s("context"),
+                from_uri: s("from_uri"),
+                from_index: n("from_index").map(|x| x as u32),
+                position: n("position").unwrap_or(0) as u32,
+                play: a.get("play").and_then(Value::as_bool).unwrap_or(true),
+                shuffle: a.get("shuffle").and_then(Value::as_bool).unwrap_or(false),
+                repeat: s("repeat").unwrap_or_else(|| "off".into()),
+            },
+            _ if !active => return no("another device is playing"),
+            "play" => Direct::Play,
+            "pause" => Direct::Pause,
+            "next" => return self.direct_next(engine),
+            "previous" => Direct::Previous,
+            "seek" => Direct::Seek(n("position").unwrap_or(0) as u32),
+            "volume" => Direct::Volume(n("volume").unwrap_or(70) as u32),
+            "shuffle" => Direct::Shuffle(a.get("state").and_then(Value::as_bool).unwrap_or(false)),
+            "repeat" => Direct::Repeat(s("state").unwrap_or_else(|| "off".into())),
+            "queue" => match s("uri") { Some(u) => Direct::Queue(u), None => return no("no song") },
+            _ => return no("unknown"),
+        };
+        match engine.direct(d) {
+            Ok(()) => json!({"ok": true}),
+            Err(e) => { self.note(format!("The built-in engine couldn't do that ({action}): {e}")); no(&e) }
+        }
+    }
+
+    /// Next. A single press skips at once. Presses that follow quickly are gathered and done together once
+    /// they stop (one jump that many songs ahead), so skipping through ten songs fast loads two songs, not ten:
+    /// each song loaded asks Spotify for its key, and asked too often, Spotify starts refusing.
+    fn direct_next(self: &Arc<Self>, engine: Arc<crate::embedded::Engine>) -> Value {
+        const GAP: Duration = Duration::from_millis(350);
+        let mut g = self.inner.lock().unwrap();
+        let burst = g.skip_last.map_or(false, |t| t.elapsed() < GAP);
+        g.skip_last = Some(Instant::now());
+        if !burst {
+            drop(g);
+            return match engine.direct(crate::embedded::Direct::Next(1)) { Ok(()) => json!({"ok": true}), Err(e) => json!({"ok": false, "reason": e}) };
+        }
+        g.skip_pending += 1;
+        if !g.skip_flushing {
+            g.skip_flushing = true;
+            let me = Arc::clone(self);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let mut g = me.inner.lock().unwrap();
+                if g.skip_last.map_or(false, |t| t.elapsed() < GAP) { continue; }
+                let n = std::mem::take(&mut g.skip_pending);
+                g.skip_flushing = false;
+                drop(g);
+                if n > 0 {
+                    me.note(format!("Skipped {n} more songs in one go."));
+                    let _ = engine.direct(crate::embedded::Direct::Next(n));
+                }
+                break;
+            });
+        }
+        json!({"ok": true})
+    }
+
+    /// The built-in engine paused on a song it couldn't play (see the hold-refused patch). If Spotify refused
+    /// its key, wait before the next one, longer each time it happens again soon (1.5 s, 3 s, 6 s, 12 s, 20 s,
+    /// 30 s), so asking again doesn't just get refused again. Otherwise (the song isn't available, say) move
+    /// on almost at once. A song that only failed because its key was slow gets another try instead (see
+    /// retry_later).
+    fn held(self: &Arc<Self>, uri: String) {
+        const WAITS: [u64; 6] = [1500, 3000, 6000, 12000, 20000, 30000];
+        let mut g = self.inner.lock().unwrap();
+        let Some(engine) = g.embedded.clone() else { return };
+        let refused = within(g.last_song_refusal, 8);
+        if !refused && within(g.last_key_failure, 20) { return; }   // retry_later has it
+        if !within(g.last_hold, 90) { g.hold_streak = 0; }
+        g.last_hold = Some(Instant::now());
+        let wait = if refused { let w = WAITS[(g.hold_streak as usize).min(WAITS.len() - 1)]; g.hold_streak += 1; w } else { 300 };
+        let token = g.hold_token;
+        push_log(&mut g, format!("Spotify won't play {uri}{}: moving on in {:.1} s.", if refused { " right now" } else { "" }, wait as f64 / 1000.0));
+        drop(g);
+        if refused { (self.emit)("engine.held", json!({"uri": uri, "wait_ms": wait})); }
+        let me = Arc::clone(self);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(wait));
+            if me.inner.lock().unwrap().hold_token != token { return; }   // you picked something meanwhile
+            let _ = engine.direct(crate::embedded::Direct::Next(1));
+            let _ = engine.direct(crate::embedded::Direct::Play);
+        });
+    }
+
     // MARK: recovery
 
     fn run(self: &Arc<Self>, then: Vec<Then>) {
@@ -692,6 +816,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                 Then::RetryLater(uri) => self.retry_later(uri),
                 Then::Dropped(reason, was_active) => self.session_dropped(&reason, was_active),
                 Then::Refused(uri) => self.key_refused(uri),
+                Then::Held(uri) => self.held(uri),
             }
         }
     }

@@ -12,6 +12,9 @@ Cadenza.app, so there's nothing else to install.
   - `librespot-skip-refused.patch`: when Spotify refuses a song's key (`error audio key 0 2`), skip the
     song straight away instead of downloading it anyway, failing to read it and deleting a good cached
     copy. (Cadenza used to ask for a refused key up to 3 times first; that only kept Spotify refusing.)
+  - `librespot-hold-refused.patch`: lets an app make librespot pause on a song it can't play instead of
+    skipping to the next one (and the next, while Spotify keeps refusing). Only the built-in engine turns
+    it on: it then waits a moment, longer each time it happens again soon, and moves on itself.
 
   Changing a patch's code (not its description) makes the next build rebuild librespot.
 - **Build:** for your Mac's chip, pipe output only (Cadenza plays the sound through its own engine, for
@@ -35,8 +38,20 @@ on, so your phone can still see and control it.
 
 What changes is the plumbing: the sound goes straight into Cadenza's sound engine through memory instead of a
 pipe, and librespot's events and messages are handed over directly instead of through a script and a file
-(`desktop/src/embedded.rs`). The next steps use it to play, skip and queue songs directly, without going through
-Spotify's web interface and back.
+(`desktop/src/embedded.rs`).
+
+Cadenza also plays, pauses, skips, seeks, queues and changes the volume, shuffle and repeat straight in the
+engine instead of through Spotify's web interface (`Direct` in app.js, `direct` in librespot.rs). That works
+at once and isn't bound by the web interface's rules, such as refusing plain lists of songs. Anything the
+engine can't do itself, such as controlling your phone while it's the one playing, still goes through the web
+interface. Two more things only work this way:
+
+- **Fast skipping:** the first press skips at once; presses that follow quickly are gathered into one jump,
+  so skipping through ten songs loads two of them, not ten (each one loaded asks Spotify for its key, and
+  asked too often, Spotify starts refusing).
+- **Refused songs:** the engine pauses on a song Spotify won't play (see the hold-refused patch) and Cadenza
+  moves on after 1.5 s, then 3, 6, 12, 20 and 30 s if it keeps happening, instead of librespot asking for
+  one key after another while Spotify only refuses more.
 
 The separate program is still built and bundled for now. System → Engine settings → Engine switches between
 the two (it restarts the engine).

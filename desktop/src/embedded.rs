@@ -10,16 +10,17 @@
 //! handed over directly instead of through a script and a file. librespot.rs reads them exactly as it read
 //! the program's, so everything built on them (recovery, crossfade timing, history) works the same.
 //!
-//! Later steps use the `Spirc` handle kept here to play, skip and queue songs directly, without going
-//! through Spotify's web interface.
+//! Cadenza also plays, pauses, skips, seeks and queues through it directly (`Direct`), instead of asking
+//! Spotify's web interface to tell the engine. That takes effect at once, and Spotify's rules for its web
+//! interface (like refusing plain lists of songs) don't apply.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use librespot_connect::{ConnectConfig, Spirc};
-use librespot_core::{authentication::Credentials, cache::Cache, config::DeviceType, session::Session, SessionConfig};
+use librespot_connect::{ConnectConfig, LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack, Spirc};
+use librespot_core::{authentication::Credentials, cache::Cache, config::DeviceType, session::Session, SessionConfig, SpotifyUri};
 use librespot_playback::audio_backend::{Sink, SinkError, SinkResult};
 use librespot_playback::config::{Bitrate, PlayerConfig, VolumeCtrl};
 use librespot_playback::convert::Converter;
@@ -60,6 +61,26 @@ pub struct Hooks {
     pub ended: Box<dyn Fn(String) + Send + Sync>,
 }
 
+/// Something to do with the music, straight in the engine.
+#[derive(Debug)]
+pub enum Direct {
+    /// Play a list of songs, or a playlist or album (`context`), from one of its songs (`from`: a URI, or
+    /// a place in the list) and a spot in it (`position` ms). Takes playback over from another device.
+    Load { tracks: Vec<String>, context: Option<String>, from_uri: Option<String>, from_index: Option<u32>, position: u32, play: bool, shuffle: bool, repeat: String },
+    Play,
+    Pause,
+    /// Skip this many songs ahead.
+    Next(u32),
+    Previous,
+    Seek(u32),
+    /// 0-100.
+    Volume(u32),
+    Shuffle(bool),
+    /// "off", "context" or "track".
+    Repeat(String),
+    Queue(String),
+}
+
 pub struct Engine {
     spirc: Mutex<Option<Spirc>>,
     stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -88,6 +109,9 @@ impl Engine {
     /// Starts the engine on its own thread. The sound comes out of `pipe`.
     pub fn start(cfg: Config, pipe: Arc<MemPipe>, hooks: Hooks) -> Arc<Engine> {
         let hooks = Arc::new(hooks);
+        // A song Spotify won't play pauses the music instead of librespot skipping on (and on): Cadenza
+        // waits a moment and moves on itself (see librespot.rs). Cadenza's patch to librespot.
+        librespot_connect::HOLD_ON_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let me = Arc::new(Engine { spirc: Mutex::new(None), stop: Mutex::new(Some(stop_tx)), pipe: pipe.clone() });
 
@@ -122,9 +146,39 @@ impl Engine {
         self.pipe.close();
     }
 
-    /// The Spotify Connect handle, for playing directly (later steps).
-    #[allow(dead_code)]
-    pub fn with_spirc<T>(&self, f: impl FnOnce(&Spirc) -> T) -> Option<T> { self.spirc.lock().unwrap().as_ref().map(f) }
+    /// Does `d` in the engine. Err when the engine isn't connected yet or librespot turns it down. (Most
+    /// things only work while Cadenza is the device playing; librespot.rs checks that first.)
+    pub fn direct(&self, d: Direct) -> Result<(), String> {
+        let guard = self.spirc.lock().unwrap();
+        let Some(spirc) = guard.as_ref() else { return Err("the engine isn't connected yet".into()) };
+        let r = match d {
+            Direct::Load { tracks, context, from_uri, from_index, position, play, shuffle, repeat } => {
+                let options = LoadRequestOptions {
+                    start_playing: play,
+                    seek_to: position,
+                    context_options: Some(LoadContextOptions::Options(Options { shuffle, repeat: repeat == "context", repeat_track: repeat == "track" })),
+                    playing_track: from_uri.map(PlayingTrack::Uri).or(from_index.map(PlayingTrack::Index)),
+                };
+                let req = match context { Some(c) => LoadRequest::from_context_uri(c, options), None => LoadRequest::from_tracks(tracks, options) };
+                // Taking over from another device first (librespot ignores a load while it isn't the one playing).
+                let _ = spirc.activate();
+                spirc.load(req)
+            }
+            Direct::Play => spirc.play(),
+            Direct::Pause => spirc.pause(),
+            Direct::Next(n) => (0..n.max(1)).try_for_each(|_| spirc.next()),
+            Direct::Previous => spirc.prev(),
+            Direct::Seek(ms) => spirc.set_position_ms(ms),
+            Direct::Volume(v) => spirc.set_volume((v.min(100) as f32 / 100.0 * VolumeCtrl::MAX_VOLUME as f32) as u16),
+            Direct::Shuffle(on) => spirc.shuffle(on),
+            Direct::Repeat(r) => spirc.repeat(r == "context").and_then(|_| spirc.repeat_track(r == "track")),
+            Direct::Queue(uri) => match SpotifyUri::from_uri(&uri) {
+                Ok(u) => spirc.add_to_queue(u),
+                Err(e) => return Err(format!("not a song: {e}")),
+            },
+        };
+        r.map_err(|e| e.to_string())
+    }
 
     async fn run(self: &Arc<Self>, cfg: Config, hooks: Arc<Hooks>, stop: tokio::sync::oneshot::Receiver<()>) -> String {
         let say = |s: String| (hooks.message)(s);
@@ -204,7 +258,7 @@ impl Engine {
 
 /// Spotify knows a speaker by this ID. The librespot program makes it from the name the same way, so the
 /// built-in engine is the same "Cadenza" to Spotify (and to your phone).
-fn device_id(name: &str) -> String {
+pub fn device_id(name: &str) -> String {
     use sha1::Digest;
     sha1::Sha1::digest(name.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
