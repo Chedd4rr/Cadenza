@@ -271,7 +271,7 @@ fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
     let managed = core.settings.bool("manageLibrespot");
     match key {
         "manageLibrespot" => if managed { core.librespot.start() } else { core.librespot.stop() },
-        "librespotPath" | "deviceName" | "bitrate" | "normalize" | "autoplay" => if managed { core.librespot.restart() },
+        "librespotPath" | "deviceName" | "bitrate" | "normalize" | "autoplay" | "engine" => if managed { core.librespot.restart() },
         "globalHotkey" => crate::apply_hotkey(window.app_handle()),
         // Your shortcuts changed on the keyboard page: the Mac menu and the show/hide shortcut follow.
         "shortcuts" => { crate::rebuild_menu(window.app_handle(), false); crate::apply_hotkey(window.app_handle()); }

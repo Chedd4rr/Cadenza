@@ -8216,7 +8216,7 @@ const SYS_GROUPS = {
   } },
   prefs: { label: "Preferences", keys: ["autoplay", "trueShuffle", "themedCovers", "reduceMotion", "notifications", "menuBar", "mediaKeys", "globalHotkey", "openAtLogin", "playlistTags", "retag", "trModels", "updateRepo", "autoUpdate"] },
   engine: { label: "Engine settings", get keys() {
-    return ["diagnostics", "manageLibrespot", "restart", "deviceName", "librespotPath", "clientId",
+    return ["diagnostics", "manageLibrespot", "engineKind", "restart", "deviceName", ...(S.settings.engine === "program" ? ["librespotPath"] : []), "clientId",
             ...(S.settings.builtinLastfm ? ["lastfmKey"] : []), ...(S.settings.builtinDiscord ? ["discordAppId"] : []), "activity"];
   } },
 };
@@ -8281,6 +8281,7 @@ views.system = {
       { key: "activity", label: "Spotify activity", type: "action", value: this.activityText(), go: "COPY LOG" },
       { key: "manageLibrespot", label: "Audio engine", type: "toggle", on: !!s.manageLibrespot, value: s.manageLibrespot ? (ENGINE_TEXT[e.state] || "") : "OFF (another app provides audio)" },
       { key: "eqEngine", label: "Sound engine (EQ)", type: "toggle", on: !EQ.state || EQ.state.engine !== false, value: "Plays Spotify through Cadenza, so the EQ and boost work" },
+      { key: "engineKind", label: "Engine", type: "cycle", value: s.engine === "program" ? "SEPARATE LIBRESPOT PROGRAM (THE OLD WAY)" : "BUILT IN", go: "CHANGE" },
       { key: "restart", label: "Restart engine", type: "action", value: "Fixes most audio hiccups", go: "RESTART" },
       { key: "deviceName", label: "Device name", type: "text", value: s.deviceName || "Cadenza", go: "EDIT" },
       { key: "librespotPath", label: "librespot path", type: "text", value: s.librespotPath || ("Automatic: " + (e.path || "not found")), raw: s.librespotPath || "", go: "EDIT" },
@@ -8418,6 +8419,7 @@ views.system = {
     if (o.key === "stage") return Stage.open();
     if (o.key === "update") return Links.update && Links.update.state === "available" && Links.update.found ? Links.offer(Links.update.found) : Links.check(true);
     if (o.key === "theme") return switchTheme();
+    if (o.key === "engineKind") return this.set("engine", S.settings.engine === "program" ? "builtin" : "program");
     if (o.key === "bitrate") { const opts = [96, 160, 320]; return this.set("bitrate", opts[(opts.indexOf(S.settings.bitrate || 320) + 1) % 3]); }
     if (o.key === "trModels") {
       if (!this.trSize) return;

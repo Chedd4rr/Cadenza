@@ -1,6 +1,8 @@
-//! Runs librespot (the Spotify Connect engine) as a child process, reads what it's playing from its
-//! --onevent hook, and hands its sound to Cadenza's output. A port of Librespot.swift, including its
-//! recovery: songs Spotify won't unlock, songs worth one more try, dropped connections, sound that
+//! Runs librespot (the Spotify Connect engine), reads what it's playing, and hands its sound to Cadenza's
+//! output. Normally librespot runs inside Cadenza (the built-in engine, see embedded.rs); the old way, as a
+//! separate program with an --onevent hook, is still here to switch back to (System → Engine settings).
+//! Both report the same events and messages, read here the same way. A port of Librespot.swift, including
+//! its recovery: songs Spotify won't unlock, songs worth one more try, dropped connections, sound that
 //! stops arriving, and checking Spotify still lists Cadenza after the computer wakes up.
 
 use regex::Regex;
@@ -26,6 +28,8 @@ fn now_ms() -> f64 {
 #[derive(Default)]
 struct Inner {
     child: Option<Child>,
+    /// The built-in engine, when that's the one running (instead of `child`).
+    embedded: Option<Arc<crate::embedded::Engine>>,
     /// Counts starts, so a process that ends after being replaced isn't mistaken for the current one.
     generation: u64,
     state: String,              // stopped | starting | login | running | missing | error
@@ -172,9 +176,13 @@ impl Librespot {
         push_log(&mut g, line.into());
     }
 
+    /// The built-in engine is the normal one; "program" in settings brings back the separate program.
+    pub fn uses_builtin(&self) -> bool { self.settings.string("engine") != "program" }
+
     pub fn start(self: &Arc<Self>) {
         let mut g = self.inner.lock().unwrap();
-        if g.child.is_some() { return; }
+        if Self::running(&g) { return; }
+        if self.uses_builtin() { return self.start_builtin(&mut g); }
         let Some(path) = self.resolve_path() else {
             push_log(&mut g, "librespot not found. Build it with desktop/librespot.sh, install it (cargo install librespot), or set its path in System → Engine settings.".into());
             return self.set_state(&mut g, "missing");
@@ -226,6 +234,52 @@ impl Librespot {
                 self.set_state(&mut g, "error");
             }
         }
+    }
+
+    fn start_builtin(self: &Arc<Self>, g: &mut Inner) {
+        let cache = self.cache_dir();
+        let _ = std::fs::create_dir_all(&cache);
+        kill_strays(&cache);                                    // a separate program left from before
+        g.generation += 1;
+        let generation = g.generation;
+        let pipe = crate::sound::MemPipe::new();
+        self.sound.attach_memory(pipe.clone());
+        let (m, e, x) = (Arc::clone(self), Arc::clone(self), Arc::clone(self));
+        let cfg = crate::embedded::Config {
+            name: self.settings.device_name(),
+            cache: cache.clone(),
+            bitrate: self.settings.bitrate().to_string(),
+            volume: self.settings.volume(),
+            normalize: self.settings.bool("normalize"),
+            autoplay: self.settings.bool("autoplay"),
+        };
+        let hooks = crate::embedded::Hooks {
+            message: Box::new(move |line| { if m.inner.lock().unwrap().generation == generation { m.consume(&line); } }),
+            event: Box::new(move |line| { if e.inner.lock().unwrap().generation == generation { e.handle_events(&line); } }),
+            ended: Box::new(move |why| x.builtin_ended(generation, why)),
+        };
+        g.embedded = Some(crate::embedded::Engine::start(cfg, pipe, hooks));
+        g.opened_auth = true;                                   // (the built-in engine opens the sign-in page itself)
+        push_log(g, format!("Started the built-in engine (librespot {}) as \"{}\", {} kbps.", LIBRESPOT_VERSION, self.settings.device_name(), self.settings.bitrate()));
+        let s = if self.has_credentials() { "starting" } else { "login" };
+        self.set_state(g, s);
+    }
+
+    /// The built-in engine stopped: on purpose (nothing to do) or not (handled like the program crashing).
+    fn builtin_ended(self: &Arc<Self>, generation: u64, why: String) {
+        let mut g = self.inner.lock().unwrap();
+        if g.generation != generation || g.embedded.is_none() { return; }      // stopped or replaced on purpose
+        g.embedded = None;
+        if !why.is_empty() { push_log(&mut g, format!("The built-in engine stopped: {why}")); }
+        self.after_exit(g);
+    }
+
+    fn running(g: &Inner) -> bool { g.child.is_some() || g.embedded.is_some() }
+
+    /// Stops whichever engine is running.
+    fn kill(g: &mut Inner) {
+        if let Some(mut c) = g.child.take() { let _ = c.kill(); let _ = c.wait(); }
+        if let Some(e) = g.embedded.take() { e.stop(); }
     }
 
     /// librespot's messages (its standard error), until it quits.
@@ -288,6 +342,12 @@ impl Librespot {
         let status = g.child.take().and_then(|mut c| c.wait().ok());
         let code = status.and_then(|s| s.code()).map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
         push_log(&mut g, format!("librespot exited ({code})"));
+        self.after_exit(g);
+    }
+
+    /// The engine stopped by itself: start it again after a pause that grows with each crash, unless the
+    /// login itself is bad.
+    fn after_exit(self: &Arc<Self>, mut g: std::sync::MutexGuard<'_, Inner>) {
         g.player.insert("is_playing".into(), json!(false));
         self.emit_player(&mut g);
 
@@ -310,7 +370,7 @@ impl Librespot {
         let me = Arc::clone(self);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(delay));
-            if me.inner.lock().unwrap().child.is_some() { return; }
+            if Self::running(&me.inner.lock().unwrap()) { return; }
             me.start();
             if me.wait_running(15.0) {
                 let mut g = me.inner.lock().unwrap();
@@ -324,7 +384,7 @@ impl Librespot {
 
     pub fn stop(&self) {
         let mut g = self.inner.lock().unwrap();
-        if let Some(mut c) = g.child.take() { let _ = c.kill(); let _ = c.wait(); }
+        Self::kill(&mut g);
         self.set_state(&mut g, "stopped");
     }
 
@@ -345,7 +405,7 @@ impl Librespot {
     pub fn restart(self: &Arc<Self>) {
         {
             let mut g = self.inner.lock().unwrap();
-            if let Some(mut c) = g.child.take() { let _ = c.kill(); let _ = c.wait(); }
+            Self::kill(&mut g);
             self.set_state(&mut g, "starting");
         }
         let me = Arc::clone(self);
@@ -437,6 +497,14 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return };
         g.events_offset += end as u64 + 1;
         let text = String::from_utf8_lossy(&buf[..end]).to_string();
+        drop(guard);
+        self.handle_events(&text);
+    }
+
+    /// Player events, one per line (from the program's event script, or the built-in engine).
+    fn handle_events(self: &Arc<Self>, text: &str) {
+        let mut guard = self.inner.lock().unwrap();
+        let g = &mut *guard;
         let mut changed = false;
         let mut then: Vec<Then> = vec![];
         for line in text.lines() {
@@ -629,7 +697,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     }
 
     fn playing_here(g: &Inner) -> bool { g.player.get("is_playing").and_then(Value::as_bool).unwrap_or(false) }
-    fn active_here(g: &Inner) -> bool { g.child.is_some() && g.player.get("active").and_then(Value::as_bool).unwrap_or(false) }
+    fn active_here(g: &Inner) -> bool { Self::running(g) && g.player.get("active").and_then(Value::as_bool).unwrap_or(false) }
     /// librespot is busy skipping songs Spotify won't unlock: silence is expected, don't restart anything.
     fn refused_recently(g: &Inner) -> bool { within(g.last_song_refusal, 15) }
 
@@ -694,7 +762,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     /// check makes sure Spotify still lists Cadenza.
     fn session_dropped(self: &Arc<Self>, reason: &str, was_active: bool) {
         let mut g = self.inner.lock().unwrap();
-        if !self.settings.bool("manageLibrespot") || g.child.is_none() { return; }
+        if !self.settings.bool("manageLibrespot") || !Self::running(&g) { return; }
         if !was_active || !Self::playing_here(&g) {
             drop(g);
             return self.schedule_device_check(20, reason);
@@ -744,7 +812,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             me.sound.ensure_audible();
             std::thread::sleep(Duration::from_secs(4));
             let g = me.inner.lock().unwrap();
-            if g.child.is_none() || !Self::playing_here(&g) || me.sound.seconds_since_audio() <= 4.0
+            if !Self::running(&g) || !Self::playing_here(&g) || me.sound.seconds_since_audio() <= 4.0
                 || Self::refused_recently(&g) || within(g.last_rescue, 60) { return; }
             drop(g);
             me.rescue("Playing, but no sound is reaching Cadenza: restarting the audio engine.");
@@ -769,7 +837,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
         let mut g = self.inner.lock().unwrap();
         // You just paused: Cadenza stops the sound itself before Spotify confirms, so silence is expected.
         let paused_here = self.sound.locally_paused_at().map_or(false, |t| t.elapsed() < Duration::from_secs(12));
-        let stalled = g.child.is_some() && Self::playing_here(&g) && Self::active_here(&g) && self.sound.seconds_since_audio() > 3.0
+        let stalled = Self::running(&g) && Self::playing_here(&g) && Self::active_here(&g) && self.sound.seconds_since_audio() > 3.0
             && !Self::refused_recently(&g) && !paused_here;
         if !stalled { g.stall_since = None; return; }
         let since = *g.stall_since.get_or_insert_with(Instant::now);
@@ -798,7 +866,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     /// song change), show it as playing instead of leaving the page thinking the song stopped early.
     fn follow_the_sound(&self) {
         let mut g = self.inner.lock().unwrap();
-        if g.child.is_none() { g.flowing_ticks = 0; return; }
+        if !Self::running(&g) { g.flowing_ticks = 0; return; }
         g.flowing_ticks = if self.sound.seconds_since_audio() < 0.3 { g.flowing_ticks + 1 } else { 0 };
         if g.flowing_ticks < 2 || Self::playing_here(&g) || within(g.last_stop_at, 4) { return; }
         g.pos_at = now_ms();
@@ -854,7 +922,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
 
     async fn check_device_because(self: &Arc<Self>, reason: &str) -> bool {
         if !self.settings.bool("manageLibrespot") || !self.has_credentials() || self.resolve_path().is_none() { return false; }
-        let running = self.inner.lock().unwrap().child.is_some();
+        let running = Self::running(&self.inner.lock().unwrap());
         if !running {
             self.note(format!("librespot isn't running ({reason}): starting it."));
             self.start();
@@ -882,7 +950,8 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     /// For "Copy diagnostics".
     pub fn diagnostics(&self) -> Vec<String> {
         let mut out = vec![];
-        match self.resolve_path() {
+        if self.uses_builtin() { out.push(format!("librespot: built in, version {LIBRESPOT_VERSION}")); }
+        else { match self.resolve_path() {
             Some(p) => {
                 let v = Command::new(&p).arg("--version").output().ok()
                     .map(|o| String::from_utf8_lossy(if o.stdout.is_empty() { &o.stderr } else { &o.stdout }).trim().to_string())
@@ -890,7 +959,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                 out.push(format!("librespot: {v} ({})", files::tidy(&p)));
             }
             None => out.push("librespot: not found".into()),
-        }
+        } }
         let g = self.inner.lock().unwrap();
         let playing = g.player.get("is_playing").and_then(Value::as_bool).unwrap_or(false);
         out.push(format!("engine state: {}, playing here: {playing}, sound output: {}", g.state, self.sound.output_name()));
@@ -903,9 +972,12 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     pub fn shutdown(&self) {
         self.history.finish();
         let mut g = self.inner.lock().unwrap();
-        if let Some(mut c) = g.child.take() { let _ = c.kill(); let _ = c.wait(); }
+        Self::kill(&mut g);
     }
 }
+
+/// The librespot built into Cadenza (librespot.sh's pinned commit, set by build.rs).
+const LIBRESPOT_VERSION: &str = match option_env!("CADENZA_LIBRESPOT_VERSION") { Some(v) => v, None => "0.8.0" };
 
 fn push_log(g: &mut Inner, line: String) {
     log::info!("engine: {line}");

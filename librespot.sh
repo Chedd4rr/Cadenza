@@ -6,10 +6,8 @@
 # - librespot from source: its dev branch, pinned to one exact commit (below), for this Mac's chip.
 #   The dev branch has fixes for changes Spotify made in late 2026 that aren't in a release yet.
 # - Plus the patches in patches/ (each one explains itself). Right now:
-#   - librespot-retry-keys: when Spotify refuses a song's key with its "try again" code
-#     (error audio key 0 2), ask again up to 3 times instead of skipping the song (librespot PR #1763);
-#   - librespot-skip-refused: when it still refuses after that, skip the song at once, instead of
-#     downloading it anyway, failing to read it and throwing away a good cached copy.
+#   - librespot-skip-refused: when Spotify refuses a song's key (error audio key 0 2), skip the song at
+#     once, instead of downloading it anyway, failing to read it and throwing away a good cached copy.
 # - Pipe output only, no speaker code: Cadenza plays all sound through its own engine.
 #
 # The source and the finished program are kept in ~/Library/Developer/Cadenza/librespot, outside this

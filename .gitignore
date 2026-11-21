@@ -28,3 +28,5 @@ credentials.json
 desktop/target/
 desktop/gen/
 desktop/binaries/
+desktop/librespot-src/
+desktop/librespot-src.new/

@@ -12,7 +12,7 @@ pub const KEYS: &[&str] = &[
     "librespotPath", "deviceName", "bitrate", "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin",
     "themedCovers", "sfx", "sfxVolume", "normalize", "eqPerDevice", "autoplay", "trueShuffle", "crossfade",
     "geniusToken", "discord", "discordAppId", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate",
-    "shortcuts",
+    "shortcuts", "engine",
 ];
 
 /// Settings that are passwords or tokens. They live in secrets.json and are never sent back to the page.
@@ -29,6 +29,8 @@ fn defaults() -> Map<String, Value> {
         "trueShuffle": true, "crossfade": 6, "discord": false, "discordAppId": "", "lastfmKey": "",
         "updateRepo": DEFAULT_REPO, "autoUpdate": true, "openAtLogin": false,
         "shortcuts": {},
+        // "builtin": librespot inside Cadenza. "program": the separate librespot program (the old way).
+        "engine": "builtin",
     });
     match v { Value::Object(m) => m, _ => Map::new() }
 }

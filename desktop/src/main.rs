@@ -10,6 +10,7 @@ mod builtin;
 mod cover;
 mod discord;
 mod dsp;
+mod embedded;
 mod files;
 mod history;
 mod lastfm;
@@ -30,7 +31,7 @@ mod testmode;
 mod translation;
 
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub struct Core {
@@ -321,17 +322,23 @@ fn reply(bytes: Vec<u8>, name: &str) -> tauri::http::Response<Vec<u8>> {
         .unwrap()
 }
 
-/// Log messages go to standard error when CADENZA_LOG is set (no logging crate needed for that).
+/// Log messages go to standard error when CADENZA_LOG is set (no logging crate needed for that). The
+/// built-in engine's own messages (librespot's) always go to it too, as the program's used to.
 fn env_logger_lite() {
-    struct L;
+    struct L { print: bool }
     impl log::Log for L {
-        fn enabled(&self, _: &log::Metadata) -> bool { true }
-        fn log(&self, r: &log::Record) { eprintln!("[{}] {}", r.level(), r.args()); }
+        fn enabled(&self, m: &log::Metadata) -> bool { self.print || embedded::is_librespot(m.target()) }
+        fn log(&self, r: &log::Record) {
+            if embedded::is_librespot(r.target()) {
+                if r.level() > log::Level::Info { return; }
+                embedded::message(r);
+            }
+            if self.print { eprintln!("[{}] {}", r.level(), r.args()); }
+        }
         fn flush(&self) {}
     }
-    if std::env::var_os("CADENZA_LOG").is_some() {
-        static LOGGER: L = L;
-        let _ = log::set_logger(&LOGGER);
-        log::set_max_level(log::LevelFilter::Info);
-    }
+    static LOGGER: OnceLock<L> = OnceLock::new();
+    let logger = LOGGER.get_or_init(|| L { print: std::env::var_os("CADENZA_LOG").is_some() });
+    let _ = log::set_logger(logger);
+    log::set_max_level(log::LevelFilter::Info);
 }

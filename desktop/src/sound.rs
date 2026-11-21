@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::io::Read;
 use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::dsp::{self, Curve, Eq, Limiter, Ramp};
@@ -233,6 +233,8 @@ struct Shared {
     generation: AtomicU64,
     /// librespot's sound pipe, for asking how much is still waiting in it.
     pipe_fd: AtomicI64,
+    /// The built-in engine's sound, in memory instead of a pipe (see MemPipe).
+    mem: Mutex<Option<Arc<MemPipe>>>,
     // The visualizer.
     meter_on: AtomicBool,
     tap: Mutex<VecDeque<f32>>,
@@ -251,7 +253,7 @@ impl Sound {
             output: Mutex::new("none yet".into()), log: Mutex::new(vec![]),
             received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
             last_callback: AtomicU64::new(0), buffer_frames: AtomicU32::new(BUFFER_FRAMES), rate: AtomicU32::new(RATE),
-            too_slow: AtomicBool::new(false), generation: AtomicU64::new(0), pipe_fd: AtomicI64::new(-1),
+            too_slow: AtomicBool::new(false), generation: AtomicU64::new(0), pipe_fd: AtomicI64::new(-1), mem: Mutex::new(None),
             meter_on: AtomicBool::new(false), tap: Mutex::new(VecDeque::with_capacity(dsp::FFT_SIZE * 2)),
             chosen: Mutex::new(None), device: Mutex::new((String::new(), String::new())),
         });
@@ -287,17 +289,32 @@ impl Sound {
     }
 
     /// Frames librespot has written that haven't been read yet (still in the pipe).
-    fn waiting_frames(&self) -> i64 { pipe_waiting(self.s.pipe_fd.load(Ordering::Relaxed)) / 4 }
+    fn waiting_frames(&self) -> i64 {
+        if let Some(m) = self.s.mem.lock().unwrap().as_ref() { return m.waiting() as i64 / 4; }
+        pipe_waiting(self.s.pipe_fd.load(Ordering::Relaxed)) / 4
+    }
 
     // MARK: reading librespot's sound
 
     /// Reads a new librespot process's sound until it closes its output (it quit or was restarted).
-    pub fn attach(&self, mut pipe: ChildStdout) {
-        let gen = self.s.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    pub fn attach(&self, pipe: ChildStdout) {
         #[cfg(unix)]
         { use std::os::unix::io::AsRawFd; self.s.pipe_fd.store(pipe.as_raw_fd() as i64, Ordering::Relaxed); }
         #[cfg(windows)]
         { use std::os::windows::io::AsRawHandle; self.s.pipe_fd.store(pipe.as_raw_handle() as isize as i64, Ordering::Relaxed); }
+        *self.s.mem.lock().unwrap() = None;
+        self.read_from(pipe);
+    }
+
+    /// Reads the built-in engine's sound (it writes into `pipe`) until the engine closes it.
+    pub fn attach_memory(&self, pipe: Arc<MemPipe>) {
+        self.s.pipe_fd.store(-1, Ordering::Relaxed);
+        *self.s.mem.lock().unwrap() = Some(pipe.clone());
+        self.read_from(MemReader(pipe));
+    }
+
+    fn read_from(&self, mut pipe: impl Read + Send + 'static) {
+        let gen = self.s.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.with(|st| { st.stream_frames = 0; st.track_start = -1; st.track_length = 0; st.last_boundary = -1; st.in_tail = false; });
         let s = self.s.clone();
         std::thread::Builder::new().name("cadenza-pipe".into()).spawn(move || {
@@ -652,6 +669,51 @@ fn report_plan(st: &mut State, written: i64) {
     if line == st.last_plan_line { return; }                      // the same plan, worked out again a moment later
     st.last_plan_line = line.clone();
     st.xlog(line);
+}
+
+/// The built-in engine's sound on its way to the output: librespot writes 16-bit stereo samples in, the
+/// reader takes them out. It works like the pipe from the separate librespot program, including making
+/// librespot wait while it's full, so the crossfade and skipping work the same way.
+pub struct MemPipe { buf: Mutex<VecDeque<u8>>, cv: Condvar, closed: AtomicBool }
+
+impl MemPipe {
+    /// About the size of a pipe's buffer (macOS and Linux both use 64 KB): 0.37 s of sound.
+    const CAP: usize = 64 * 1024;
+    pub fn new() -> Arc<Self> { Arc::new(MemPipe { buf: Mutex::new(VecDeque::with_capacity(Self::CAP)), cv: Condvar::new(), closed: AtomicBool::new(false) }) }
+    pub fn waiting(&self) -> usize { self.buf.lock().unwrap().len() }
+    /// Waits for room, then adds `data`. False once closed.
+    pub fn write(&self, mut data: &[u8]) -> bool {
+        while !data.is_empty() {
+            let mut b = self.buf.lock().unwrap();
+            while b.len() >= Self::CAP && !self.closed.load(Ordering::Relaxed) {
+                b = self.cv.wait_timeout(b, Duration::from_millis(100)).unwrap().0;
+            }
+            if self.closed.load(Ordering::Relaxed) { return false; }
+            let n = (Self::CAP - b.len()).min(data.len());
+            b.extend(&data[..n]);
+            data = &data[n..];
+            self.cv.notify_all();
+        }
+        true
+    }
+    /// The engine stopped: the reader finishes, and a writer still waiting gives up.
+    pub fn close(&self) { self.closed.store(true, Ordering::Relaxed); self.cv.notify_all(); }
+}
+
+struct MemReader(Arc<MemPipe>);
+impl Read for MemReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let p = &self.0;
+        let mut b = p.buf.lock().unwrap();
+        while b.is_empty() {
+            if p.closed.load(Ordering::Relaxed) { return Ok(0); }
+            b = p.cv.wait_timeout(b, Duration::from_millis(100)).unwrap().0;
+        }
+        let n = out.len().min(b.len());
+        for (o, v) in out.iter_mut().zip(b.drain(..n)) { *o = v; }
+        p.cv.notify_all();
+        Ok(n)
+    }
 }
 
 /// Bytes waiting in a pipe (librespot's sound not read yet).
@@ -1010,5 +1072,27 @@ fn report(s: Arc<Shared>) {
         let eq = if ein > 0.0 && eout > 0.0 { format!(", the EQ changes the level by {:+.1} dB", 10.0 * (eout / ein).log10()) } else { String::new() };
         note(&s, format!("Sound report (5 s): from librespot {:.1} s, played {:.1} s of {:.1} s asked for, loudest {level}{eq}",
             received as f64 / RATE as f64, played as f64 / RATE as f64, called as f64 / rate));
+    }
+}
+
+#[cfg(test)]
+mod mem_pipe_tests {
+    use super::*;
+    #[test]
+    fn carries_sound_and_waits_when_full() {
+        let p = MemPipe::new();
+        let w = p.clone();
+        // More than fits at once: the writer has to wait for the reader.
+        let writer = std::thread::spawn(move || w.write(&vec![7u8; MemPipe::CAP * 3]));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(p.waiting() <= MemPipe::CAP);
+        let mut r = MemReader(p.clone());
+        let mut got = 0;
+        let mut buf = vec![0u8; 5000];
+        while got < MemPipe::CAP * 3 { let n = r.read(&mut buf).unwrap(); assert!(buf[..n].iter().all(|b| *b == 7)); got += n; }
+        assert!(writer.join().unwrap());
+        p.close();
+        assert_eq!(r.read(&mut buf).unwrap(), 0);
+        assert!(!p.write(&[1, 2, 3, 4]));
     }
 }

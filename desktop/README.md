@@ -157,7 +157,8 @@ read them.
 | `src/bridge.rs` | Answers the page's `native(cmd, args)` calls | `Bridge.swift` |
 | `src/auth.rs` | Spotify sign-in | `SpotifyAuth.swift` |
 | `src/api.rs` | Spotify Web API, with the rate-limit guard | `SpotifyAPI.swift` |
-| `src/librespot.rs` | Runs librespot and reads what it's playing | `Librespot.swift` |
+| `src/librespot.rs` | Runs librespot (built in, or the separate program) and reads what it's playing | `Librespot.swift` |
+| `src/embedded.rs` | The built-in engine: librespot running inside Cadenza | (new) |
 | `src/sound.rs` | The sound engine: reading librespot, the crossfade, pause and skip, outputs | `EQ.swift`, `AudioOutputs.swift` |
 | `src/macaudio.rs` | The Mac's outputs, from Core Audio | `AudioOutputs.swift` |
 | `src/menu.rs` | The Mac's menu bar | `AppDelegate.swift` (`buildMenu`) |
@@ -170,7 +171,7 @@ read them.
 | `src/system.rs` | Media keys and Now Playing, the tray, the mini player, notifications, links, the window resting | `MediaKeys.swift`, `StatusBar.swift`, `FloatingPlayer.swift`, `Notifier.swift`, `AppDelegate.swift` |
 | `src/discord.rs` | Discord's "Listening to" status | `Discord.swift` |
 | `src/settings.rs`, `src/store.rs`, `src/files.rs` | Settings, page data, private files | `Settings.swift`, `Store.swift` |
-| `librespot.sh` | Builds the bundled librespot | `../librespot.sh` |
+| `librespot.sh` | Gets librespot's source ready for the built-in engine (`librespot-src/`) and builds the separate program | `../librespot.sh` |
 
 The page finds the app through `window.cadenzaNative`, which works like the Mac app's WebKit message
 handler, so app.js needs no other changes.

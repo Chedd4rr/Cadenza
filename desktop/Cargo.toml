@@ -5,7 +5,7 @@ description = "A Spotify client with its own sound engine"
 license = "MIT"
 repository = "https://github.com/Chedd4rr/Cadenza"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -39,6 +39,16 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 md-5 = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+sha1 = "0.10"
+
+# The built-in engine: librespot itself, from the source librespot.sh gets ready in librespot-src/ (its
+# pinned version with Cadenza's patches). No speaker code of its own (Cadenza plays the sound) and the same
+# HTTPS code as the rest of Cadenza.
+librespot-core = { path = "librespot-src/core", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-connect = { path = "librespot-src/connect", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-playback = { path = "librespot-src/playback", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-metadata = { path = "librespot-src/metadata", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-oauth = { path = "librespot-src/oauth", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
 # The Mac's login items (SMAppService), through Objective-C.
 [target.'cfg(target_os = "macos")'.dependencies]

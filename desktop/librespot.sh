@@ -1,7 +1,10 @@
 #!/bin/bash
-# Builds the librespot that ships with Cadenza for Windows, Linux and macOS (the Tauri app), the same
-# version and patches as the Mac app's ../librespot.sh, and puts it where Tauri bundles it:
-#   binaries/librespot-<target triple>[.exe]
+# Gets librespot ready for Cadenza on Windows, Linux and macOS (the Tauri app), the same version and
+# patches as the Mac app's ../librespot.sh. Two things:
+#   librespot-src/                      its source with Cadenza's patches, which Cadenza builds into
+#                                       itself (the built-in engine, the normal one)
+#   binaries/librespot-<triple>[.exe]   the separate librespot program, which Tauri bundles (the old way,
+#                                       still there to switch back to in System → Engine settings)
 # build.sh runs this for you. The first build takes a few minutes; after that it's reused.
 #
 # - librespot's dev branch, pinned to one exact commit, or release 0.8.0 if that commit is gone.
@@ -48,7 +51,9 @@ find_built() {
   done
 }
 
-build() (
+# Fetches the pinned commit (or the fallback release) into ${SRC} and puts the patches on top.
+# Prints the version it got.
+checkout() (
   if [ ! -d "${SRC}/.git" ]; then
     rm -rf "${SRC}"
     git init -q "${SRC}" || exit 1
@@ -59,16 +64,21 @@ build() (
   git -C "${SRC}" clean -qfd 2>/dev/null || true
   VERSION="${COMMIT}" WANT="${COMMIT}"
   if ! git -C "${SRC}" fetch -q --depth 1 origin "${COMMIT}" 2>/dev/null; then
-    echo "!  The pinned librespot commit isn't available any more; building release ${FALLBACK} instead."
+    echo "!  The pinned librespot commit isn't available any more; using release ${FALLBACK} instead." >&2
     VERSION="${FALLBACK}" WANT="${FALLBACK_COMMIT}"
     git -C "${SRC}" fetch -q --depth 1 origin "${FALLBACK_COMMIT}" || exit 1
   fi
   git -C "${SRC}" -c advice.detachedHead=false checkout -q -f "${WANT}" || exit 1
   for patch in "${HERE}"/../patches/*.patch; do
     [ -f "${patch}" ] || continue
-    if git -C "${SRC}" apply "${patch}"; then echo "   + $(basename "${patch}")"
-    else echo "!  $(basename "${patch}") doesn't fit this librespot version; building without it."; fi
+    if git -C "${SRC}" apply "${patch}"; then echo "   + $(basename "${patch}")" >&2
+    else echo "!  $(basename "${patch}") doesn't fit this librespot version; building without it." >&2; fi
   done
+  echo "${VERSION}"
+)
+
+build() (
+  VERSION="$(checkout)" || exit 1
   ( cd "${SRC}" && CARGO_PROFILE_RELEASE_STRIP=symbols \
       cargo build --release --locked --target "${TRIPLE}" --no-default-features --features "native-tls,with-libmdns" ) || exit 1
   OUT="${CACHE}/librespot-${VERSION}-${PATCHES}-${TRIPLE}${EXT}"
@@ -91,6 +101,27 @@ if [ -z "${BUILT}" ]; then
   fi
 fi
 [ -n "${BUILT}" ] || { echo "!  Couldn't build librespot." >&2; exit 1; }
+
+# The source Cadenza builds into itself (Cargo.toml points at it). Copied out of the cache, without git's
+# files, and only again when the version or the patches change.
+STAMP="${COMMIT}-${PATCHES}"
+if [ "$(cat "${HERE}/librespot-src/.cadenza-version" 2>/dev/null)" != "${STAMP}" ]; then
+  echo "> Getting librespot's source ready for the built-in engine..."
+  if VERSION="$(checkout)"; then
+    rm -rf "${HERE}/librespot-src.new"
+    mkdir -p "${HERE}/librespot-src.new"
+    tar -C "${SRC}" --exclude=./.git --exclude=./target -cf - . | tar -C "${HERE}/librespot-src.new" -xf -
+    echo "${STAMP}" > "${HERE}/librespot-src.new/.cadenza-version"
+    git -C "${SRC}" reset -q --hard
+    rm -rf "${HERE}/librespot-src"
+    mv "${HERE}/librespot-src.new" "${HERE}/librespot-src"
+    echo "OK: librespot-src (${VERSION})"
+  elif [ -d "${HERE}/librespot-src" ]; then
+    echo "!  Couldn't fetch librespot's source; keeping the copy that's already here."
+  else
+    echo "!  Couldn't fetch librespot's source." >&2; exit 1
+  fi
+fi
 
 mkdir -p "${HERE}/binaries"
 cp "${BUILT}" "${HERE}/binaries/librespot-${TRIPLE}${EXT}"

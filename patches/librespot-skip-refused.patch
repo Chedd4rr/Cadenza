@@ -1,9 +1,10 @@
-Skip a song straight away when Spotify still refuses its key after librespot's retries.
+Skip a song straight away when Spotify refuses its key.
 
 Without this, librespot carries on without the key: it downloads the song, fails to read it (the file
 is encrypted), deletes the good cached copy and downloads it again, asking for the key 3 more times.
-That was 5-10 seconds of silence per refused song. Only the "try again" refusal (0x0002) is skipped
-this way; any other key error keeps librespot's normal behaviour. librespot.sh applies this file.
+That was 5-10 seconds of silence per refused song. Only Spotify's refusal ("error audio key 0 2") is
+skipped this way; a key that's just slow to arrive keeps librespot's normal behaviour. librespot.sh
+applies this file. (Cadenza used to ask up to 3 times first; that only kept Spotify refusing for longer.)
 
 diff --git a/playback/src/player.rs b/playback/src/player.rs
 index f3d803d..7874308 100644
@@ -13,10 +14,10 @@ index f3d803d..7874308 100644
              // parsing and bail out, so we should be safe from outputting ear-piercing noise.
              let key = match self.session.audio_key().request(track_id, file_id).await {
                  Ok(key) => Some(key),
-+                // Spotify refused the key ("try again" code) even after retrying. The file is encrypted,
++                // Spotify refused the key ("error audio key 0 2"). The file is encrypted,
 +                // so reading it without a key only wastes a download and throws away a good cached copy
 +                // before failing anyway. Give up on this track straight away. (Cadenza patch.)
-+                Err(e) if e.to_string().contains("audio key error 0x0002") => {
++                Err(e) if e.to_string().contains("audio key error") => {
 +                    warn!("Unable to load key, skipping this track: {e}");
 +                    return None;
 +                }
