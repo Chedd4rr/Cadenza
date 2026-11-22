@@ -758,6 +758,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                 play: a.get("play").and_then(Value::as_bool).unwrap_or(true),
                 shuffle: a.get("shuffle").and_then(Value::as_bool).unwrap_or(false),
                 repeat: s("repeat").unwrap_or_else(|| "off".into()),
+                take_over: !active,
             },
             _ if !active => return no("another device is playing"),
             // Nothing loaded (the list ran out): the page starts something instead.

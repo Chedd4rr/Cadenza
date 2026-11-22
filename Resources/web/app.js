@@ -5736,6 +5736,7 @@ const TrueShuffle = {
   /** Once a second: the last song of this stretch has finished and Spotify stopped. */
   tick() {
     if (!this.active || this.ending || this.chunk.length < 1) return;
+    if (S.holdUntil && Date.now() < S.holdUntil) return;          // the engine is waiting after a refused song
     const p = S.player, it = p && p.item;
     if (!it) return;
     const last = this.chunk[this.chunk.length - 1];
@@ -7176,6 +7177,7 @@ const Radio = {
   watch() {
     const p = S.player, it = p && p.item;
     if (!this.active || !it || this.finding) return;              // (already waiting for the next song)
+    if (S.holdUntil && Date.now() < S.holdUntil) return;          // the engine is waiting after a refused song
     if (this.ended(p)) {
       if (!this.stall) this.stall = Date.now();
       // Skipping fast can outrun Spotify's queue; then the music just stops. Move on at once in that case.
@@ -7227,6 +7229,7 @@ const Radio = {
     clearTimeout(this.endTimer);
     const p = S.player;
     if (this.active || TrueShuffle.active || !this.enabled() || DJ.active || !p) return;
+    if (S.holdUntil && Date.now() < S.holdUntil) return;          // the engine is waiting after a refused song
     if (p.repeat_state && p.repeat_state !== "off") return;
     // When the list runs out, Spotify (or a librespot that lost its playlist after a dropped connection)
     // can drop the song altogether instead of leaving it paused at the end. Use the song that was ending.
@@ -8954,7 +8957,9 @@ const LastPlayed = {
     const listCtx = this.isList(p.context) ? p.context : tsCtx;
     const lastContext = listCtx ? { uri: listCtx, track: it.uri } : (prev && prev.lastContext) || null;
     const v = { context: p.context || null, uri: it.uri, name: it.name, artists, position: Math.max(0, Math.round(pos)), duration: it.duration_ms || 0,
-      lastContext, shuffle: !!(p.shuffle_state || TrueShuffle.active), at: Date.now() };
+      lastContext, shuffle: !!(p.shuffle_state || TrueShuffle.active), at: Date.now(),
+      // Autoplay (or the DJ) was choosing the songs: reopening carries on with autoplay, not an old playlist.
+      from: Radio.active ? "autoplay" : DJ.active ? "dj" : null };
     try { localStorage.setItem(this.KEY, JSON.stringify(v)); } catch (e) { /* storage off: the store copy below still works */ }
     // The store is one file that's rewritten on every save, so only write it when the song, playlist or
     // play/pause changes, or once a minute.
@@ -9009,8 +9014,8 @@ const LastPlayed = {
     const path = `/me/player/play?device_id=${enc(dev)}`;
     let lone = !v.context;
     let r;
-    if (lone && v.lastContext) {
-      // A lone song (song radio, the DJ, search…), but you were in a playlist before that: play the song,
+    if (lone && v.lastContext && !v.from) {
+      // A lone song (from search, say), but you were in a playlist before that: play the song,
       // then the rest of that playlist from where you left it (shuffled if you were shuffling).
       const list = await this.listTracks(v.lastContext.uri);
       if (list && list.length) {
@@ -9044,9 +9049,11 @@ const LastPlayed = {
         setTimeout(() => TrueShuffle.attach(v.context, v.uri), 1200);
       }
     }
-    // A song on its own (it came from song radio, the DJ, search…): line up similar songs behind it, so
-    // Next and the end of the song have somewhere to go.
+    // A song on its own (autoplay or the DJ was playing, or it came from search…): line up similar songs
+    // behind it, so Next and the end of the song have somewhere to go. After autoplay, that's autoplay
+    // carrying on where it was.
     if (lone && r.status < 300 && Radio.enabled() && /^spotify:track:/.test(v.uri)) {
+      if (v.from === "autoplay") toast("PICKING UP WHERE YOU LEFT OFF · AUTOPLAY CARRIES ON");
       setTimeout(() => { if (!Radio.active && !DJ.active && !TrueShuffle.active) Radio.begin({ uri: v.uri, name: v.name || "", artists: v.artists || [] }); }, 1500);
     }
     if (r.status >= 300) r = await api("PUT", "/me/player", { device_ids: [dev], play: true });
@@ -9141,7 +9148,8 @@ window.app = {
       S.queueEndAt = Date.now();
       // The built-in engine ran out of songs while autoplay was going (skipping faster than songs were
       // handed over): autoplay plays its next one itself, at once.
-      if (Direct.on() && Radio.active && !Radio.finding) { Radio.qd = []; Radio.nudgedAt = Date.now(); Radio.advance(); }
+      if (S.holdUntil && Date.now() < S.holdUntil) { /* the engine moves on by itself after its wait */ }
+      else if (Direct.on() && Radio.active && !Radio.finding) { Radio.qd = []; Radio.nudgedAt = Date.now(); Radio.advance(); }
       else setTimeout(() => { Radio.checkEnd(); Radio.watch(); }, 1200);
     }
     else if (event === "engine.refused" && data && data.uri) {
@@ -9156,6 +9164,9 @@ window.app = {
     else if (event === "engine.held" && data) {
       // The built-in engine paused on a song Spotify wouldn't play and waits a moment before the next.
       const s = Math.round((data.wait_ms || 0) / 1000);
+      // The engine moves on by itself when the wait is over: autoplay mustn't load another song meanwhile
+      // (it would be refused too, and make Spotify refuse for longer).
+      S.holdUntil = Date.now() + Math.max(0, (data.wait_ms || 0) - 100);
       if (data.skips > 1) toast(`WAITING FOR SPOTIFY · SKIPPING ${data.skips} AHEAD IN ${Math.max(1, s)} S · PLAY GOES NOW`, true);
       else if (s >= 3) toast(`SPOTIFY IS REFUSING SONGS FOR A MOMENT · NEXT ONE IN ${s} S`, true);
     }

@@ -66,7 +66,8 @@ pub struct Hooks {
 pub enum Direct {
     /// Play a list of songs, or a playlist or album (`context`), from one of its songs (`from`: a URI, or
     /// a place in the list) and a spot in it (`position` ms). Takes playback over from another device.
-    Load { tracks: Vec<String>, context: Option<String>, from_uri: Option<String>, from_index: Option<u32>, position: u32, play: bool, shuffle: bool, repeat: String },
+    /// `take_over`: another device is playing, so become the one playing first.
+    Load { tracks: Vec<String>, context: Option<String>, from_uri: Option<String>, from_index: Option<u32>, position: u32, play: bool, shuffle: bool, repeat: String, take_over: bool },
     Play,
     Pause,
     /// Skip this many songs ahead.
@@ -152,7 +153,7 @@ impl Engine {
         let guard = self.spirc.lock().unwrap();
         let Some(spirc) = guard.as_ref() else { return Err("the engine isn't connected yet".into()) };
         let r = match d {
-            Direct::Load { tracks, context, from_uri, from_index, position, play, shuffle, repeat } => {
+            Direct::Load { tracks, context, from_uri, from_index, position, play, shuffle, repeat, take_over } => {
                 let options = LoadRequestOptions {
                     start_playing: play,
                     seek_to: position,
@@ -161,7 +162,7 @@ impl Engine {
                 };
                 let req = match context { Some(c) => LoadRequest::from_context_uri(c, options), None => LoadRequest::from_tracks(tracks, options) };
                 // Taking over from another device first (librespot ignores a load while it isn't the one playing).
-                let _ = spirc.activate();
+                if take_over { let _ = spirc.activate(); }
                 spirc.load(req)
             }
             Direct::Play => spirc.play(),
