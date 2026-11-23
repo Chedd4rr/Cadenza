@@ -1,38 +1,31 @@
 # The built-in librespot
 
 Cadenza plays the sound through [librespot](https://github.com/librespot-org/librespot), an open-source
-Spotify Connect client. `librespot.sh` (run by `build.sh`) builds it from source and puts it inside
-Cadenza.app, so there's nothing else to install.
+Spotify Connect client, built into the app, so there's nothing else to install. Its license ships with the
+app.
 
 - **Version:** pinned to one commit of librespot's dev branch (7 Nov 2026), which has fixes for changes
-  Spotify made in late 2026 that aren't in a release yet. If that commit is ever gone, it builds release
-  0.8.0. Both are fetched by exact commit, and `cargo build --locked` uses the dependency versions in
-  librespot's `Cargo.lock`, so a build can't silently pick up different code.
+  Spotify made in late 2026 that aren't in a release yet. If that commit is ever gone, it uses release
+  0.8.0. Both are fetched by exact commit.
 - **Patches** in `patches/`, each explained at its top:
   - `librespot-skip-refused.patch`: when Spotify refuses a song's key (`error audio key 0 2`), skip the
     song straight away instead of downloading it anyway, failing to read it and deleting a good cached
     copy. (Cadenza used to ask for a refused key up to 3 times first; that only kept Spotify refusing.)
   - `librespot-hold-refused.patch`: lets an app make librespot pause on a song it can't play instead of
-    skipping to the next one (and the next, while Spotify keeps refusing). Only the built-in engine turns
-    it on: it then waits a moment, longer each time it happens again soon, and moves on itself.
+    skipping to the next one (and the next, while Spotify keeps refusing). Cadenza turns it on: it then
+    waits a moment, longer each time it happens again soon, and moves on itself.
 
-  Changing a patch's code (not its description) makes the next build rebuild librespot.
-- **Build:** for your Mac's chip, pipe output only (Cadenza plays the sound through its own engine, for
-  the EQ, crossfade and visualizer), without debug symbols: about 7–10 MB.
-- **Where:** the source and the finished program live in `~/Library/Developer/Cadenza/librespot`, never
-  in this repository, and later builds reuse them. If a build fails, the last one that worked is used.
-- **No Rust?** The app is built without it and uses a Homebrew librespot (`brew install librespot`). Set
-  `CADENZA_SKIP_LIBRESPOT=1` to skip it on purpose.
+  Changing a patch's code (not its description) makes the next build get the source ready again.
+- **No speaker code of its own:** Cadenza plays the sound through its own engine, for the EQ, crossfade and
+  visualizer.
 
-To use a different librespot, set System → Engine settings → Librespot path. Cadenza uses that first,
-then its own copy, then a Homebrew one.
+## How it runs
 
-## The built-in engine (Windows, Linux and the Tauri Mac app)
-
-The Tauri app normally runs librespot inside itself instead of as a separate program. `desktop/librespot.sh`
-gets the same pinned commit ready with the same patches in `desktop/librespot-src/` (never in git), and
-Cadenza is built with it (`desktop/Cargo.toml` points there). It's set up the way Cadenza used to start the
-program: the same device name and the same device ID, so Spotify and your phone see the same "Cadenza"
+`desktop/librespot.sh` (run by `build.sh`) gets the pinned commit ready with the patches in
+`desktop/librespot-src/` (never in git), and Cadenza is built with it (`desktop/Cargo.toml` points there).
+Its git copy lives in a cache folder outside the project (`~/Library/Developer/Cadenza/librespot` on a Mac,
+`~/.cache/cadenza-build/librespot` on Linux, `%LOCALAPPDATA%\cadenza-build\librespot` on Windows). It's set
+up the way Cadenza used to start librespot as a program: the same device name and the same device ID, so Spotify and your phone see the same "Cadenza"
 speaker; the same login file; the same volume curve, quality and even-loudness settings. Spotify Connect stays
 on, so your phone can still see and control it.
 
@@ -65,7 +58,6 @@ straight away, and a new list never inherits songs left over from the last one. 
 Cadenza plays the line-up's next song itself. Repeat on a list goes round the line-up again; Previous steps
 back through it. A whole playlist or album started as itself is played by the engine, with Up Next ahead of it.
 
-The separate program still uses the old way (Spotify's queue, fed one song at a time).
 
 The separate program is still built and bundled for now. System → Engine settings → Engine switches between
 the two (it restarts the engine).

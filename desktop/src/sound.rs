@@ -1,5 +1,5 @@
-//! Cadenza's own sound engine. librespot hands over its decoded sound (16-bit stereo at 44.1 kHz on its
-//! standard output, `--backend pipe`), and Cadenza plays it through a 10-band EQ, a preamp and a peak
+//! Cadenza's own sound engine. librespot (built in, see embedded.rs) hands over its decoded sound (16-bit
+//! stereo at 44.1 kHz, through memory: MemPipe), and Cadenza plays it through a 10-band EQ, a preamp and a peak
 //! limiter, with:
 //! - a crossfade between songs, by reading the end of a song ahead of time and playing the next song's
 //!   start over it on a second voice (equal-power curves, so the loudness stays even);
@@ -15,8 +15,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::io::Read;
-use std::process::ChildStdout;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -231,9 +230,7 @@ struct Shared {
     too_slow: AtomicBool,
     /// Bumped for each librespot process, so an old reader knows to stop.
     generation: AtomicU64,
-    /// librespot's sound pipe, for asking how much is still waiting in it.
-    pipe_fd: AtomicI64,
-    /// The built-in engine's sound, in memory instead of a pipe (see MemPipe).
+    /// The engine's sound on its way here (see MemPipe), for asking how much is still waiting.
     mem: Mutex<Option<Arc<MemPipe>>>,
     // The visualizer.
     meter_on: AtomicBool,
@@ -253,7 +250,7 @@ impl Sound {
             output: Mutex::new("none yet".into()), log: Mutex::new(vec![]),
             received: AtomicU64::new(0), called: AtomicU64::new(0), played: AtomicU64::new(0), peak: AtomicU64::new(0),
             last_callback: AtomicU64::new(0), buffer_frames: AtomicU32::new(BUFFER_FRAMES), rate: AtomicU32::new(RATE),
-            too_slow: AtomicBool::new(false), generation: AtomicU64::new(0), pipe_fd: AtomicI64::new(-1), mem: Mutex::new(None),
+            too_slow: AtomicBool::new(false), generation: AtomicU64::new(0), mem: Mutex::new(None),
             meter_on: AtomicBool::new(false), tap: Mutex::new(VecDeque::with_capacity(dsp::FFT_SIZE * 2)),
             chosen: Mutex::new(None), device: Mutex::new((String::new(), String::new())),
         });
@@ -289,26 +286,13 @@ impl Sound {
     }
 
     /// Frames librespot has written that haven't been read yet (still in the pipe).
-    fn waiting_frames(&self) -> i64 {
-        if let Some(m) = self.s.mem.lock().unwrap().as_ref() { return m.waiting() as i64 / 4; }
-        pipe_waiting(self.s.pipe_fd.load(Ordering::Relaxed)) / 4
-    }
+    fn waiting_frames(&self) -> i64 { self.s.mem.lock().unwrap().as_ref().map_or(0, |m| m.waiting() as i64 / 4) }
 
     // MARK: reading librespot's sound
 
     /// Reads a new librespot process's sound until it closes its output (it quit or was restarted).
-    pub fn attach(&self, pipe: ChildStdout) {
-        #[cfg(unix)]
-        { use std::os::unix::io::AsRawFd; self.s.pipe_fd.store(pipe.as_raw_fd() as i64, Ordering::Relaxed); }
-        #[cfg(windows)]
-        { use std::os::windows::io::AsRawHandle; self.s.pipe_fd.store(pipe.as_raw_handle() as isize as i64, Ordering::Relaxed); }
-        *self.s.mem.lock().unwrap() = None;
-        self.read_from(pipe);
-    }
-
-    /// Reads the built-in engine's sound (it writes into `pipe`) until the engine closes it.
+    /// Reads the engine's sound (it writes into `pipe`) until the engine closes it.
     pub fn attach_memory(&self, pipe: Arc<MemPipe>) {
-        self.s.pipe_fd.store(-1, Ordering::Relaxed);
         *self.s.mem.lock().unwrap() = Some(pipe.clone());
         self.read_from(MemReader(pipe));
     }
@@ -319,7 +303,6 @@ impl Sound {
         let s = self.s.clone();
         std::thread::Builder::new().name("cadenza-pipe".into()).spawn(move || {
             let mut bytes = vec![0u8; 1024 * 4];
-            let mut started = false;
             loop {
                 if s.generation.load(Ordering::SeqCst) != gen { break; }
                 let ((want, tail), logs) = { let mut st = s.st.lock().unwrap(); let p = st.plan(); (p, std::mem::take(&mut st.logs)) };
@@ -338,18 +321,8 @@ impl Sound {
                 let mut got = 0;
                 while got < need {
                     match pipe.read(&mut bytes[got..need]) { Ok(0) | Err(_) => break, Ok(n) => got += n }
-                    // librespot prints its sign-in link on standard output, which is the sound in pipe mode.
-                    // Leave those lines out instead of playing them as noise (it opens the link itself).
-                    if !started {
-                        let text = [&b"Browse to: "[..], b"If prompted", b"Provide redirect"].iter().any(|p| bytes[..got].starts_with(p));
-                        if text {
-                            if let Some(i) = bytes[..got].iter().position(|b| *b == b'\n') { bytes.copy_within(i + 1..got, 0); got -= i + 1; }
-                            continue;
-                        }
-                    }
                 }
                 if got < 4 { break; }                                 // librespot stopped
-                started = true;
                 let n = got / 4;
                 s.last_audio.store(now_ms(), Ordering::Relaxed);
                 s.received.fetch_add(n as u64, Ordering::Relaxed);
@@ -714,33 +687,6 @@ impl Read for MemReader {
         p.cv.notify_all();
         Ok(n)
     }
-}
-
-/// Bytes waiting in a pipe (librespot's sound not read yet).
-fn pipe_waiting(_fd: i64) -> i64 {
-    #[cfg(unix)]
-    {
-        if _fd < 0 { return 0; }
-        let mut n: libc::c_int = 0;
-        // SAFETY: FIONREAD only writes one int through the pointer; a closed descriptor just fails.
-        if unsafe { libc::ioctl(_fd as libc::c_int, libc::FIONREAD, &mut n) } == 0 { return n as i64; }
-    }
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn PeekNamedPipe(pipe: *mut std::ffi::c_void, buf: *mut std::ffi::c_void, size: u32,
-                             read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
-        }
-        if _fd < 0 { return 0; }
-        let mut available: u32 = 0;
-        let null = std::ptr::null_mut();
-        // SAFETY: only asks how much is waiting (no buffer); a closed handle just fails.
-        if unsafe { PeekNamedPipe(_fd as isize as *mut std::ffi::c_void, null, 0, null as *mut u32, &mut available, null as *mut u32) } != 0 {
-            return available as i64;
-        }
-    }
-    0
 }
 
 fn note(s: &Shared, line: String) {

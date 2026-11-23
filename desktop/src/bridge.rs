@@ -275,7 +275,7 @@ fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
     let managed = core.settings.bool("manageLibrespot");
     match key {
         "manageLibrespot" => if managed { core.librespot.start() } else { core.librespot.stop() },
-        "librespotPath" | "deviceName" | "bitrate" | "normalize" | "autoplay" | "engine" => if managed { core.librespot.restart() },
+        "deviceName" | "bitrate" | "normalize" | "autoplay" => if managed { core.librespot.restart() },
         "globalHotkey" => crate::apply_hotkey(window.app_handle()),
         // Your shortcuts changed on the keyboard page: the Mac menu and the show/hide shortcut follow.
         "shortcuts" => { crate::rebuild_menu(window.app_handle(), false); crate::apply_hotkey(window.app_handle()); }
@@ -331,22 +331,11 @@ async fn ask(window: &WebviewWindow, title: &str, text: &str, ok: Option<&str>) 
     ok.is_some() && yes
 }
 
-/// Two settings decide what code Cadenza runs: the librespot program it starts, and the GitHub repository
-/// it installs updates from. The page can't change them on its own: a dialog asks you first.
+/// One setting decides what code Cadenza runs: the GitHub repository it installs updates from. The page
+/// can't change it on its own: a dialog asks you first.
 async fn confirm_setting(core: &Core, window: &WebviewWindow, key: &str, value: &Value) -> bool {
     let new = value.as_str().unwrap_or("").trim().to_string();
     match key {
-        "librespotPath" => {
-            if new.is_empty() || new == core.settings.string("librespotPath") { return true; }
-            let path = match (new.strip_prefix("~/"), dirs::home_dir()) { (Some(r), Some(h)) => h.join(r), _ => new.clone().into() };
-            if !path.is_file() {
-                ask(window, "That isn't a program", &format!("Cadenza couldn't find a program at {}. Point it at the librespot file itself.", path.display()), None).await;
-                return false;
-            }
-            ask(window, "Use this program as the audio engine?",
-                &format!("Cadenza will start {} every time it opens and send it your music. Only choose a librespot you installed yourself.", path.display()),
-                Some("Use It")).await
-        }
         "updateRepo" => {
             let mut repo = new.trim_start_matches("https://github.com/").trim_end_matches(".git").trim_matches('/').to_string();
             if repo.is_empty() || repo == core.settings.string("updateRepo") || repo == crate::settings::DEFAULT_REPO { return true; }

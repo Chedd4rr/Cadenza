@@ -39,8 +39,8 @@ your taste, a DJ, synced lyrics with offline translation, a real equalizer and a
 
 Cadenza is one app for Mac, Windows and Linux, built with [Tauri](https://tauri.app): the interface is a
 web page drawn by the system's own web view, and the native side is written in Rust. It controls Spotify
-through the official Web API and plays the sound itself, through a copy of
-[librespot](https://github.com/librespot-org/librespot) that ships inside the app and Cadenza's own sound
+through the official Web API and plays the sound itself: [librespot](https://github.com/librespot-org/librespot)
+is built into the app, and Cadenza plays, skips and queues songs in it directly, through its own sound
 engine.
 
 **Listening**
@@ -54,7 +54,8 @@ engine.
   order is followed to the end, even if you quit and reopen Cadenza. Every song plays once, and the Queue
   page shows the whole order. When it runs out, autoplay carries on from your taste (or, with repeat on,
   a fresh shuffle starts).
-- Up Next, Cadenza's own queue you can reorder, and a sleep timer that fades out.
+- One queue, Cadenza's: Up Next, then the shuffle (or list, or DJ set) or autoplay's picks. Move any song
+  in it, take any song out, and what plays changes at once. A sleep timer that fades out.
 - Cadenza's own sound engine: a ten-band EQ with presets and a boost (with a limiter so loud parts never
   distort), a crossfade between songs, and pause, skip and seek that respond at once. Each output device
   keeps its own EQ.
@@ -161,7 +162,7 @@ On a Mac this builds Cadenza, signs it with a certificate it makes once in your 
 Local Signing", so macOS keeps its permissions across rebuilds), puts it in Applications and opens it.
 On Windows and Linux it builds the installers into `desktop/target/release/bundle/`: the setup `.exe`
 on Windows, the `.deb` and `.AppImage` on Linux. The first build takes a while because it also builds
-the audio engine (see [The built-in librespot](docs/librespot.md)); later builds are much quicker.
+librespot into the app (see [The built-in librespot](docs/librespot.md)); later builds are much quicker.
 
 To update a copy you built: `git pull`, then `./build.sh --install` again.
 
@@ -197,7 +198,6 @@ menu-bar icon → Quit, or ⌘Q / Ctrl+Q). Then remove the app, and, if you want
    - `%APPDATA%\Cadenza` (your sign-ins, settings, history and the rest)
    - `%APPDATA%\io.github.chedd4rr.cadenza` (the window's position)
    - `%LOCALAPPDATA%\io.github.chedd4rr.cadenza` (the web view's cache)
-   - a `C:\ProgramData\cadenza-…` folder, if there is one (made only on drives without short file names)
 
 **Linux**
 
@@ -208,7 +208,7 @@ menu-bar icon → Quit, or ⌘Q / Ctrl+Q). Then remove the app, and, if you want
           ~/.config/io.github.chedd4rr.cadenza ~/.cache/io.github.chedd4rr.cadenza
    rm -f ~/.config/autostart/Cadenza.desktop
    ```
-3. If you built Cadenza yourself: `rm -rf ~/.cache/cadenza-build` (the librespot build cache). Test mode
+3. If you built Cadenza yourself: `rm -rf ~/.cache/cadenza-build` (librespot's source). Test mode
    uses `~/.local/share/cadenza-test`.
 
 **Spotify:** to take away Cadenza's access, remove your app at
@@ -253,7 +253,7 @@ taken. On a Mac, the menu bar follows your changes.
 | Build | The playlist builder. Tab switches sides; ⏎ adds, P previews, drag or ⌥↑↓ moves, X removes, ← → picks a mood, R finds more ideas, D spreads artists out, U undoes, S saves |
 | Playlist / Album / Artist | Play, queue, add, remove, reorder, edit details and cover, follow, share |
 | Search | Songs, albums, artists and playlists (Tab switches); Search → Lyrics finds a song from a line you remember |
-| Queue / History | Up Next, then what Spotify and autoplay have lined up (with why each autoplay song is there); what you played recently |
+| Queue / History | Up Next, then what's lined up after it: the shuffle, the list, the DJ set or autoplay's picks (with why each autoplay song is there). ⌥↑↓ moves any song, X takes it out. History is what you played recently |
 | Stats | Top artists and songs, plays and when you listen. I imports your Spotify history, S switches source |
 | Your taste | What autoplay has learned about you, and the controls to correct it (T in Stats) |
 | Friends | Your Last.fm friends (F in Stats) |
@@ -350,9 +350,10 @@ lyrics can be mistaken for a similar language.
 All of these are optional and go in System → Connections.
 
 - **Last.fm** powers play counts, Friends, the DJ's deeper picks, styles in your taste profile and
-  better autoplay. Type your Last.fm username; that's all. Cadenza doesn't scrobble itself: link Spotify
-  to Last.fm instead (Last.fm settings → Applications → Spotify scrobbling) and Spotify scrobbles
-  everything you play, Cadenza included.
+  better autoplay. Type your Last.fm username; that's all. Cadenza doesn't scrobble itself. Spotify's own
+  Last.fm link (Last.fm settings → Applications → Spotify scrobbling) only sees what Spotify counts as
+  played, and the built-in engine doesn't send Spotify those play reports (see
+  [Troubleshooting](#troubleshooting)), so Cadenza's plays may not reach Last.fm that way.
 - **Discord status:** turn it on, with the Discord app running on the same computer. Your profile then
   shows "Listening to Cadenza" with the song. (Discord's "Share your detected activities" setting has to
   be on; it is unless you turned it off.)
@@ -415,7 +416,6 @@ Your Spotify sign-in is only ever sent to Spotify's own servers.
 | `store.json` | Small things: Up Next, playlist tags, the builder draft, remembered matches |
 | `translation-models/` | Downloaded translation languages |
 | `spotify-requests.log` | Spotify's recent answers after it asked Cadenza to wait (without what you searched for) |
-| `librespot-events.txt` | What the audio engine is playing, as it happens (cleared at every start) |
 
 ## Updates
 
@@ -448,7 +448,7 @@ Start it with `CADENZA_LOG=1` set to see the engine log, every call between the 
 side, every Spotify request and a sound report every few seconds.
 
 GitHub can build Cadenza for any of the three systems: Actions → Desktop app → Run workflow, then pick
-the system. How the bundled librespot is built and patched is in [docs/librespot.md](docs/librespot.md).
+the system. How librespot is built in and patched is in [docs/librespot.md](docs/librespot.md).
 
 ## Troubleshooting
 
@@ -461,19 +461,16 @@ AirPods").
   [Install](#2-install-cadenza) (Open Anyway on a Mac, Run anyway on Windows).
 - **"No active device":** Cadenza restarts the audio engine by itself when Spotify stops listing it
   (usually after sleep or a network change). If it still doesn't appear, check System → Engine settings.
-- **Songs skip by themselves** and the log shows `error audio key 0 2`: Spotify refused to unlock that
-  song (a [known librespot issue](https://github.com/librespot-org/librespot/issues/1649)). Cadenza asks
-  again a few times, then moves on and keeps the music going. Skipping a lot quickly is the usual cause:
-  Spotify stops handing out keys when asked too often. Cadenza gathers fast skips into one jump, and if
-  Spotify refuses three songs in a row it pauses for a few seconds before carrying on. If nearly every
-  song is refused, Spotify is refusing your account for now; skipping less for a while helps.
-- **"Restriction violated":** since November 2026 Spotify refuses plain lists of songs (and sometimes a
-  single song) for Cadenza's speaker, while it still plays playlists and albums. So Cadenza plays the
-  playlist itself (or, for a song on its own, its album) and feeds the order it wants, like true
-  shuffle's or a DJ set's, into Spotify's queue one song ahead. Nothing to do.
-- **Shuffle doesn't switch on:** Spotify's player won't shuffle songs autoplay picked. Press ⌘S while a
-  playlist or album plays, or right after one (Cadenza remembers the playlist you were in and shuffles
-  that).
+- **"Spotify is refusing songs for a moment"** (and the log shows `error audio key 0 2`): Spotify refused
+  to unlock a song (a [known librespot issue](https://github.com/librespot-org/librespot/issues/1649)).
+  Skipping a lot quickly is the usual cause: Spotify stops handing out keys when asked too often. Cadenza
+  waits a moment and moves on by itself (longer each time it happens again soon), and Next pressed while
+  it waits is done in one jump when the wait ends; Play goes on at once. Fast skips are always gathered
+  into one jump, so this should be rare. If nearly every song is refused, Spotify is refusing your
+  account for now; skipping less for a while helps.
+- **Songs I played in Cadenza don't show in Spotify's recents or Wrapped:** the built-in engine plays
+  the music but doesn't send Spotify the report that says a song was played, so Spotify doesn't count
+  it. Cadenza's own History and Stats (and the Spotify history you import) do include it.
 - **Login fails:** check the Client ID, and that `http://127.0.0.1:8888` is a Redirect URI of your app.
 - **"Spotify says wait":** Spotify limits how often an app can ask for things. Cadenza backs off by
   itself; System → Engine settings → Spotify activity shows what it has been asking for.
@@ -488,8 +485,8 @@ AirPods").
 ## Credits
 
 - [Tauri](https://tauri.app) (MIT / Apache 2.0) runs the app on all three systems.
-- [librespot](https://github.com/librespot-org/librespot) (MIT) plays the audio. Its license ships with
-  the app, in its `licenses` folder.
+- [librespot](https://github.com/librespot-org/librespot) (MIT) plays the audio, built into the app. Its
+  license ships with the app, in its `licenses` folder.
 - Lyrics from [LRCLIB](https://lrclib.net); finding songs by lyrics with the
   [Genius API](https://docs.genius.com).
 - Translation with [bergamot-translator](https://github.com/browsermt/bergamot-translator) (MPL 2.0) and

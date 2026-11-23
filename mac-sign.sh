@@ -30,8 +30,9 @@ echo "> Signing..."
 # Files that came out of a zip or a download carry Finder/quarantine tags, which codesign refuses
 # ("resource fork, Finder information, or similar detritus not allowed"). Strip them first.
 xattr -cr "${OUT}" 2>/dev/null || true
-# The bundled librespot is signed on its own first, with the same identity: macOS won't run a program
-# inside an app unless it carries the app's signature too.
+# A separate librespot inside the app (only the Swift app has one; the Tauri app has it built in) is signed
+# on its own first, with the same identity: macOS won't run a program inside an app unless it carries the
+# app's signature too.
 HELPER="${OUT}/Contents/MacOS/librespot"
 if security find-certificate -c "${IDENTITY}" >/dev/null 2>&1 &&
    { [ ! -f "${HELPER}" ] || codesign --force --sign "${IDENTITY}" "${HELPER}"; } &&

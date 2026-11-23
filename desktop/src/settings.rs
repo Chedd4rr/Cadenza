@@ -9,10 +9,10 @@ use crate::files;
 /// Keys the page is allowed to read and change.
 pub const KEYS: &[&str] = &[
     "theme", "notifications", "menuBar", "miniStyle", "playlistTags", "clientId", "manageLibrespot",
-    "librespotPath", "deviceName", "bitrate", "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin",
+    "deviceName", "bitrate", "mediaKeys", "globalHotkey", "reduceMotion", "openAtLogin",
     "themedCovers", "sfx", "sfxVolume", "normalize", "eqPerDevice", "autoplay", "trueShuffle", "crossfade",
     "geniusToken", "discord", "discordAppId", "lastfmKey", "lastfmSecret", "updateRepo", "autoUpdate",
-    "shortcuts", "engine",
+    "shortcuts",
 ];
 
 /// Settings that are passwords or tokens. They live in secrets.json and are never sent back to the page.
@@ -23,14 +23,12 @@ pub const DEFAULT_REPO: &str = "Chedd4rr/Cadenza";
 fn defaults() -> Map<String, Value> {
     let v = json!({
         "theme": "tide", "notifications": true, "menuBar": true, "miniStyle": "theme", "playlistTags": true,
-        "clientId": "", "manageLibrespot": true, "librespotPath": "", "deviceName": "Cadenza", "bitrate": 320,
+        "clientId": "", "manageLibrespot": true, "deviceName": "Cadenza", "bitrate": 320,
         "mediaKeys": true, "globalHotkey": true, "reduceMotion": "system", "themedCovers": false, "volume": 70,
         "sfx": true, "sfxVolume": 55, "normalize": true, "eqPerDevice": true, "autoplay": true,
         "trueShuffle": true, "crossfade": 6, "discord": false, "discordAppId": "", "lastfmKey": "",
         "updateRepo": DEFAULT_REPO, "autoUpdate": true, "openAtLogin": false,
         "shortcuts": {},
-        // "builtin": librespot inside Cadenza. "program": the separate librespot program (the old way).
-        "engine": "builtin",
     });
     match v { Value::Object(m) => m, _ => Map::new() }
 }

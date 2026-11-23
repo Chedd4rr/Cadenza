@@ -16,7 +16,7 @@ const DOMAIN: &str = "io.github.chedd4rr.cadenza";
 /// either: that's the system's own setting, read live.)
 pub const MAC_SETTINGS: &[&str] = &[
     "clientId", "theme", "notifications", "menuBar", "miniStyle", "playlistTags", "manageLibrespot",
-    "librespotPath", "deviceName", "bitrate", "mediaKeys", "globalHotkey", "reduceMotion", "themedCovers",
+    "deviceName", "bitrate", "mediaKeys", "globalHotkey", "reduceMotion", "themedCovers",
     "sfx", "sfxVolume", "normalize", "autoplay", "trueShuffle", "crossfade", "discord", "discordAppId",
     "lastfmKey", "lastfmUser", "updateRepo", "autoUpdate", "volume", "floatingPlayer",
     "eqEnabled", "eqPreamp", "eqGains", "eqPreset", "eqPerDevice", "eqProfiles",

@@ -4,7 +4,7 @@
 # It only runs when started by hand because on a private repository build time comes out of a monthly
 # allowance, and the Mac runners cost about ten times as much as Linux ones. Roughly, one run costs:
 # Linux $0.12, Windows $0.30, macOS $1.55, of the $12 a month a free account includes. The first run on
-# each system takes longer (librespot is built from scratch, then kept in the cache).
+# each system takes longer (everything, librespot included, is compiled from scratch, then kept in the cache).
 name: Desktop app
 
 on:
@@ -64,13 +64,8 @@ jobs:
         with:
           workspaces: desktop
 
-      - name: Cache the librespot build
-        uses: actions/cache@v5
-        with:
-          path: ~/.cadenza-librespot
-          key: librespot-${{ matrix.name }}-${{ hashFiles('desktop/librespot.sh', 'patches/*.patch') }}
-
-      - name: Build librespot
+      # librespot's pinned source with Cadenza's patches, which the app compiles into itself.
+      - name: Get librespot's source ready
         run: CADENZA_CACHE="$HOME/.cadenza-librespot" ./desktop/librespot.sh
 
       # Tauri's build tool, as a ready-made download (compiling it from source took about 10 minutes).

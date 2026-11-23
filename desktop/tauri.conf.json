@@ -52,11 +52,8 @@
         ]
       }
     },
-    "externalBin": [
-      "binaries/librespot"
-    ],
     "resources": {
-      "binaries/librespot-LICENSE.txt": "licenses/librespot-LICENSE.txt"
+      "librespot-src/LICENSE": "licenses/librespot-LICENSE.txt"
     }
   },
   "plugins": {

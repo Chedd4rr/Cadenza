@@ -17,15 +17,18 @@ app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed r
 
 - The whole interface, every page and theme.
 - Signing in to Spotify, browsing, searching, playing, pause and skip, the queue, autoplay.
-- librespot (the same version and patches as the Mac app) playing through Cadenza's own sound engine: the
-  10-band EQ with presets and preamp, a peak limiter so boosting never clips, the crossfade between songs,
+- librespot built into the app (see [docs/librespot.md](../docs/librespot.md)), played directly: play,
+  pause, skip, seek and the queue go straight to it, not through Spotify's web interface. One queue,
+  Cadenza's (Up Next, then the shuffle, list, DJ set or autoplay's picks), handed to the engine a few songs
+  ahead; fast skips gathered into one jump; a short, growing wait after a song Spotify won't unlock.
+- Cadenza's own sound engine: the 10-band EQ with presets and preamp, a peak limiter so boosting never clips, the crossfade between songs,
   pause, play, skip and seek that respond at once, the sleep timer's fade, and the visualizer and EQ meters.
 - Picking the output (on Linux, the sound server's outputs; picking one makes it the system's output), with
   an EQ kept for each device. If the output stalls it's reopened, and if it can't keep up (a slow computer
   or a virtual machine) its buffer grows by itself.
-- Recovery like the Mac app's: songs Spotify won't unlock are skipped and left out of autoplay for a while,
-  songs that failed to load on a hiccup get one more try, a dropped connection restarts librespot and picks
-  up the same song at the same second, and Cadenza checks Spotify still lists it after the computer wakes.
+- Recovery: songs Spotify won't unlock are left out of autoplay for a while, songs that failed to load on a
+  hiccup get one more try, a dropped connection restarts the engine and picks up the same song at the same
+  second, and Cadenza checks Spotify still lists it after the computer wakes.
 - Last.fm (Stats, play counts, the DJ, Friends, similar songs), lyrics from LRCLIB, finding a song by its
   lyrics with Genius, and offline lyrics translation (the language models download the first time).
 - Importing your Spotify history (pick the .zip Spotify sends, or the .json files), and Cadenza's own
@@ -53,17 +56,11 @@ app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed r
   fades and moving backgrounds are still, in the mini player too.
 - After 3 minutes with nothing playing, the sound output rests (so it doesn't keep your speakers or
   Bluetooth headphones busy playing silence), and comes back the moment music does.
-- Security: a strict content policy for the page (no outside scripts, no eval), only the window permission
-  the mini player needs, and librespot's player-events script kept in a folder only you can write to.
+- Security: a strict content policy for the page (no outside scripts, no eval), and only the window
+  permission the mini player needs.
 
 ### On Windows
 
-- librespot's player events: Windows has no shell script to pass them on, so librespot starts Cadenza.exe
-  itself with `--librespot-event`, and that copy writes the event down and quits before any window opens.
-  librespot can't run a program whose path has a space, so Cadenza uses the short form of its own path
-  (`C:\Users\JANEDO~1\...`), or a copy in `C:\ProgramData\Cadenza` if the drive has no short names.
-- How much sound is still waiting in the pipe from librespot, which the crossfade needs to time itself.
-- librespot copies left over from a crash are found and ended when Cadenza starts.
 - An installer (`Cadenza_1.0.0_x64-setup.exe`) that installs for you alone, so it doesn't ask for an
   administrator.
 
@@ -95,7 +92,7 @@ appear in Spotify as "Cadenza". Quit one before opening the other.
 | --- | --- |
 | Before release | Windows: one check on a real PC (smooth animations, clean sound, the installer) |
 | Phase 7 | Signed releases and automatic updates |
-| Later | Spotify's own Soloist as a second engine you can pick, beside librespot |
+| Later | Maybe Spotify's own Soloist as an optional engine (no EQ or crossfade, downloaded by each user) |
 
 ## Building it
 
@@ -115,7 +112,8 @@ Then, from this folder:
 ./build.sh          # build the installers (.deb and .AppImage, or the Windows setup .exe)
 ```
 
-The first build takes a while: it builds librespot (a few minutes) and then the app. Later builds reuse both.
+The first build takes a while: it fetches librespot's source (`librespot.sh`, into `librespot-src/`) and
+compiles it into the app. Later builds reuse both.
 On Windows, run these in Git Bash.
 
 To see what it's doing, start it with `CADENZA_LOG=1` set: it then prints the engine log, every bridge
@@ -132,7 +130,6 @@ models, Last.fm signing, covers).
   your settings from the Mac app (Client ID, EQ, crossfade, theme…). It only ever reads your real folder,
   that once, and never writes to it.
 - Its speaker is called "Cadenza (test)", so Spotify lists the two apps separately.
-- It never touches the other app's librespot.
 
 To compare the sound, open both, play a song, and move it between "Cadenza" and "Cadenza (test)" on the
 Devices page (or from your phone): Spotify carries on at the same spot. Delete the test folder to start
@@ -157,8 +154,8 @@ read them.
 | `src/bridge.rs` | Answers the page's `native(cmd, args)` calls | `Bridge.swift` |
 | `src/auth.rs` | Spotify sign-in | `SpotifyAuth.swift` |
 | `src/api.rs` | Spotify Web API, with the rate-limit guard | `SpotifyAPI.swift` |
-| `src/librespot.rs` | Runs librespot (built in, or the separate program) and reads what it's playing | `Librespot.swift` |
-| `src/embedded.rs` | The built-in engine: librespot running inside Cadenza | (new) |
+| `src/librespot.rs` | Runs the engine, plays in it directly, reads what it's playing, recovers | `Librespot.swift` |
+| `src/embedded.rs` | librespot running inside Cadenza: login, sound out, events, Spotify Connect | (new) |
 | `src/sound.rs` | The sound engine: reading librespot, the crossfade, pause and skip, outputs | `EQ.swift`, `AudioOutputs.swift` |
 | `src/macaudio.rs` | The Mac's outputs, from Core Audio | `AudioOutputs.swift` |
 | `src/menu.rs` | The Mac's menu bar | `AppDelegate.swift` (`buildMenu`) |
@@ -171,7 +168,7 @@ read them.
 | `src/system.rs` | Media keys and Now Playing, the tray, the mini player, notifications, links, the window resting | `MediaKeys.swift`, `StatusBar.swift`, `FloatingPlayer.swift`, `Notifier.swift`, `AppDelegate.swift` |
 | `src/discord.rs` | Discord's "Listening to" status | `Discord.swift` |
 | `src/settings.rs`, `src/store.rs`, `src/files.rs` | Settings, page data, private files | `Settings.swift`, `Store.swift` |
-| `librespot.sh` | Gets librespot's source ready for the built-in engine (`librespot-src/`) and builds the separate program | `../librespot.sh` |
+| `librespot.sh` | Gets librespot's pinned source with Cadenza's patches ready in `librespot-src/` | `../librespot.sh` |
 
 The page finds the app through `window.cadenzaNative`, which works like the Mac app's WebKit message
 handler, so app.js needs no other changes.

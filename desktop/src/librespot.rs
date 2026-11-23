@@ -1,15 +1,11 @@
-//! Runs librespot (the Spotify Connect engine), reads what it's playing, and hands its sound to Cadenza's
-//! output. Normally librespot runs inside Cadenza (the built-in engine, see embedded.rs); the old way, as a
-//! separate program with an --onevent hook, is still here to switch back to (System → Engine settings).
-//! Both report the same events and messages, read here the same way. A port of Librespot.swift, including
-//! its recovery: songs Spotify won't unlock, songs worth one more try, dropped connections, sound that
-//! stops arriving, and checking Spotify still lists Cadenza after the computer wakes up.
+//! Runs the audio engine (librespot, built into Cadenza: see embedded.rs), reads what it's playing, plays
+//! straight in it (play, skip, the queue, see "playing directly"), and looks after it: songs Spotify won't
+//! unlock, songs worth one more try, dropped connections, sound that stops arriving, and checking Spotify
+//! still lists Cadenza after the computer wakes up.
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,8 +23,7 @@ fn now_ms() -> f64 {
 
 #[derive(Default)]
 struct Inner {
-    child: Option<Child>,
-    /// The built-in engine, when that's the one running (instead of `child`).
+    /// The engine, while it's running.
     embedded: Option<Arc<crate::embedded::Engine>>,
     /// Counts starts, so a process that ends after being replaced isn't mistaken for the current one.
     generation: u64,
@@ -37,8 +32,6 @@ struct Inner {
     player: Map<String, Value>,
     /// When player.progress_ms was last true.
     pos_at: f64,
-    opened_auth: bool,
-    events_offset: u64,
     crash_times: Vec<Instant>,
     recovering: String,
     // Recovery bookkeeping (see the "recovery" part below).
@@ -97,6 +90,7 @@ impl Librespot {
             inner: Mutex::new(Inner { state: "stopped".into(), ..Default::default() }),
             settings, api, sound, history, emit,
         });
+        tidy_old_engine_files();
         // Every 2 s: follow the sound, rescue a stalled engine, notice the computer waking up.
         let keeper = Arc::clone(&me);
         std::thread::Builder::new().name("cadenza-engine-keeper".into()).spawn(move || {
@@ -132,38 +126,12 @@ impl Librespot {
                 }
             }
         }).ok();
-        // Start from an empty events file: what's in it is from the last time Cadenza ran, and reading it
-        // would replay those songs as if they were playing now.
-        files::write_privately(b"", &me.events_file());
-        // Read librespot's player events as they come (a few times a second is plenty).
-        let watcher = Arc::clone(&me);
-        std::thread::Builder::new().name("cadenza-events".into()).spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(250));
-            watcher.read_events();
-        }).ok();
         me
     }
 
     pub fn cache_dir(&self) -> PathBuf { files::path("librespot") }
-    fn events_file(&self) -> PathBuf { files::path("librespot-events.txt") }
     pub fn has_credentials(&self) -> bool { self.cache_dir().join("credentials.json").exists() }
 
-    /// Your own pick first, then a copy next to Cadenza, then the usual install places.
-    pub fn resolve_path(&self) -> Option<PathBuf> {
-        let exe = if cfg!(windows) { "librespot.exe" } else { "librespot" };
-        let mut candidates: Vec<PathBuf> = vec![];
-        let custom = self.settings.string("librespotPath");
-        if !custom.is_empty() { candidates.push(expand_tilde(&custom)); }
-        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
-            candidates.push(dir.join(exe));
-        }
-        candidates.push(files::path("engine").join(exe));
-        if let Some(home) = dirs::home_dir() { candidates.push(home.join(".cargo/bin").join(exe)); }
-        if cfg!(unix) {
-            for p in ["/opt/homebrew/bin/librespot", "/usr/local/bin/librespot", "/usr/bin/librespot"] { candidates.push(PathBuf::from(p)); }
-        }
-        candidates.into_iter().find(|p| is_executable(p))
-    }
 
     pub fn status(&self) -> Value {
         let g = self.inner.lock().unwrap();
@@ -173,7 +141,6 @@ impl Librespot {
     fn status_of(&self, g: &Inner) -> Value {
         json!({
             "state": g.state,
-            "path": self.resolve_path().map(|p| files::tidy(&p)).unwrap_or_default(),
             "managed": self.settings.bool("manageLibrespot"),
             "deviceName": self.settings.device_name(),
             "hasCredentials": self.has_credentials(),
@@ -193,70 +160,15 @@ impl Librespot {
         push_log(&mut g, line.into());
     }
 
-    /// The built-in engine is the normal one; "program" in settings brings back the separate program.
-    pub fn uses_builtin(&self) -> bool { self.settings.string("engine") != "program" }
-
     pub fn start(self: &Arc<Self>) {
         let mut g = self.inner.lock().unwrap();
         if Self::running(&g) { return; }
-        if self.uses_builtin() { return self.start_builtin(&mut g); }
-        let Some(path) = self.resolve_path() else {
-            push_log(&mut g, "librespot not found. Build it with desktop/librespot.sh, install it (cargo install librespot), or set its path in System → Engine settings.".into());
-            return self.set_state(&mut g, "missing");
-        };
-        let cache = self.cache_dir();
-        let _ = std::fs::create_dir_all(&cache);
-        kill_strays(&cache);
-
-        let mut args: Vec<String> = vec![
-            "--name".into(), self.settings.device_name(),
-            "--cache".into(), cache.display().to_string(),
-            "--bitrate".into(), self.settings.bitrate().to_string(),
-            "--initial-volume".into(), self.settings.volume().to_string(),
-            // Spotify's default volume curve spans 60 dB, which makes everything below 100% very quiet.
-            "--volume-ctrl".into(), "log".into(), "--volume-range".into(), "30".into(),
-            "--backend".into(), "pipe".into(),
-        ];
-        // Even loudness from song to song, with a little make-up gain.
-        if self.settings.bool("normalize") {
-            args.extend(["--enable-volume-normalisation", "--normalisation-pregain", "3"].map(String::from));
-        }
-        if supports(&path, "--autoplay") {
-            args.extend(["--autoplay".into(), if self.settings.bool("autoplay") { "on" } else { "off" }.into()]);
-        }
-        if !self.has_credentials() { args.push("--enable-oauth".into()); }
-        if let Some(hook) = self.prepare_event_hook(&mut g) { args.extend(["--onevent".into(), hook]); }
-
-        let mut cmd = Command::new(&path);
-        cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);       // no console window
-        }
-        match cmd.spawn() {
-            Ok(mut child) => {
-                g.generation += 1;
-                let generation = g.generation;
-                if let Some(out) = child.stdout.take() { self.sound.attach(out); }
-                if let Some(err) = child.stderr.take() { self.read_messages(err, generation); }
-                g.child = Some(child);
-                g.opened_auth = false;
-                push_log(&mut g, format!("Started: {} {}", files::tidy(&path), args.join(" ")));
-                let s = if self.has_credentials() { "starting" } else { "login" };
-                self.set_state(&mut g, s);
-            }
-            Err(e) => {
-                push_log(&mut g, format!("Couldn't start librespot: {e}"));
-                self.set_state(&mut g, "error");
-            }
-        }
+        self.start_builtin(&mut g);
     }
 
     fn start_builtin(self: &Arc<Self>, g: &mut Inner) {
         let cache = self.cache_dir();
         let _ = std::fs::create_dir_all(&cache);
-        kill_strays(&cache);                                    // a separate program left from before
         g.generation += 1;
         let generation = g.generation;
         let pipe = crate::sound::MemPipe::new();
@@ -276,7 +188,6 @@ impl Librespot {
             ended: Box::new(move |why| x.builtin_ended(generation, why)),
         };
         g.embedded = Some(crate::embedded::Engine::start(cfg, pipe, hooks));
-        g.opened_auth = true;                                   // (the built-in engine opens the sign-in page itself)
         push_log(g, format!("Started the built-in engine (librespot {}) as \"{}\", {} kbps.", LIBRESPOT_VERSION, self.settings.device_name(), self.settings.bitrate()));
         let s = if self.has_credentials() { "starting" } else { "login" };
         self.set_state(g, s);
@@ -291,42 +202,20 @@ impl Librespot {
         self.after_exit(g);
     }
 
-    fn running(g: &Inner) -> bool { g.child.is_some() || g.embedded.is_some() }
+    fn running(g: &Inner) -> bool { g.embedded.is_some() }
 
     /// Stops whichever engine is running.
     fn kill(g: &mut Inner) {
-        if let Some(mut c) = g.child.take() { let _ = c.kill(); let _ = c.wait(); }
         if let Some(e) = g.embedded.take() { e.stop(); }
     }
 
-    /// librespot's messages (its standard error), until it quits.
-    fn read_messages(self: &Arc<Self>, err: impl Read + Send + 'static, generation: u64) {
-        let me = Arc::clone(self);
-        std::thread::spawn(move || {
-            for line in BufReader::new(err).lines() {
-                let Ok(line) = line else { break };
-                me.consume(&line);
-            }
-            me.exited(generation);
-        });
-    }
 
     fn consume(self: &Arc<Self>, text: &str) {
-        static AUTH: OnceLock<Regex> = OnceLock::new();
         static LOADING: OnceLock<Regex> = OnceLock::new();
-        let auth = AUTH.get_or_init(|| Regex::new(r#"https://accounts\.spotify\.com/authorize[^\s"'<>]*"#).unwrap());
         let loading = LOADING.get_or_init(|| Regex::new(r"with Spotify URI <(spotify:track:[A-Za-z0-9]+)>").unwrap());
         let mut then: Vec<Then> = vec![];
         let mut g = self.inner.lock().unwrap();
         push_log(&mut g, text.to_string());
-        // First run: librespot prints a Spotify sign-in link. Open it.
-        if !g.opened_auth {
-            if let Some(m) = auth.find(text) {
-                g.opened_auth = true;
-                let _ = open::that(m.as_str());
-                self.set_state(&mut g, "login");
-            }
-        }
         if g.state != "running" && (text.contains("Authenticated as") || text.contains("Connected to AP")) {
             self.set_state(&mut g, "running");
         }
@@ -336,8 +225,8 @@ impl Librespot {
             restrict(&self.cache_dir(), 0o700);
         }
         if text.contains("no more tracks left in queue") { (self.emit)("engine.end", json!({})); }
-        // The built-in engine: another device (your phone, say) took over.
-        if text.contains("device became inactive") && g.embedded.is_some() {
+        // Another device (your phone, say) took over.
+        if text.contains("device became inactive") {
             g.player.insert("active".into(), json!(false));
             g.track_loaded = false;
             self.emit_player(&mut g);
@@ -362,16 +251,6 @@ impl Librespot {
         self.run(then);
     }
 
-    /// The process ended. If Cadenza didn't stop it, it fell over: start it again after a pause that grows
-    /// with each crash (1 s, 3 s, 10 s, 30 s, then once a minute), unless the login itself is bad.
-    fn exited(self: &Arc<Self>, generation: u64) {
-        let mut g = self.inner.lock().unwrap();
-        if g.generation != generation || g.child.is_none() { return; }      // stopped or replaced on purpose
-        let status = g.child.take().and_then(|mut c| c.wait().ok());
-        let code = status.and_then(|s| s.code()).map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-        push_log(&mut g, format!("librespot exited ({code})"));
-        self.after_exit(g);
-    }
 
     /// The engine stopped by itself: start it again after a pause that grows with each crash, unless the
     /// login itself is bad.
@@ -452,82 +331,9 @@ impl Librespot {
 
     // MARK: player events
 
-    /// Writes a tiny script librespot runs on every player event; it appends one line per event to a file
-    /// Cadenza reads. Returns the script's path for --onevent.
-    #[cfg(unix)]
-    fn prepare_event_hook(&self, g: &mut Inner) -> Option<String> {
-        use std::os::unix::fs::PermissionsExt;
-        // librespot splits --onevent on spaces, so the script must live somewhere without any.
-        // (Test mode has its own, or the two apps would keep rewriting each other's.)
-        let name = if files::test_mode() { "cadenza-test-librespot-event.sh" } else { "cadenza-librespot-event.sh" };
-        // The script is run as you, so it must be somewhere nobody else can write: a shared /tmp would let
-        // another account on the computer swap in its own script. See private_hook_dir.
-        let Some(dir) = private_hook_dir() else {
-            push_log(g, "Couldn't set up player events: no private folder without spaces in its name.".into());
-            return None;
-        };
-        let hook = dir.join(name);
-        let events = self.events_file();
-        let target = format!("'{}'", events.display().to_string().replace('\'', "'\\''"));
-        let script = format!(r#"#!/bin/sh
-# Written by Cadenza: passes librespot's player events to the app.
-a=$(printf '%s' "$ARTISTS" | tr '\n\t' '||')
-c=$(printf '%s' "$COVERS" | tr '\n\t' '||')
-n=$(printf '%s' "$NAME" | tr '\n\t' '  ')
-al=$(printf '%s' "$ALBUM" | tr '\n\t' '  ')
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI" "$TRACK_ID" "$n" "$a" "$al" "$c" "$DURATION_MS" "$POSITION_MS" "$VOLUME" "$SHUFFLE$REPEAT" "$(date +%H:%M:%S)" >> {target}
-"#);
-        // Written to a new file and renamed into place, so nothing already at that name is ever followed.
-        let tmp = dir.join(format!(".{name}.{}", std::process::id()));
-        let _ = std::fs::remove_file(&tmp);
-        let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)
-            .and_then(|mut f| { use std::io::Write; f.write_all(script.as_bytes()) })
-            .and_then(|_| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)))
-            .and_then(|_| std::fs::rename(&tmp, &hook));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-            push_log(g, "Couldn't set up player events.".into());
-            return None;
-        }
-        files::write_privately(b"", &events);
-        g.events_offset = 0;
-        Some(hook.display().to_string())
-    }
 
-    /// Windows has no sh, so Cadenza itself is the hook: librespot runs "Cadenza.exe --librespot-event"
-    /// and the copy that starts that way writes one line and quits (see run_event_hook).
-    #[cfg(windows)]
-    fn prepare_event_hook(&self, g: &mut Inner) -> Option<String> {
-        let Some(exe) = hook_program() else {
-            push_log(g, "Couldn't set up player events: Cadenza's folder has a space in its name.".into());
-            return None;
-        };
-        files::write_privately(b"", &self.events_file());
-        g.events_offset = 0;
-        Some(format!("{} {EVENT_ARG}", exe.display()))
-    }
 
-    #[cfg(not(any(unix, windows)))]
-    fn prepare_event_hook(&self, _g: &mut Inner) -> Option<String> { None }
 
-    fn read_events(self: &Arc<Self>) {
-        let path = self.events_file();
-        let Ok(mut f) = std::fs::File::open(&path) else { return };
-        let size = f.metadata().map(|m| m.len()).unwrap_or(0);
-        let mut guard = self.inner.lock().unwrap();
-        let g = &mut *guard;
-        if size < g.events_offset { g.events_offset = 0; }
-        if size <= g.events_offset { return; }
-        if f.seek(SeekFrom::Start(g.events_offset)).is_err() { return; }
-        let mut buf = Vec::new();
-        if f.read_to_end(&mut buf).is_err() { return; }
-        // Only whole lines; a half-written one waits for the next look.
-        let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return };
-        g.events_offset += end as u64 + 1;
-        let text = String::from_utf8_lossy(&buf[..end]).to_string();
-        drop(guard);
-        self.handle_events(&text);
-    }
 
     /// Player events, one per line (from the program's event script, or the built-in engine).
     fn handle_events(self: &Arc<Self>, text: &str) {
@@ -598,10 +404,8 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                         p.insert("progress_ms".into(), json!(prog + (now_ms() - g.pos_at) as i64));
                     }
                     g.pos_at = now_ms();
-                    // The built-in engine stops when its list runs out but stays the device playing (it
-                    // says "device became inactive" when another one takes over). The program's "stopped"
-                    // meant it had let go.
-                    if g.embedded.is_none() { g.player.insert("active".into(), json!(false)); }
+                    // The engine stops when its list runs out but stays the device playing (it says "device
+                    // became inactive" when another one takes over).
                     g.track_loaded = false;
                     g.player.insert("is_playing".into(), json!(false));
                     g.last_stop_at = Some(Instant::now());
@@ -1114,7 +918,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     pub async fn check_device(self: &Arc<Self>) -> bool { self.check_device_because("the page couldn't find it").await }
 
     async fn check_device_because(self: &Arc<Self>, reason: &str) -> bool {
-        if !self.settings.bool("manageLibrespot") || !self.has_credentials() || self.resolve_path().is_none() { return false; }
+        if !self.settings.bool("manageLibrespot") || !self.has_credentials() { return false; }
         let running = Self::running(&self.inner.lock().unwrap());
         if !running {
             self.note(format!("librespot isn't running ({reason}): starting it."));
@@ -1143,16 +947,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
     /// For "Copy diagnostics".
     pub fn diagnostics(&self) -> Vec<String> {
         let mut out = vec![];
-        if self.uses_builtin() { out.push(format!("librespot: built in, version {LIBRESPOT_VERSION}")); }
-        else { match self.resolve_path() {
-            Some(p) => {
-                let v = Command::new(&p).arg("--version").output().ok()
-                    .map(|o| String::from_utf8_lossy(if o.stdout.is_empty() { &o.stderr } else { &o.stdout }).trim().to_string())
-                    .unwrap_or_else(|| "?".into());
-                out.push(format!("librespot: {v} ({})", files::tidy(&p)));
-            }
-            None => out.push("librespot: not found".into()),
-        } }
+        out.push(format!("librespot: built in, version {LIBRESPOT_VERSION}"));
         let g = self.inner.lock().unwrap();
         let playing = g.player.get("is_playing").and_then(Value::as_bool).unwrap_or(false);
         out.push(format!("engine state: {}, playing here: {playing}, sound output: {}", g.state, self.sound.output_name()));
@@ -1178,25 +973,6 @@ fn push_log(g: &mut Inner, line: String) {
     if g.log.len() > 200 { let extra = g.log.len() - 200; g.log.drain(..extra); }
 }
 
-fn expand_tilde(p: &str) -> PathBuf {
-    match (p.strip_prefix("~/"), dirs::home_dir()) {
-        (Some(rest), Some(home)) => home.join(rest),
-        _ => PathBuf::from(p),
-    }
-}
-
-fn is_executable(p: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(p) else { return false };
-    if !meta.is_file() { return false; }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    { true }
-}
-
 fn restrict(_p: &Path, _mode: u32) {
     #[cfg(unix)]
     {
@@ -1205,130 +981,17 @@ fn restrict(_p: &Path, _mode: u32) {
     }
 }
 
-/// A folder only you can write to, with no spaces in its path (librespot splits --onevent on spaces):
-/// the per-user runtime folder on Linux, macOS's per-user temporary folder, Cadenza's own data folder, or
-/// a cadenza-<your id> folder in /tmp that Cadenza made and only you can open.
-#[cfg(unix)]
-fn private_hook_dir() -> Option<PathBuf> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    // SAFETY: getuid has no preconditions and can't fail.
-    let me = unsafe { libc::getuid() };
-    let spaced = |p: &Path| p.display().to_string().contains(char::is_whitespace);
-    // Yours, a real folder (not a link), and nobody else can write in it.
-    let private = |p: &Path| std::fs::symlink_metadata(p).map(|m| m.is_dir() && m.uid() == me && m.mode() & 0o022 == 0).unwrap_or(false);
-    let mut candidates: Vec<PathBuf> = vec![];
-    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR") { candidates.push(run.into()); }
-    if cfg!(target_os = "macos") { candidates.push(std::env::temp_dir()); }   // /var/folders/…/T, per user
-    candidates.push(files::support_dir().to_path_buf());
-    if let Some(dir) = candidates.into_iter().find(|d| !spaced(d) && private(d)) { return Some(dir); }
-    let own = PathBuf::from(format!("/tmp/cadenza-{me}"));
-    if std::fs::create_dir(&own).is_ok() { let _ = std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o700)); }
-    private(&own).then_some(own)
-}
-
-/// Older librespot versions quit on an option they don't know, so check its --help first (once per path).
-fn supports(path: &Path, option: &str) -> bool {
-    static HELP: OnceLock<Mutex<std::collections::HashMap<PathBuf, String>>> = OnceLock::new();
-    let cache = HELP.get_or_init(Default::default);
-    let mut c = cache.lock().unwrap();
-    let text = c.entry(path.to_path_buf()).or_insert_with(|| {
-        Command::new(path).arg("--help").output().ok()
-            .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
-            .unwrap_or_default()
-    });
-    text.contains(option)
-}
-
-// MARK: the Windows event hook
-
-/// The argument that makes Cadenza.exe act as librespot's event hook instead of opening the app.
-pub const EVENT_ARG: &str = "--librespot-event";
-
-/// If Cadenza was started as librespot's event hook, writes the event to the events file and returns
-/// true, and the caller quits straight away. librespot passes the event in environment variables. The
-/// line is the same as the one the sh script writes on Mac and Linux. (Test mode reaches the right file
-/// because librespot passes on Cadenza's environment, CADENZA_TEST included.)
-pub fn run_event_hook() -> bool {
-    if std::env::args().nth(1).as_deref() != Some(EVENT_ARG) { return false; }
-    use std::io::Write;
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    // Tabs and line breaks would break the line apart: lists get | between items, text gets spaces.
-    let list = |k: &str| var(k).replace(['\n', '\r', '\t'], "|");
-    let text = |k: &str| var(k).replace(['\n', '\r', '\t'], " ");
-    let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}\n",
-        text("PLAYER_EVENT"), text("URI"), text("TRACK_ID"), text("NAME"), list("ARTISTS"), text("ALBUM"),
-        list("COVERS"), text("DURATION_MS"), text("POSITION_MS"), text("VOLUME"), text("SHUFFLE"), text("REPEAT"),
-        chrono::Local::now().format("%H:%M:%S"));
-    let path = files::path("librespot-events.txt");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = f.write_all(line.as_bytes());       // one write, so lines from two events can't mix
-    }
-    true
-}
-
-/// Where librespot can run Cadenza from. librespot splits the --onevent setting on spaces, and Cadenza
-/// is usually installed under the user's folder (C:\Users\Jane Doe\...), so: the real path if it has no
-/// spaces, else its short 8.3 form, else a copy in C:\ProgramData\Cadenza.
-#[cfg(windows)]
-fn hook_program() -> Option<PathBuf> {
-    let spaced = |p: &Path| p.display().to_string().contains(char::is_whitespace);
-    let exe = std::env::current_exe().ok()?;
-    if !spaced(&exe) { return Some(exe); }
-    if let Some(short) = short_path(&exe).filter(|p| !spaced(p)) { return Some(short); }
-    // C:\ProgramData is shared by every account on the PC, and a folder someone else made there is theirs to
-    // change. So the copy goes in a folder with a name nobody can guess, made by Cadenza itself (which makes
-    // it yours) and remembered in Cadenza's private data folder for next time.
-    let base = PathBuf::from(std::env::var_os("ProgramData")?);
-    let base = if spaced(&base) { short_path(&base).filter(|p| !spaced(p))? } else { base };
-    let remembered = files::path("event-hook-folder.txt");
-    let mut dir = std::fs::read_to_string(&remembered).ok().map(|s| PathBuf::from(s.trim())).filter(|d| d.starts_with(&base) && d.is_dir());
-    if dir.is_none() {
-        use rand::Rng;
-        let name: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(20).map(char::from).collect();
-        let fresh = base.join(format!("cadenza-{}", name.to_lowercase()));
-        std::fs::create_dir(&fresh).ok()?;                   // fails if it already exists: then it isn't ours
-        files::write_privately(fresh.display().to_string().as_bytes(), &remembered);
-        dir = Some(fresh);
-    }
-    let copy = dir?.join("cadenza-event.exe");
-    // If the copy is in use (the other Cadenza's librespot is running it), the one there is ours and still works.
-    if std::fs::copy(&exe, &copy).is_err() && !copy.exists() { return None; }
-    Some(copy)
-}
-
-/// The short (8.3) form of a path, which never has spaces, if the drive keeps short names.
-#[cfg(windows)]
-fn short_path(p: &Path) -> Option<PathBuf> {
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    #[link(name = "kernel32")]
-    extern "system" { fn GetShortPathNameW(long: *const u16, short: *mut u16, size: u32) -> u32; }
-    let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut buf = vec![0u16; 1024];
-    // SAFETY: both buffers are valid for the lengths given; the call writes at most `size` units.
-    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
-    if n == 0 || n >= buf.len() { return None; }
-    Some(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
-}
-
-/// librespot copies left behind by a crashed Cadenza would hold on to the device name and swallow the
-/// music. Ours are recognised by their cache folder, so another app's librespot is left alone.
-fn kill_strays(_cache: &Path) {
-    #[cfg(unix)]
-    {
-        let escaped: String = _cache.display().to_string().chars()
-            .map(|c| if ".[]()*+?{}|^$\\".contains(c) { format!("\\{c}") } else { c.to_string() }).collect();
-        let _ = Command::new("pkill").args(["-f", &format!("librespot.*--cache {escaped}")]).status();
-    }
-    // Windows doesn't end librespot when Cadenza crashes, so this matters more there. The folder goes in
-    // through an environment variable so nothing in it is read as PowerShell.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let script = "$c = $env:CADENZA_STRAYS; Get-CimInstance Win32_Process -Filter \"Name = 'librespot.exe'\" | \
-            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($c) } | \
-            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
-        let _ = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("CADENZA_STRAYS", _cache).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .creation_flags(0x0800_0000).status();
+/// Leftovers from when librespot ran as a separate program: its events file, and on Windows the copy of
+/// Cadenza.exe it ran to report events (in a folder under ProgramData, named in event-hook-folder.txt).
+fn tidy_old_engine_files() {
+    let _ = std::fs::remove_file(files::path("librespot-events.txt"));
+    let note = files::path("event-hook-folder.txt");
+    if let Ok(dir) = std::fs::read_to_string(&note) {
+        let dir = PathBuf::from(dir.trim());
+        // Only a folder Cadenza made itself: "cadenza-" and random letters, directly in ProgramData.
+        let ours = dir.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.starts_with("cadenza-"))
+            && dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).map_or(false, |n| n.eq_ignore_ascii_case("ProgramData"));
+        if ours { let _ = std::fs::remove_dir_all(&dir); }
+        let _ = std::fs::remove_file(&note);
     }
 }
