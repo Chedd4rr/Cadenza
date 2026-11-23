@@ -80,6 +80,8 @@ pub enum Direct {
     /// "off", "context" or "track".
     Repeat(String),
     Queue(String),
+    /// Take every song Cadenza queued back out (a new list starts; or the line-up changed).
+    ClearQueue,
 }
 
 pub struct Engine {
@@ -173,6 +175,7 @@ impl Engine {
             Direct::Volume(v) => spirc.set_volume((v.min(100) as f32 / 100.0 * VolumeCtrl::MAX_VOLUME as f32) as u16),
             Direct::Shuffle(on) => spirc.shuffle(on),
             Direct::Repeat(r) => spirc.repeat(r == "context").and_then(|_| spirc.repeat_track(r == "track")),
+            Direct::ClearQueue => spirc.clear_queue(),
             Direct::Queue(uri) => match SpotifyUri::from_uri(&uri) {
                 Ok(u) => spirc.add_to_queue(u),
                 Err(e) => return Err(format!("not a song: {e}")),

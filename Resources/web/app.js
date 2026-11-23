@@ -92,6 +92,13 @@ const Direct = {
     const [p, qs] = path.split("?"), q = new URLSearchParams(qs || "");
     const args = { device_id: q.get("device_id") || undefined };
     if (method === "PUT" && p === "/me/player/play") {
+      // A list of songs: Cadenza's line-up plays it (see Lineup).
+      if (body && body.uris && body.uris.length) {
+        const from = body.offset && body.offset.uri ? Math.max(0, body.uris.indexOf(body.offset.uri)) : (body.offset && body.offset.position) || 0;
+        if (await Lineup.play(body.uris, from, body.position_ms || 0, args.device_id)) { this.done++; return { status: 204, body: null, direct: true }; }
+        this.fell++; this.why = "load: " + (Lineup.why || "no answer");
+        return null;
+      }
       if (body && (body.uris || body.context_uri)) {
         const pl = S.player || {};
         Object.assign(args, {
@@ -111,7 +118,13 @@ const Direct = {
     else if (method === "PUT" && p === "/me/player/seek") Object.assign(args, { action: "seek", position: +q.get("position_ms") || 0 });
     else if (method === "PUT" && p === "/me/player/volume") Object.assign(args, { action: "volume", volume: +q.get("volume_percent") || 0 });
     else if (method === "PUT" && p === "/me/player/shuffle") Object.assign(args, { action: "shuffle", state: q.get("state") === "true" });
-    else if (method === "PUT" && p === "/me/player/repeat") Object.assign(args, { action: "repeat", state: q.get("state") || "off" });
+    else if (method === "PUT" && p === "/me/player/repeat") {
+      // A list of Cadenza's repeats in the line-up (the engine only knows the song playing); repeat-one is the engine's.
+      const st = q.get("state") || "off";
+      Lineup.repeat = st === "context";
+      Object.assign(args, { action: "repeat", state: Lineup.list && st === "context" ? "off" : st });
+      if (Lineup.list) setTimeout(() => Lineup.sync(), 0);
+    }
     else if (method === "POST" && p === "/me/player/queue") Object.assign(args, { action: "queue", uri: q.get("uri") });
     else return null;
     const r = await native("player.direct", args).catch(() => null);
@@ -120,8 +133,171 @@ const Direct = {
     if (!r || !r.ok) { this.fell++; this.why = `${args.action}: ${(r && r.reason) || "no answer"}`; return null; }
     this.done++;
     (window.__direct = window.__direct || []).push(args.action);   // (for tests)
+    if (args.action === "load") Lineup.reset(true);               // a playlist or album: the engine plays it; Cadenza's queue starts empty
     setTimeout(poll, 500);
     return { status: 204, body: null, direct: true };
+  },
+};
+
+/* ---------- Cadenza's line-up (with the built-in engine) ----------
+   One queue, Cadenza's: your Up Next songs first, then the rest of what's playing (a list of songs: a
+   true-shuffle order, a DJ set, a playlist you started from a song, autoplay's picks). Cadenza hands the
+   next few of them (K) to the engine's own queue and keeps that topped up as songs play, so each song
+   follows the last with no gap and the crossfade works, and fast skipping finds songs waiting. Change the
+   line-up (move or remove an Up Next song, take a song out of the shuffle, autoplay re-sorting its picks)
+   and the engine's queue is put right straight away: unlike Spotify's queue, the engine's can be cleared.
+   A whole playlist or album started as itself is played by the engine; then only Up Next goes in the queue. */
+const Lineup = {
+  K: 6, repeat: false,
+  list: null, at: 0, sent: [], busy: false, again: false, why: "", meta: new Map(),
+  on: () => Direct.on(),
+  /** Play `list` (song URIs) from place `from`, `position` ms into that song. */
+  async play(list, from = 0, position = 0, device_id) {
+    from = Math.min(Math.max(0, from), list.length - 1);
+    const r = await native("player.direct", { action: "load", tracks: [list[from]], position, device_id, repeat: "off" }).catch(() => null);
+    if (!r || !r.ok) { this.why = (r && r.reason) || "no answer"; return false; }
+    this.list = list.slice(); this.at = from; this.playedAt = Date.now();
+    await this.clear();
+    this.sync();
+    return true;
+  },
+  /** Carry on with `list` from place `at`, without touching the song that's playing (true shuffle taking
+   *  over a playlist that's already playing, or a fresh shuffle after the last song). */
+  adopt(list, at = 0) { this.list = list.slice(); this.at = at; this.clear().then(() => this.sync()); },
+  /** A playlist or album is playing as itself (or something else took over): no list of Cadenza's. */
+  reset(clear) { this.list = null; this.at = 0; if (clear) this.clear().then(() => this.sync()); else this.sent = []; },
+  async clear() { this.sent = []; await native("player.direct", { action: "clear" }).catch(() => null); },
+  /** What should come next, in order: Up Next, then autoplay's picks or the rest of the list. */
+  upcoming() {
+    const out = UpNext.items.map((t) => t.uri), up = new Set(out);
+    if (Radio.active) out.push(...Radio.upcoming().map((t) => t.uri).filter((u) => !up.has(u)));
+    else if (this.list) {
+      let rest = this.list.slice(this.at + 1);
+      // Repeat (a plain list; true shuffle reshuffles instead): round again from the top.
+      if (this.repeat && !TrueShuffle.active) rest = rest.concat(this.list.slice(0, this.at + 1));
+      rest = rest.filter((u) => !up.has(u));                      // (it plays as an Up Next song instead)
+      // True shuffle: a song heard already in this playthrough (the same song twice in the playlist, the
+      // single and the album version) isn't lined up again.
+      if (TrueShuffle.active) rest = rest.filter((u) => {
+        if (TrueShuffle.heard.has(u)) return false;
+        const m = TrueShuffle.meta.get(u), key = m ? TrueShuffle.songKey(m.name, m.artists && m.artists[0] && m.artists[0].name) : "";
+        return !(key && TrueShuffle.heard.has(key));
+      });
+      out.push(...rest);
+    }
+    return out;
+  },
+  /** Make the engine's queue hold the next K songs of the line-up. Only the difference is sent; if
+   *  something changed among the ones already there, the queue is cleared and filled again. */
+  async sync() {
+    if (!this.on()) return;
+    if (this.busy) { this.again = true; return; }
+    this.busy = true;
+    try {
+      const want = this.upcoming().slice(0, this.K);
+      if (!this.sent.every((u, i) => want[i] === u)) await this.clear();
+      for (const u of want.slice(this.sent.length)) {
+        const r = await native("player.direct", { action: "queue", uri: u }).catch(() => null);
+        if (!r || !r.ok) break;
+        this.sent.push(u);
+      }
+      // Autoplay keeps the songs already handed over where they are when it re-sorts the rest.
+      if (Radio.active) Radio.qd = this.sent.filter((u) => Radio.order.some((t, k) => k > Radio.at && t.uri === u));
+    } finally {
+      this.busy = false;
+      if (this.again) { this.again = false; this.sync(); }
+    }
+  },
+  /** A song started: what's left in the engine's queue, and where the list is. */
+  onTrack(uri) {
+    if (!this.on() || !uri) return;
+    const k = this.sent.indexOf(uri);
+    if (k >= 0) this.sent = this.sent.slice(k + 1);
+    // Something else is playing now (your phone started a playlist on Cadenza, say): the list is over, and
+    // its songs come out of the engine's queue so they don't follow what you picked.
+    const known = k >= 0 || (this.list && this.list.includes(uri)) || UpNext.items.some((t) => t.uri === uri) || (Radio.active && Radio.order.some((t) => t.uri === uri));
+    if (!known && this.list && Date.now() - (this.playedAt || 0) > 4000) { this.reset(true); return; }
+    if (this.list) {
+      const i = this.list.indexOf(uri, this.at);
+      const j = i >= 0 ? i : this.list.indexOf(uri);
+      if (j >= 0) this.at = j;
+    }
+    setTimeout(() => this.sync(), 0);                            // (once Up Next, autoplay and the rest have moved on)
+  },
+  /** The engine ran out (skipping faster than the queue): play the line-up's next song. True if there was one. */
+  async ranOut() {
+    if (!this.on() || Date.now() - (this.ranAt || 0) < 1500) return false;   // (once: the engine can say it twice)
+    const next = this.upcoming()[0];
+    if (!next) return false;
+    this.ranAt = Date.now();
+    this.sent = [];
+    const r = await native("player.direct", { action: "load", tracks: [next], repeat: "off" }).catch(() => null);
+    if (!r || !r.ok) return false;
+    // It's played now, so it's off the line-up: the Up Next song, or the list's place moves on.
+    if (UpNext.items[0] && UpNext.items[0].uri === next) { UpNext.items.shift(); UpNext.save(); }
+    else if (this.list) { const i = this.list.indexOf(next, this.at); if (i >= 0) this.at = i; }
+    await this.clear();
+    this.sync();
+    return true;
+  },
+  /** Previous, in a list: back to the start of this song, or (in the first 3 s) the song before. */
+  async previous() {
+    if (!this.on() || !this.list) return null;
+    if (progressNow() > 3000 || this.at <= 0) return api("PUT", "/me/player/seek?position_ms=0");
+    TrueShuffle.replayUntil = Date.now() + 5000;
+    return (await this.play(this.list, this.at - 1, 0)) ? { status: 204 } : null;
+  },
+  /** Play now (Queue page): a song further down the list, carrying on from there. */
+  jumpTo(uri) {
+    const i = this.list ? this.list.indexOf(uri, this.at + 1) : -1;
+    return i < 0 ? Promise.resolve(false) : this.play(this.list, i, 0);
+  },
+  /** Swap two songs coming up in the list (moved on the Queue page). */
+  swap(a, b) {
+    if (!this.list) return false;
+    const ia = this.list.indexOf(a, this.at + 1), ib = this.list.indexOf(b, this.at + 1);
+    if (ia < 0 || ib < 0) return false;
+    [this.list[ia], this.list[ib]] = [this.list[ib], this.list[ia]];
+    if (TrueShuffle.active) {
+      for (const arr of new Set([TrueShuffle.order, TrueShuffle.chunk])) {
+        const x = arr.indexOf(a), y = arr.indexOf(b);
+        if (x >= 0 && y >= 0) [arr[x], arr[y]] = [arr[y], arr[x]];
+      }
+      TrueShuffle.save();
+    }
+    this.sync();
+    return true;
+  },
+  /** Put a song first in what's coming (an Up Next song moved down past the last one). */
+  putFirst(t) {
+    if (Radio.active) return Radio.putFirst(t);
+    if (!this.list) return;
+    this.meta.set(t.uri, t);
+    this.list.splice(this.at + 1, 0, t.uri);
+    if (TrueShuffle.active) {
+      const cur = S.player && S.player.item && S.player.item.uri;
+      for (const arr of new Set([TrueShuffle.order, TrueShuffle.chunk])) { const k = arr.indexOf(cur); arr.splice(k >= 0 ? k + 1 : 0, 0, t.uri); }
+    }
+    this.sync();
+  },
+  /** Take a song out of what's coming (Queue page). */
+  remove(uri) {
+    if (!this.list) return false;
+    const i = this.list.indexOf(uri, this.at + 1);
+    if (i < 0) return false;
+    this.list.splice(i, 1);
+    if (TrueShuffle.active) { const k = TrueShuffle.chunk.indexOf(uri); if (k >= 0) TrueShuffle.chunk.splice(k, 1); TrueShuffle.order = TrueShuffle.order.filter((u) => u !== uri); }
+    this.sync();
+    return true;
+  },
+  /** Song details for the Queue page (the list itself is only URIs). */
+  async details(uris) {
+    const missing = uris.filter((u) => !this.meta.has(u) && !TrueShuffle.meta.has(u)).slice(0, 30);
+    await Promise.all(missing.map(async (u) => {
+      const r = await api("GET", `/tracks/${u.split(":")[2]}`);
+      if (r.status === 200 && r.body) this.meta.set(u, r.body);
+    }));
+    return uris.map((u) => this.meta.get(u) || TrueShuffle.meta.get(u)).filter(Boolean);
   },
 };
 
@@ -1357,7 +1533,8 @@ async function cmd(id) {
       break;
     case "previous":
       TrueShuffle.replayUntil = Date.now() + 5000;                 // going back to a song is on purpose: don't skip it
-      native("audio.local", { action: "skip" }).catch(() => {}); r = await api("POST", "/me/player/previous"); break;
+      native("audio.local", { action: "skip" }).catch(() => {});
+      r = (Lineup.on() && Lineup.list && await Lineup.previous()) || await api("POST", "/me/player/previous"); break;
     case "shuffle": {
       const on = !(p && p.shuffle_state);
       if (!on && TrueShuffle.active) { await TrueShuffle.off(); break; }          // back to the playlist's own order
@@ -1507,6 +1684,7 @@ function setPlayer(p) {
   const prevUri = S.player && S.player.item && S.player.item.uri;
   if (p && TrueShuffle.active) p.shuffle_state = true;           // Cadenza is doing the shuffling (Spotify's is off)
   if (p && TrueShuffle.active && TrueShuffle.repeat) p.repeat_state = "context";   // and the repeating
+  if (p && Lineup.on() && Lineup.list && Lineup.repeat && p.repeat_state === "off") p.repeat_state = "context";   // (Cadenza's line-up repeats)
   S.player = p; S.stamp = Date.now();
   renderNow();
   views.home.update();
@@ -1518,6 +1696,7 @@ function setPlayer(p) {
     Taste.onTrack(p && p.item, fromUpNext);                     // before autoplay moves on, so it knows which songs were its picks
     views.playlist.markPlaying(); views.album.markPlaying();
     if (!Feed.onTrack(uri, fromUpNext)) { DJ.onTrack(uri, fromUpNext); Radio.onTrack(uri, fromUpNext); TrueShuffle.onTrack(uri, fromUpNext); }
+    Lineup.onTrack(uri);
     checkLiked(uri);
     if (p && p.item) PlayCounts.exactFor(p.item);
     if (current() && current().name === "lyrics") views.lyrics.load();
@@ -2809,6 +2988,7 @@ views.queue = {
     if (!UpNext.loaded) await UpNext.load();
     const keep = this.want != null ? this.want : this.list.i || 0;
     this.want = null;
+    if (Lineup.on() && (Lineup.list || Radio.active)) return this.loadLineup(keep);
     const r = await api("GET", "/me/player/queue");
     await settled();
     const now = r.body && r.body.currently_playing;
@@ -2846,23 +3026,89 @@ views.queue = {
     if (this.list.items.length) this.list.select(Math.min(keep, this.list.items.length - 1), false);
     if (first) revealRows(this.list.el);
   },
+  /** With the built-in engine: Cadenza's line-up, exactly as it will play (see Lineup). */
+  async loadLineup(keep) {
+    const now = S.player && S.player.item;
+    const ups = UpNext.items.map((t, i) => ({ ...t, _up: i + 1 }));
+    let rest = [], rad = [];
+    if (Radio.active) rad = Radio.upcoming().map((t) => ({ ...t, _radio: true }));
+    else {
+      const uris = Lineup.upcoming().slice(ups.length, ups.length + 50);
+      if (TrueShuffle.active) await TrueShuffle.ensureMeta(uris);
+      const djTracks = DJ.active ? new Map((DJ.segments || []).flatMap((sg) => sg.tracks).map((t) => [t.uri, t])) : null;
+      const have = djTracks ? uris.map((u) => djTracks.get(u)).filter(Boolean) : [];
+      rest = (have.length === uris.length ? have : await Lineup.details(uris))
+        .map((t) => ({ ...t, _feed: TrueShuffle.active ? "SHUFFLE" : DJ.active ? "DJ SET" : "NEXT" }));
+    }
+    await settled();
+    setBg($("q-art"), now ? now.image || null : null);
+    $("q-title").textContent = now ? now.name : "NOTHING PLAYING";
+    $("q-artist").textContent = now ? (now.artists || "") : "";
+    const restName = TrueShuffle.active ? " IN THE SHUFFLE" : DJ.active ? " IN THE SET" : " COMING UP";
+    $("q-count").textContent = [ups.length ? ups.length + " UP NEXT" : "", rest.length ? rest.length + restName : "", rad.length ? rad.length + " AUTOPLAY" : ""].filter(Boolean).join(" · ") || "EMPTY";
+    const first = !this.list.items.length;
+    this.list.set([...ups, ...rest, ...rad]);
+    if (this.list.items.length) this.list.select(Math.min(keep, this.list.items.length - 1), false);
+    if (first) revealRows(this.list.el);
+  },
   act(kind, t) {
     if (!t) return;
     if (kind === "add") return Drawer.show(t);
     if (t._radio) return Radio.jumpTo(t.uri).then(() => setTimeout(() => this.load(), 700));    // stays on autoplay
+    if (t._feed && Lineup.on() && Lineup.list) return Lineup.jumpTo(t.uri).then(() => setTimeout(() => this.load(), 700));   // stays in the line-up
     if (t._feed && Feed.active) return Feed.jumpTo(t.uri).then(() => setTimeout(() => this.load(), 700));   // stays in the shuffle (or set)
     playBody({ uris: [t.uri] }, t.name).then((ok) => ok && setTimeout(() => this.load(), 700));
   },
+  /** Move the song in row `i` one place (`d` -1 up, 1 down) in the line-up. Past the end of Up Next it
+   *  crosses over: a song moved up above the last Up Next song becomes one, and the last Up Next song
+   *  moved down becomes the first of the rest. */
+  move(i, d) {
+    const rows = this.list.items, t = rows[i], o = rows[i + d];
+    if (!t || !o) return false;
+    if (t._up && o._up) return UpNext.move(i, d);
+    if (t._up && d > 0) {                                         // the last Up Next song, down into the rest
+      UpNext.items.splice(t._up - 1, 1); UpNext.save();
+      Lineup.putFirst(t); UpNext.changed();
+      return true;
+    }
+    if (!t._up && o._up && d < 0) {                               // the first of the rest, up into Up Next
+      const taken = t._radio ? Radio.take(t.uri) : Lineup.list && Lineup.list.includes(t.uri) ? (Lineup.list.splice(Lineup.list.indexOf(t.uri, Lineup.at + 1), 1), t) : null;
+      if (!taken) return false;
+      if (TrueShuffle.active) {
+        const same = TrueShuffle.chunk === TrueShuffle.order;
+        TrueShuffle.order = TrueShuffle.order.filter((u) => u !== t.uri);
+        TrueShuffle.chunk = same ? TrueShuffle.order : TrueShuffle.chunk.filter((u) => u !== t.uri);
+        TrueShuffle.save();
+      }
+      UpNext.items.splice(o._up - 1, 0, UpNext.slim(t)); UpNext.save(); UpNext.changed();
+      return true;
+    }
+    if (t._feed && o._feed) { const ok = Lineup.swap(t.uri, o.uri); if (ok) this.load(); return ok; }
+    if (t._radio && o._radio) { const ok = Radio.swap(t.uri, o.uri); if (ok) this.load(); return ok; }
+    return false;
+  },
   onKey(e) {
     const t = this.list.cur, i = this.list.i, k = e.key.toLowerCase();
-    // ⌥↑ / ⌥↓ move an Up Next song (before the list's own arrow keys get it).
+    // ⌥↑ / ⌥↓ move a song (before the list's own arrow keys get it). With the built-in engine, any song in
+    // the line-up moves: Up Next, the shuffle (or list, or DJ set) and autoplay's picks.
+    if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && t && Lineup.on() && (Lineup.list || Radio.active)) {
+      const d = e.key === "ArrowUp" ? -1 : 1;
+      this.want = i + d;
+      if (!this.move(i, d)) { this.want = null; toast("CAN'T MOVE IT FURTHER", true); }
+      return true;
+    }
     if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && t && t._up) {
       this.want = i + (e.key === "ArrowUp" ? -1 : 1);                 // keep the moved song selected
-      if (!UpNext.move(i, e.key === "ArrowUp" ? -1 : 1)) { this.want = null; toast(t._fed ? "ALREADY HANDED TO SPOTIFY · IT PLAYS NEXT" : "CAN'T MOVE IT FURTHER", true); }
+      if (!UpNext.move(i, e.key === "ArrowUp" ? -1 : 1)) { this.want = null; toast(t._fed && !Lineup.on() ? "ALREADY HANDED TO SPOTIFY · IT PLAYS NEXT" : "CAN'T MOVE IT FURTHER", true); }
       return true;
     }
     if (this.list.nav(e)) return true;
     if (e.key === "Enter") { pop(this.list.rows[this.list.i]); this.act("play", t); return true; }
+    if (k === "x" && t && t._feed && Lineup.on() && Lineup.list) {
+      this.want = i;
+      if (Lineup.remove(t.uri)) { toast("TAKEN OUT OF THIS " + (TrueShuffle.active ? "SHUFFLE" : DJ.active ? "SET" : "LIST")); this.load(); }
+      return true;
+    }
     if (k === "x" && t && t._feed && Feed.active) {
       this.want = i;
       if (Feed.remove(t.uri)) { toast("TAKEN OUT OF THIS " + (TrueShuffle.active ? "SHUFFLE" : "LIST")); this.load(); }
@@ -5333,6 +5579,7 @@ const UpNext = {
   },
   add(t, front) {
     const item = this.slim(t);
+    Radio.inUpNext(item);
     if (front) this.items.splice(this.fed ? 1 : 0, 0, item); else this.items.push(item);
     this.save(); this.changed();
     toast((front ? "PLAYS NEXT: " : "UP NEXT: ") + upper(cleanTitle(t.name)));
@@ -5357,9 +5604,10 @@ const UpNext = {
     this.items = []; this.fed = null; this.save(); this.changed();
     toast("UP NEXT CLEARED");
   },
-  changed() { if (current() && current().name === "queue") views.queue.load(); },
+  changed() { if (current() && current().name === "queue") views.queue.load(); Lineup.sync(); },
   /** Once a second: close to the end of the current song, hand the first Up Next song to Spotify. */
   async tick() {
+    if (Lineup.on()) return;                                       // (the line-up hands Up Next songs to the engine)
     if (this.fed || this.feeding || !this.items.length) return;
     const p = S.player, it = p && p.item;
     if (!it || !p.is_playing || !it.duration_ms) return;
@@ -5381,7 +5629,7 @@ const UpNext = {
     if (this.skip && uri === this.skip) { this.skip = null; cmd("next"); return true; }
     const it = S.player && S.player.item;
     const same = (t) => t.uri === uri || (it && it.uri === uri && cleanTitle(t.name).toLowerCase() === cleanTitle(it.name).toLowerCase());
-    if (this.fed && this.items[0] && same(this.items[0])) {
+    if ((this.fed || Lineup.on()) && this.items[0] && same(this.items[0])) {
       this.items.shift(); this.fed = null; this.save(); this.changed();
       return true;
     }
@@ -5622,8 +5870,8 @@ const TrueShuffle = {
     this.chunk = order; this.pos = pos;
     this.active = true; this.ending = false; this.grace = Date.now() + 8000;
     await api("PUT", "/me/player/shuffle?state=false");
-    Feed.start(this.chunk, ctx, pos);
-    Feed.skipIf = (u) => this.active && this.heard.has(u);
+    if (Lineup.on()) Lineup.adopt(this.chunk, pos);              // the song playing carries on; the shuffle follows it
+    else { Feed.start(this.chunk, ctx, pos); Feed.skipIf = (u) => this.active && this.heard.has(u); }
     if (S.player) S.player.shuffle_state = true;
     Controls.render();
   },
@@ -5690,7 +5938,7 @@ const TrueShuffle = {
       const fresh = this.permute(this.order.filter((u) => u !== uri));
       this.order = [uri, ...fresh]; this.chunk = this.order; this.at = 0; this.pos = 0;
       this.heard = new Set(); this.hear(uri, S.player && S.player.item);
-      Feed.start(this.order, this.hostUri(), 0);
+      if (Lineup.on()) Lineup.adopt(this.order, 0); else Feed.start(this.order, this.hostUri(), 0);
       this.save();
       toast("LAST SONG OF THE SHUFFLE · A NEW SHUFFLE FOLLOWS");
       return;
@@ -6814,7 +7062,8 @@ const Radio = {
    *  Every sixth place goes to the best new artist on the list (if there is one), so autoplay keeps
    *  discovering things instead of only playing what it already knows you like. */
   rerank() {
-    const start = this.at + 1 + this.qd.length, E = Taste.EXPLORE;
+    // Songs you moved yourself (and everything before them) keep their places.
+    const start = Math.max(this.at + 1 + this.qd.length, this.pinnedTo + 1), E = Taste.EXPLORE;
     const head = this.order.slice(0, start);
     const pool = this.order.slice(start).map((t) => ({ t, v: this.value(t) })).sort((a, b) => b.v - a.v);
     const out = [];
@@ -6843,7 +7092,47 @@ const Radio = {
   /** A new autoplay session from `t`. `picked`: you chose that song yourself, so it alone sets the
    *  direction (the songs you heard before it were a different mood, and shouldn't steer what comes next).
    *  Otherwise (an album or playlist ran out) the last few songs of it count too. */
+  pinnedTo: 0,
+  /** Swap two of autoplay's picks (moved on the Queue page). They stay where you put them. */
+  swap(a, b) {
+    const ia = this.order.findIndex((t, k) => k > this.at && t.uri === a), ib = this.order.findIndex((t, k) => k > this.at && t.uri === b);
+    if (ia < 0 || ib < 0) return false;
+    [this.order[ia], this.order[ib]] = [this.order[ib], this.order[ia]];
+    this.pinnedTo = Math.max(this.pinnedTo, ia, ib);
+    this.refreshQueue();
+    return true;
+  },
+  /** Take a pick out without counting it against the song (it moved to Up Next). */
+  take(uri) {
+    const i = this.order.findIndex((t, k) => k > this.at && t.uri === uri);
+    if (i < 0) return null;
+    const [t] = this.order.splice(i, 1);
+    if (i <= this.pinnedTo) this.pinnedTo--;
+    this.refreshQueue();
+    return t;
+  },
+  /** Put a song first in autoplay's line-up (an Up Next song moved down past the last one). */
+  putFirst(t) {
+    const artist = (t.artists && t.artists[0] && t.artists[0].name) || "";
+    const { _up, _radio, _feed, _fed, ...song } = t;            // (the Queue page's row marks)
+    this.order.splice(this.at + 1, 0, { ...song, _artist: LFM.norm(artist) });
+    this.used.add(t.uri);
+    this.pinnedTo = Math.max(this.pinnedTo, this.at + 1);
+    this.refreshQueue();
+  },
+  /** A song went into Up Next: autoplay won't also play it (now or later). */
+  inUpNext(t) {
+    if (!t || !t.uri) return;
+    this.used.add(t.uri);
+    const key = this.songKey(t); if (key) this.usedKeys.add(key);
+    if (!this.active) return;
+    const start = this.at + 1 + this.qd.length;
+    const before = this.order.length;
+    this.order = this.order.filter((o, k) => k < start || (o.uri !== t.uri && !(key && this.songKey(o) === key)));
+    if (this.order.length !== before) this.refreshQueue();
+  },
   fresh(t, picked) {
+    this.pinnedTo = 0;
     this.used = new Set([t.uri, ...this.recent.map((x) => x.uri)]);                     // nothing you just heard
     this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
     this.sent = new Set(); this.played = new Set([t.uri]); this.failedSend = new Set();
@@ -6858,6 +7147,7 @@ const Radio = {
     if (!this.active || !t || !t.uri || this.used.has(t.uri) || refusedLately(t.uri)) return false;
     const key = this.songKey(t);
     if (key && this.usedKeys.has(key)) return false;                          // another version of a song already lined up
+    if (UpNext.items.some((u) => u.uri === t.uri || (key && this.songKey(u) === key))) return false;   // it's in your Up Next already
     // Nothing you've heard in the last day (from anywhere, not just this autoplay session).
     if (Taste.heardWithin(t, 24 * 3600e3)) return false;
     const artist = (t.artists && t.artists[0] && t.artists[0].name) || "";
@@ -6874,6 +7164,7 @@ const Radio = {
   refreshQueue() {
     clearTimeout(this.refreshT);
     this.refreshT = setTimeout(() => { if (current() && current().name === "queue") views.queue.load(); }, 700);
+    if (Lineup.on() && this.active) Lineup.sync();               // autoplay re-sorted or took a song out
   },
   /** How far you got into the song that just ended or was skipped: 75% or more counts as liking it,
    *  under half as skipping it. Autoplay leans towards the first and away from the second. */
@@ -6923,6 +7214,7 @@ const Radio = {
   /** Songs Cadenza already put in Spotify's queue would otherwise sneak in after what you picked:
    *  remember them, and skip them if they come up. */
   dropQueued() {
+    if (Lineup.on()) { this.qd = []; return; }                     // (the line-up clears the engine's queue itself)
     if (this.qd.length) this.stray = { uris: new Set(this.qd), until: Date.now() + 30 * 60e3 };
     this.qd = [];
   },
@@ -7054,6 +7346,10 @@ const Radio = {
   },
   /** Keep one song waiting in Spotify's queue: the next one on the list. */
   async queueNext() {
+    if (Lineup.on()) {                                             // (the line-up hands autoplay's picks to the engine)
+      if (this.active && this.upcoming().length < this.LOW && !this.building) { const cur = this.order[this.at]; if (cur) this.extend(cur); }
+      return Lineup.sync();
+    }
     if (!this.active || this.holdQueue || this.queueing) return;
     if (UpNext.items.length || UpNext.fed) return;               // your Up Next goes first; radio resumes after
     // Running low: look for more like what's on now (in the background; it doesn't hold anything up).
@@ -9149,6 +9445,7 @@ window.app = {
       // The built-in engine ran out of songs while autoplay was going (skipping faster than songs were
       // handed over): autoplay plays its next one itself, at once.
       if (S.holdUntil && Date.now() < S.holdUntil) { /* the engine moves on by itself after its wait */ }
+      else if (Lineup.on() && Lineup.upcoming().length) Lineup.ranOut();   // skipping outran the engine's queue: the line-up's next song
       else if (Direct.on() && Radio.active && !Radio.finding) { Radio.qd = []; Radio.nudgedAt = Date.now(); Radio.advance(); }
       else setTimeout(() => { Radio.checkEnd(); Radio.watch(); }, 1200);
     }
@@ -9599,7 +9896,7 @@ motionQuery.addEventListener("change", applyMotion);
 
 async function boot() {
   // Testing hook: the browser demo, and development builds of the app started with a probe script.
-  if (!bridge || window.cadenzaProbe) window.__dbg = { native, Feed, playBody, S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
+  if (!bridge || window.cadenzaProbe) window.__dbg = { native, Feed, Lineup, Direct, playBody, S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); Taste.tick(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
   views.home.build();
@@ -9836,6 +10133,7 @@ const Demo = (() => {
             play: () => apiRoute("PUT", "/me/player/play"), pause: () => apiRoute("PUT", "/me/player/pause"),
             next: () => apiRoute("POST", "/me/player/next"), previous: () => apiRoute("POST", "/me/player/previous"),
             queue: () => apiRoute("POST", "/me/player/queue?" + q("uri", args.uri)),
+            clear: () => { window.__demoQueue = []; return Promise.resolve(); },
           }[args.action];
           return (route ? route() : Promise.resolve()).then(() => ({ ok: true }));
         }

@@ -742,8 +742,8 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
                 let _ = e.direct(crate::embedded::Direct::Play);
                 return json!({"ok": true});
             }
-            g.hold_token += 1;                                  // you chose something: a waiting skip is off
-            g.hold_until = None; g.hold_skips = 0;
+            // You chose something: a waiting skip is off. (Not for Cadenza lining songs up in the queue.)
+            if !matches!(action, "queue" | "clear") { g.hold_token += 1; g.hold_until = None; g.hold_skips = 0; }
             (e, Self::active_here(&g), g.track_loaded)
         };
         let s = |k: &str| a.get(k).and_then(Value::as_str).map(String::from);
@@ -772,6 +772,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$PLAYER_EVENT" "$URI"
             "shuffle" => Direct::Shuffle(a.get("state").and_then(Value::as_bool).unwrap_or(false)),
             "repeat" => Direct::Repeat(s("state").unwrap_or_else(|| "off".into())),
             "queue" => match s("uri") { Some(u) => Direct::Queue(u), None => return no("no song") },
+            "clear" => Direct::ClearQueue,
             _ => return no("unknown"),
         };
         match engine.direct(d) {

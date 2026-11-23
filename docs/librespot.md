@@ -56,5 +56,16 @@ interface. Two more things only work this way:
 
 Media keys, the tray, the mini player and the pause after the computer sleeps go straight to the engine too.
 
+**One queue, Cadenza's (`Lineup` in app.js).** With the built-in engine, everything that decides what plays
+next shares one line-up: your Up Next songs first, then the rest of what's playing (a true-shuffle order, a DJ
+set, a list of songs, autoplay's picks). Cadenza hands the next six to the engine's own queue and tops it up as
+songs play, so songs follow each other with no gap, the crossfade works, and fast skipping finds songs
+waiting. The engine's queue can be cleared, unlike Spotify's, so moving or removing a song puts it right
+straight away, and a new list never inherits songs left over from the last one. If skipping still outruns it,
+Cadenza plays the line-up's next song itself. Repeat on a list goes round the line-up again; Previous steps
+back through it. A whole playlist or album started as itself is played by the engine, with Up Next ahead of it.
+
+The separate program still uses the old way (Spotify's queue, fed one song at a time).
+
 The separate program is still built and bundled for now. System → Engine settings → Engine switches between
 the two (it restarts the engine).

@@ -171,15 +171,6 @@ Paste your Client ID and press **Log in**. Your browser opens twice: once to let
 Spotify, and once to sign in its player (librespot). Approve both, then come back. Cadenza now shows up
 as a speaker called "Cadenza" in every Spotify app.
 
-### Moving over from the old Mac app
-
-Cadenza used to be a Mac-only app written in Swift. `./build.sh --install` now builds the new app and
-puts it in Applications in place of the old one. Both use the same folder, so your sign-ins, history,
-taste profile and saved data are simply there, and the first time it opens it brings your settings over
-from the old app (Client ID, theme, EQ with each device's EQ, crossfade, volume and the rest). It changes
-nothing the old app reads. The old app is kept as `~/Library/Developer/Cadenza/Cadenza-swift.zip`; to go
-back, run `./build.sh --swift --install`.
-
 ## Uninstall
 
 First turn off **Open at login** (System → Preferences) if you had it on, and quit Cadenza (its tray or
@@ -194,11 +185,8 @@ menu-bar icon → Quit, or ⌘Q / Ctrl+Q). Then remove the app, and, if you want
           ~/Library/Application\ Support/io.github.chedd4rr.cadenza \
           ~/Library/WebKit/io.github.chedd4rr.cadenza \
           ~/Library/Caches/io.github.chedd4rr.cadenza
-   defaults delete io.github.chedd4rr.cadenza 2>/dev/null
    ```
-   The last line removes the old Swift app's settings, if you ever used it.
-3. If you built Cadenza yourself: `rm -rf ~/Library/Developer/Cadenza` (the build cache and the old app's
-   zip), and delete "Cadenza Local Signing" in Keychain Access if you like.
+3. If you built Cadenza yourself: `rm -rf ~/Library/Developer/Cadenza` (the build cache), and delete "Cadenza Local Signing" in Keychain Access if you like.
 4. If you used test mode: `rm -rf ~/Library/Application\ Support/Cadenza\ Test`.
 
 **Windows**
@@ -461,9 +449,6 @@ side, every Spotify request and a sound report every few seconds.
 
 GitHub can build Cadenza for any of the three systems: Actions → Desktop app → Run workflow, then pick
 the system. How the bundled librespot is built and patched is in [docs/librespot.md](docs/librespot.md).
-
-The old Swift app's code is still in `Sources/` so you can go back to it (`./build.sh --swift
---install`); it will be removed once the new app has had its first release.
 
 ## Troubleshooting
 
