@@ -408,7 +408,7 @@ Your Spotify sign-in is only ever sent to Spotify's own servers.
 | `settings.json` | Your settings |
 | `spotify-token` | Your Spotify login |
 | `secrets.json` | Your Genius token (and a Last.fm key and secret, if you set your own); never passed to the page |
-| `librespot/` | The audio engine's login and cache |
+| `librespot/` | The audio engine's login, and the songs it has downloaded (up to 1 GB; the least recently played go first) |
 | `history.jsonl` | What Cadenza has played |
 | `spotify-history.json` | Your imported Spotify history (time, length, song, how it ended) |
 | `lastfm-plays.json` | Your Last.fm scrobbles since that history ends, kept so they're only fetched once |

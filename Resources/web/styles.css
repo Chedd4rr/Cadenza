@@ -341,7 +341,11 @@ body.playing #v-dj.live .vinyl { animation-play-state: running; }
 #toast.show { transform: translate(-50%, 0) skewX(var(--skew)); }
 #toast.err { background: #ffdfe6; box-shadow: 1vh 1vh 0 #ff4f7b; color: #5a0620; }
 
-body.reduce *, body.reduce *::before, body.reduce *::after { animation-duration: .001s !important; transition-duration: .001s !important; }
+/* Reduce motion: animations jump to their end and stop. Endless ones (theme backgrounds, bobbing labels)
+   run once and stay still, instead of running on very fast and keeping the page redrawing. The loading
+   spinner keeps turning, so you can still tell something is happening. */
+body.reduce *, body.reduce *::before, body.reduce *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }
+body.reduce .spinner { animation-duration: .7s !important; animation-iteration-count: infinite !important; }
 .dj-actions .opt .k { min-width: 11vw; }
 
 /* ============ v3 additions ============ */

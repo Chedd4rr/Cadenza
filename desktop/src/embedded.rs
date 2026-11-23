@@ -31,6 +31,9 @@ use librespot_metadata::audio::UniqueFields;
 
 use crate::sound::MemPipe;
 
+/// How much space downloaded songs may take (librespot/files).
+const AUDIO_CACHE_LIMIT: u64 = 1024 * 1024 * 1024;
+
 /// The scopes the librespot program asks for when you sign in (its OAUTH_SCOPES), so a login made by
 /// either works for both.
 const SCOPES: &[&str] = &[
@@ -187,7 +190,10 @@ impl Engine {
     async fn run(self: &Arc<Self>, cfg: Config, hooks: Arc<Hooks>, stop: tokio::sync::oneshot::Receiver<()>) -> String {
         let say = |s: String| (hooks.message)(s);
         let _ = std::fs::create_dir_all(&cfg.cache);
-        let cache = match Cache::new(Some(cfg.cache.clone()), Some(cfg.cache.clone()), Some(cfg.cache.join("files")), None) {
+        // Songs librespot has downloaded are kept in files/ so replays don't download again. Without a limit
+        // that folder only grows; 1 GB holds a hundred or so songs, and the oldest-used go first (also when
+        // it starts, so a folder that grew before this limit shrinks once).
+        let cache = match Cache::new(Some(cfg.cache.clone()), Some(cfg.cache.clone()), Some(cfg.cache.join("files")), Some(AUDIO_CACHE_LIMIT)) {
             Ok(c) => c,
             Err(e) => return format!("couldn't open its folder: {e}"),
         };
