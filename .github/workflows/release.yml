@@ -5,6 +5,8 @@
 #
 # One run costs about what Desktop app → all systems does (a few dollars of a private repository's monthly
 # allowance, most of it the Mac runner).
+# Every action below is pinned to an exact commit (the version is in the comment after it), so what runs
+# can't change under you. Dependabot (.github/dependabot.yml) sends a pull request when a newer one is out.
 name: Release
 
 on:
@@ -19,7 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
       - id: v
         run: |
           conf="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' desktop/tauri.conf.json | head -1)"
@@ -49,7 +51,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
 
       - name: Linux libraries
         if: matrix.name == 'linux'
@@ -58,9 +60,11 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
             libayatana-appindicator3-dev libasound2-dev libssl-dev libxdo-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca  # the "stable" branch
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           workspaces: desktop
 
@@ -71,13 +75,13 @@ jobs:
         working-directory: desktop
         run: cargo test
 
-      - uses: cargo-bins/cargo-binstall@main
+      - uses: cargo-bins/cargo-binstall@4b6fa09d0d1ef9740a0c332e31b9ae336f97efa0  # v1.28.0
       - name: Install Tauri's build tool
         run: cargo binstall tauri-cli --version "^2" --no-confirm
 
       # Builds, signs the update files with the private key, and adds this system's installers and its entry
       # in latest.json (the file Cadenza's update check reads) to the draft release.
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

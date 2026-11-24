@@ -350,10 +350,9 @@ lyrics can be mistaken for a similar language.
 All of these are optional and go in System → Connections.
 
 - **Last.fm** powers play counts, Friends, the DJ's deeper picks, styles in your taste profile and
-  better autoplay. Type your Last.fm username; that's all. Cadenza doesn't scrobble itself. Spotify's own
-  Last.fm link (Last.fm settings → Applications → Spotify scrobbling) only sees what Spotify counts as
-  played, and the built-in engine doesn't send Spotify those play reports (see
-  [Troubleshooting](#troubleshooting)), so Cadenza's plays may not reach Last.fm that way.
+  better autoplay. Type your Last.fm username; that's all. Cadenza doesn't scrobble itself: link Spotify
+  to Last.fm instead (Last.fm settings → Applications → Spotify scrobbling) and Spotify scrobbles
+  everything you play, Cadenza included.
 - **Discord status:** turn it on, with the Discord app running on the same computer. Your profile then
   shows "Listening to Cadenza" with the song. (Discord's "Share your detected activities" setting has to
   be on; it is unless you turned it off.)
@@ -475,7 +474,8 @@ AirPods").
   account for now; skipping less for a while helps.
 - **Songs I played in Cadenza don't show in Spotify's recents or Wrapped:** the built-in engine plays
   the music but doesn't send Spotify the report that says a song was played, so Spotify doesn't count
-  it. Cadenza's own History and Stats (and the Spotify history you import) do include it.
+  it. Cadenza's own History and Stats (and the Spotify history you import) do include it, and Last.fm
+  scrobbling through Spotify's link still works.
 - **Login fails:** check the Client ID, and that `http://127.0.0.1:8888` is a Redirect URI of your app.
 - **"Spotify says wait":** Spotify limits how often an app can ask for things. Cadenza backs off by
   itself; System → Engine settings → Spotify activity shows what it has been asking for.
