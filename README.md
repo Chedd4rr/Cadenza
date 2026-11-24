@@ -419,10 +419,12 @@ Your Spotify sign-in is only ever sent to Spotify's own servers.
 
 ## Updates
 
-From the first release on, Cadenza checks for a new version when it opens (System → Preferences →
-Check at launch), and installs it when you say so. Updates are signed, and Cadenza only installs one
-signed with the project's key. If you built Cadenza yourself, update with `git pull` and
-`./build.sh --install`.
+Cadenza checks GitHub for a new version when it opens (at most every 6 hours; System → Preferences → Check at
+launch), and installs it when you say so: System → Updates shows what's new and the Update button restarts
+Cadenza on the new version. Every update is signed with the project's key, and Cadenza refuses anything that
+isn't, so changing the "GitHub repository" setting can't get it to run someone else's code. Updating needs the
+repository to be public. If you built Cadenza yourself, update with `git pull` and `./build.sh --install`
+instead (a build you make has no update key). How releases are made is in [docs/releasing.md](docs/releasing.md).
 
 ## Working on Cadenza
 
@@ -448,7 +450,10 @@ Start it with `CADENZA_LOG=1` set to see the engine log, every call between the 
 side, every Spotify request and a sound report every few seconds.
 
 GitHub can build Cadenza for any of the three systems: Actions → Desktop app → Run workflow, then pick
-the system. How librespot is built in and patched is in [docs/librespot.md](docs/librespot.md).
+the system (it runs the tests too). How librespot is built in and patched is in
+[docs/librespot.md](docs/librespot.md); making a release, with updates, is in
+[docs/releasing.md](docs/releasing.md); and [docs/windows-check.md](docs/windows-check.md) is the checklist for
+trying it on a real Windows PC.
 
 ## Troubleshooting
 

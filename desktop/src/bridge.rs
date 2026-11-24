@@ -1,9 +1,5 @@
 //! The page's one way into the app: `native(cmd, args)` in app.js arrives here as the `native` command,
-//! and answers with the same data Bridge.swift sends, so the page can't tell which app it's running in.
-//!
-//! Commands that aren't ported yet (the sound engine, system parts, updates) answer the way demo mode
-//! does (an empty list, "not connected"), so the page keeps working around them. Each is marked with the
-//! phase that brings it.
+//! and answers with the data the page expects, the same as demo mode's made-up answers.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -247,13 +243,10 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         "discord.status" => core.discord.status(),
         "app.quit" => { window.app_handle().exit(0); json!(true) }
 
-        // MARK: not ported yet, answered like demo mode
-
-
-
-
-        "update.status" | "update.check" => json!({"repo": core.settings.string("updateRepo"), "current": env!("CARGO_PKG_VERSION"), "state": "idle", "message": "", "auto": false}),   // phase 7
-        "update.install" => json!({"ok": false, "message": "Updates come in phase 7 of the port."}),
+        // MARK: updates (updater.rs)
+        "update.status" => core.updater.status(),
+        "update.check" => core.updater.check().await,
+        "update.install" => core.updater.install().await,
 
         _ => { log::info!("unknown command {cmd} {args}"); return Err(format!("Unknown command: {cmd}")) }
     })
@@ -270,7 +263,7 @@ fn settings_for_page(core: &Core) -> Value {
     v
 }
 
-/// A setting changed: put it into effect (AppDelegate.applySetting in the Mac app).
+/// A setting changed: put it into effect.
 fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
     let managed = core.settings.bool("manageLibrespot");
     match key {
@@ -382,7 +375,7 @@ fn diagnostics(core: &Core) -> String {
     out.push(core.sound.output_name());
     out.extend(core.sound.log().into_iter().rev().take(30).rev());
     let text = out.join("\n");
-    // The same redactions as the Mac app: your home folder, your Spotify username, search words.
+    // Redacted: your home folder, your Spotify username, search words.
     let mut text = match dirs::home_dir() { Some(h) => text.replace(&h.display().to_string(), "~"), None => text };
     let user = regex::Regex::new(r#"Authenticated as ['"][^'"]*['"]"#).unwrap();
     text = user.replace_all(&text, "Authenticated as '(hidden)'").to_string();

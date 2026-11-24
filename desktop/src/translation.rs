@@ -2,7 +2,7 @@
 //! translate leaves your computer. It needs a language model for each direction (about 15 to 60 MB). This
 //! finds the right ones in Mozilla's public list (the same one Firefox uses), downloads them the first
 //! time, checks each file against the hash Mozilla publishes, and keeps them in translation-models/.
-//! A port of TranslationModels.swift; the page reads the files through cadenza-files:// (main.rs).
+//! The page reads the files through cadenza-files:// (main.rs).
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

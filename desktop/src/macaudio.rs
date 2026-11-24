@@ -1,5 +1,5 @@
-//! The Mac's sound outputs, straight from Core Audio, as AudioOutputs.swift does: each one's unique id
-//! (which the per-device EQ is saved under, so the Swift app's EQs carry over), its name and kind, and
+//! The Mac's sound outputs, straight from Core Audio: each one's unique id
+//! (which the per-device EQ is saved under), its name and kind, and
 //! switching the system's output. Cadenza's sound then follows the system output, as on Linux.
 
 use std::ffi::{c_char, c_void, CStr};
@@ -85,7 +85,7 @@ fn transport(id: u32) -> &'static str {
 
 pub fn default_output() -> u32 { u32_property(SYSTEM, DEFAULT_OUTPUT) }
 
-/// The outputs, in the Swift app's order: Bluetooth, built-in, USB, AirPlay, displays, others.
+/// The outputs, in this order: Bluetooth, built-in, USB, AirPlay, displays, others.
 pub fn outputs() -> Vec<Output> {
     let a = addr(DEVICES, GLOBAL);
     let mut size = 0u32;

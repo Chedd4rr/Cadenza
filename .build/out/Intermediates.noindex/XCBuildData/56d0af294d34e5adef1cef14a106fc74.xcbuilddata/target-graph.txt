@@ -1,0 +1,7 @@
+Target dependency graph (3 targets)
+Target 'AllExcludingTests' in project 'Aggregate'
+➜ Explicit dependency on target 'Cadenza-product' in project 'Cadenza'
+➜ Explicit dependency on target 'ObjCSafe' in project 'Cadenza'
+Target 'Cadenza-product' in project 'Cadenza'
+➜ Explicit dependency on target 'ObjCSafe' in project 'Cadenza'
+Target 'ObjCSafe' in project 'Cadenza' (no dependencies)

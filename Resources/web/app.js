@@ -11,11 +11,11 @@ const h = (tag, cls, text) => {
   if (text != null) e.textContent = text;
   return e;
 };
-// The native side: WebKit's message handler in the Mac app, or window.cadenzaNative in the Windows and
-// Linux app (Tauri), which works the same way. Neither means demo mode in a browser.
+// The native side: window.cadenzaNative, which the app puts in the page. Without it, the page is open in
+// a browser and runs in demo mode.
 const bridge = window.cadenzaNative || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native);
 const native = (cmd, args = {}) => (bridge ? bridge.postMessage({ cmd, args }) : Demo.native(cmd, args));
-// What to call the computer Cadenza runs on: "this Mac" in the Mac app (and the browser demo), "this
+// What to call the computer Cadenza runs on: "this Mac" on a Mac (and in the browser demo), "this
 // computer" on Windows and Linux.
 const ON_MAC = !window.cadenzaPlatform || window.cadenzaPlatform === "macos";
 const THIS_COMPUTER = ON_MAC ? "this Mac" : "this computer";
@@ -5042,7 +5042,7 @@ function refreshKeys() { const c = current(); if (c && c.view && c.view.keys) se
 
 /* ---------- Offline translation: Firefox's translator (Bergamot) + Google's language detector (CLD3) ---------- */
 // Both run in this page, in background workers, from files bundled with the app (vendor/). The language
-// models are downloaded from Mozilla by the native side the first time (see TranslationModels.swift)
+// models are downloaded from Mozilla by the native side the first time
 // and read through cadenza-files://, the same way. Nothing you translate leaves your Mac.
 
 /** A background worker made from a function, with a small "call a method, await the answer" wrapper. */
@@ -6457,7 +6457,7 @@ const Taste = {
     return n;
   },
   /** What one play from Spotify's files says about you (before the HISTORY discount). A skip counts more
-   *  the sooner it came: a few seconds in, you knew you didn't want it. See SpotifyHistory.swift for the flags. */
+   *  the sooner it came: a few seconds in, you knew you didn't want it. */
   historyWeight(ms, f) {
     if (f == null) return ms >= 30000 ? 0.5 : null;              // imported before skips were kept: a listen
     if (f & 16) return ms >= 30000 ? 0.5 : null;                 // ended by "back", a crash or an error: no verdict

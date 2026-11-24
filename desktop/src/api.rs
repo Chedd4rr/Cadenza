@@ -1,4 +1,4 @@
-//! A thin Spotify Web API client with the same rate-limit guard as SpotifyAPI.swift.
+//! A thin Spotify Web API client with a rate-limit guard.
 //!
 //! Spotify blocks an app that sends too many requests (HTTP 429 with a Retry-After wait). While an
 //! endpoint is blocked, requests to it are answered here instead of being sent, because hitting Spotify

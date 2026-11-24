@@ -1,5 +1,5 @@
 #!/bin/bash
-# Signs a built Cadenza.app (the Tauri one or the Swift one) on a Mac:  ./mac-sign.sh path/to/Cadenza.app
+# Signs a built Cadenza.app on a Mac:  ./mac-sign.sh path/to/Cadenza.app
 #
 # It uses a stable, self-made certificate ("Cadenza Local Signing", created once in your login keychain).
 # macOS ties permissions (Accessibility, Local Network, notifications) to the app's signature. With a
@@ -30,16 +30,10 @@ echo "> Signing..."
 # Files that came out of a zip or a download carry Finder/quarantine tags, which codesign refuses
 # ("resource fork, Finder information, or similar detritus not allowed"). Strip them first.
 xattr -cr "${OUT}" 2>/dev/null || true
-# A separate librespot inside the app (only the Swift app has one; the Tauri app has it built in) is signed
-# on its own first, with the same identity: macOS won't run a program inside an app unless it carries the
-# app's signature too.
-HELPER="${OUT}/Contents/MacOS/librespot"
 if security find-certificate -c "${IDENTITY}" >/dev/null 2>&1 &&
-   { [ ! -f "${HELPER}" ] || codesign --force --sign "${IDENTITY}" "${HELPER}"; } &&
    codesign --force --deep --sign "${IDENTITY}" "${OUT}"; then
   echo "OK: Signed as ${IDENTITY} (permissions now survive rebuilds)"
 else
   echo "!  Using a one-off (ad-hoc) signature: macOS may ask for permissions again after each rebuild."
-  if [ -f "${HELPER}" ]; then codesign --force --sign - "${HELPER}"; fi
   codesign --force --deep --sign - "${OUT}"
 fi

@@ -1,7 +1,6 @@
 //! Last.fm, for reading your listening history: Stats, play counts, the DJ, Friends and autoplay's similar
 //! songs. Cadenza doesn't scrobble itself (link Spotify to Last.fm and Spotify scrobbles everything). You
 //! add your own API key and shared secret, then log in once in the browser so Cadenza knows your username.
-//! A port of LastFM.swift.
 
 use md5::{Digest, Md5};
 use serde_json::{json, Value};

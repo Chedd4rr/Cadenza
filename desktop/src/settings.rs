@@ -1,5 +1,5 @@
 //! Your preferences (settings.json) and passwords and tokens (secrets.json), both private files in the
-//! support folder. The same keys and defaults as the Swift app's Settings.swift.
+//! support folder.
 
 use serde_json::{json, Map, Value};
 use std::sync::Mutex;

@@ -1,10 +1,9 @@
-//! Test mode: running this app beside your normal Cadenza to compare them, most usefully on a Mac, where
-//! you can play the same song through the Swift app and this one and switch back and forth.
+//! Test mode: running this app beside your normal Cadenza to compare them, most useful when trying a
+//! change: play the same song in both and switch back and forth.
 //!
 //! The first time, it copies what it needs from your normal Cadenza folder into its own "Cadenza Test"
-//! folder (sign-ins, taste profile, history, saved page data) and, on a Mac, your settings from the Swift
-//! app's preferences (Client ID, EQ, crossfade, theme…). After that the two never share anything: test mode
-//! only ever reads from your real folder, once, and never writes to it. Delete the test folder to start over.
+//! folder (sign-ins, settings, taste profile, history, saved page data). After that the two never share
+//! anything: test mode only ever reads from your real folder, once, and never writes to it. Delete the test folder to start over.
 
 use crate::files;
 
@@ -27,7 +26,6 @@ pub fn prepare() {
         if let Some(dir) = to.parent() { let _ = std::fs::create_dir_all(dir); }
         if files::write_privately(&data, &to) { copied.push(*name); }
     }
-    if cfg!(target_os = "macos") { crate::migrate::import_mac_settings(); }
     files::write_privately(b"", &marker);
     log::info!("test mode: copied {} from {}", copied.join(", "), files::tidy(&real));
 }

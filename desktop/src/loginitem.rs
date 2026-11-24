@@ -1,6 +1,6 @@
 //! Opening Cadenza when you log in.
 //!
-//! On a Mac this uses Apple's own login items for apps (SMAppService), as the Swift app did, so System
+//! On a Mac this uses Apple's own login items for apps (SMAppService), so System
 //! Settings → Login Items lists Cadenza under "Open at Login" with its icon. (The usual cross-platform way
 //! writes a launch agent that points at the program inside the app, which shows up as a bare "cadenza"
 //! with a blank icon.) Windows and Linux use the autostart plugin.

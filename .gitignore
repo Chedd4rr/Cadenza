@@ -1,11 +1,4 @@
-# Swift Package Manager / Xcode
-.build/
-.swiftpm/
-*.xcodeproj
-xcuserdata/
-DerivedData/
-
-# App bundles and release zips made by build.sh / release.sh
+# What release.sh collects (installers and checksums), and zips
 build/
 *.zip
 
@@ -22,6 +15,7 @@ secrets.json
 credentials.json
 *.p12
 *.pem
+*.key
 .env
 
 # The Windows and Linux app (desktop/): build output, generated files and the librespot it bundles

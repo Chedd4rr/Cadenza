@@ -1,11 +1,10 @@
-//! The parts of Cadenza that live outside its window, as in the Mac app:
+//! The parts of Cadenza that live outside its window:
 //! - media keys and the system's Now Playing (MPRIS on Linux, the media overlay on Windows, Control
-//!   Center on macOS), through souvlaki (MediaKeys.swift);
-//! - the tray icon with the album cover and a menu (StatusBar.swift);
-//! - the mini player, the same little page as the Mac app's (Resources/web/mini) in a small window that
-//!   stays on top (StatusBar.swift and FloatingPlayer.swift);
-//! - a notification when the song changes while Cadenza isn't in front (Notifier.swift);
-//! - cadenza:// links, and the page resting while the window is hidden (AppDelegate.swift).
+//!   Center on macOS), through souvlaki;
+//! - the tray icon with the album cover and a menu;
+//! - the mini player (Resources/web/mini) in a small window that stays on top;
+//! - a notification when the song changes while Cadenza isn't in front;
+//! - cadenza:// links, and the page resting while the window is hidden.
 
 use base64::Engine;
 use serde_json::{json, Value};

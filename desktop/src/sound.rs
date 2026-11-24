@@ -7,8 +7,7 @@
 //! - the sleep timer's fade and smooth song transitions;
 //! - live levels for the visualizer and the EQ meters.
 //!
-//! The same design as the Mac app's EQ.swift, but every fade is worked out sample by sample here instead
-//! of by timers changing volumes. The output is opened with cpal (CoreAudio, WASAPI, PipeWire/ALSA),
+//! Every fade is worked out sample by sample, not by timers changing volumes. The output is opened with cpal (CoreAudio, WASAPI, PipeWire/ALSA),
 //! reopened if it stops working, and given a bigger buffer if it can't keep up.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -28,7 +27,7 @@ pub const RATE: u32 = 44_100;
 /// slow computer or a virtual machine), it's doubled, up to about 190 ms.
 const BUFFER_FRAMES: u32 = 2048;
 const BUFFER_FRAMES_MAX: u32 = 8192;
-/// How much of librespot's sound waits in the engine, in frames (about 93 ms, as in the Mac app): short,
+/// How much of librespot's sound waits in the engine, in frames (about 93 ms): short,
 /// so pause and skip feel instant, and because librespot only writes as fast as this is used, it keeps
 /// librespot playing in real time.
 const QUEUE_FRAMES: usize = 4096;
@@ -567,7 +566,7 @@ impl Sound {
     // MARK: output devices
 
     /// The outputs to pick from: [{uid, name, transport, isDefault}].
-    /// - macOS: Core Audio's outputs; picking one makes it the Mac's output, as the Swift app does.
+    /// - macOS: Core Audio's outputs; picking one makes it the Mac's output.
     /// - Linux: the sound server's outputs (PipeWire or PulseAudio, through `pactl`); the same.
     /// - Windows: the system's outputs; picking one plays Cadenza through it.
     pub fn outputs(&self) -> Value { Value::Array(list_outputs(&self.s)) }

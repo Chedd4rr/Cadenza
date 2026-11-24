@@ -59,7 +59,7 @@ impl Biquad {
 }
 
 /// The 10-band EQ: a low shelf at 32 Hz, peaks (one octave wide) from 64 Hz to 8 kHz, a high shelf at
-/// 16 kHz, and a preamp. The same layout as the Mac app's.
+/// 16 kHz, and a preamp.
 pub struct Eq {
     bands: [Biquad; 10],
     state: [[BiquadState; 10]; 2],
@@ -105,8 +105,7 @@ impl Eq {
 // MARK: limiter
 
 /// A look-ahead peak limiter, so boosting never clips: the sound is delayed 5 ms, and the volume comes
-/// down just before a peak arrives, then recovers over about 50 ms (Apple's peak limiter in the Mac app
-/// works the same way). Nothing changes while the sound stays under the ceiling.
+/// down just before a peak arrives, then recovers over about 50 ms. Nothing changes while the sound stays under the ceiling.
 pub struct Limiter {
     delay: Vec<(f32, f32)>,
     pos: usize,
@@ -184,7 +183,7 @@ pub const SPEC_BANDS: usize = 48;
 
 /// The visualizer's levels from the latest 4096 samples (mono, after the EQ): 48 bands spaced evenly in
 /// pitch from 35 Hz to 16 kHz, and the 10 EQ bands, each 0–1. Treble is lifted 3 dB per octave so it shows
-/// up as clearly as bass. The same numbers as the Mac app's, so the visualizers look the same.
+/// up as clearly as bass.
 pub struct Spectrum {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     window: Vec<f32>,

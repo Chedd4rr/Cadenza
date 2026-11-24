@@ -1,0 +1,4 @@
+module ObjCSafe {
+umbrella header "/Users/Aayaan/Documents/Cadenza/Sources/ObjCSafe/include/ObjCSafe.h"
+export *
+}

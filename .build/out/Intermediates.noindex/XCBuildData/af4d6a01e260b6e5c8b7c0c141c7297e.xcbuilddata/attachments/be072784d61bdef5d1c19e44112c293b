@@ -1,0 +1,146 @@
+{
+  "" : {
+    "const-values" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.swiftconstvalues",
+    "dependencies" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.d",
+    "diagnostics" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.dia",
+    "emit-module-dependencies" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary-emit-module.dia",
+    "pch" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.swiftdeps"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/AppDelegate.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/AppDelegate.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/AppDelegate.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/AppDelegate.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/AudioOutputs.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/AudioOutputs.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/AudioOutputs.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/AudioOutputs.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Bridge.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Bridge.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Bridge.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Bridge.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/CoverArt.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/CoverArt.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/CoverArt.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/CoverArt.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Discord.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Discord.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Discord.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Discord.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/EQ.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/EQ.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/EQ.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/EQ.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Extras.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Extras.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Extras.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Extras.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/FloatingPlayer.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/FloatingPlayer.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/FloatingPlayer.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/FloatingPlayer.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/History.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/History.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/History.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/History.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/HotKey.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/HotKey.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/HotKey.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/HotKey.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/LastFM.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/LastFM.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/LastFM.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/LastFM.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Librespot.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Librespot.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Librespot.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Librespot.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/MediaKeys.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/MediaKeys.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/MediaKeys.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/MediaKeys.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Migration.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Migration.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Migration.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Migration.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Notifier.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Notifier.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Notifier.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Notifier.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Settings.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Settings.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Settings.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Settings.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Speech.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Speech.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Speech.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Speech.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/SpotifyAPI.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyAPI.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyAPI.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyAPI.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/SpotifyAuth.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyAuth.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyAuth.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyAuth.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/SpotifyHistory.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyHistory.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyHistory.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/SpotifyHistory.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/StatusBar.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/StatusBar.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/StatusBar.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/StatusBar.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Store.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Store.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Store.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Store.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/TagAI.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/TagAI.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/TagAI.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/TagAI.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Translate.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Translate.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Translate.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Translate.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/TranslationModels.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/TranslationModels.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/TranslationModels.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/TranslationModels.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/Updater.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Updater.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Updater.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Updater.o"
+  },
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/main.swift" : {
+    "index-unit-output-path" : "/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/main.o",
+    "llvm-bc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/main.bc",
+    "object" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/main.o"
+  }
+}

@@ -1,5 +1,5 @@
 //! A picture you pick for a playlist cover: cropped square, scaled to 640 px and saved as a JPEG under
-//! Spotify's 256 KB limit, as base64 (what Spotify's upload expects). Same as CoverPicker in Extras.swift.
+//! Spotify's 256 KB limit, as base64 (what Spotify's upload expects).
 
 use base64::Engine;
 use image::imageops::FilterType;

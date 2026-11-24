@@ -5,7 +5,7 @@
 #   ./build.sh --test   the same, in test mode: beside your normal Cadenza, with its own copy of your data
 #                       and its own speaker, "Cadenza (test)", for comparing the two
 #   ./build.sh --install  macOS: build Cadenza.app, sign it, and put it in /Applications in place of the
-#                       old one (the Swift app is kept as a zip, so you can go back). Elsewhere: the installers.
+#                       old one. Elsewhere: the installers.
 #   ./build.sh --app    macOS: build the real Cadenza.app (with its icon, Dock and menu name, notifications
 #                       and links, which a --run build doesn't have) and open it. Add --log to see its log.
 # Needs Rust (https://rustup.rs). On Linux also the system libraries listed in desktop/README.md.
@@ -84,15 +84,7 @@ if [ "${1:-}" = "--install" ] && [ "$(uname -s)" = "Darwin" ]; then
   done
   pkill -f "Cadenza.app/Contents/MacOS/" 2>/dev/null || true
 
-  # The first time: keep the Swift app as a zip (it has the page as files inside; this one doesn't).
-  # To go back:  ./build.sh --swift --install  from the project folder.
   OLD="/Applications/Cadenza.app"
-  if [ -f "${OLD}/Contents/Resources/web/index.html" ]; then
-    KEEP="${HOME}/Library/Developer/Cadenza"
-    mkdir -p "${KEEP}"
-    ditto -c -k --keepParent "${OLD}" "${KEEP}/Cadenza-swift.zip"
-    echo "OK: Kept the Swift app as ${KEEP/#$HOME/~}/Cadenza-swift.zip"
-  fi
   rm -rf "${OLD}"
   ditto "${STAGE}/Cadenza.app" "${OLD}"
   echo "OK: Installed to ${OLD}"
@@ -100,5 +92,11 @@ if [ "${1:-}" = "--install" ] && [ "$(uname -s)" = "Darwin" ]; then
   exit 0
 fi
 
-cargo tauri build
+# With the update key in the environment (TAURI_SIGNING_PRIVATE_KEY), also make the signed files the updater
+# downloads. Without it, a normal build: those files can't be made, and asking for them would fail.
+if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  cargo tauri build --config tauri.release.conf.json
+else
+  cargo tauri build
+fi
 echo "OK: the installers are in desktop/target/release/bundle/"

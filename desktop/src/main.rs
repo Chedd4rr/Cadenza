@@ -1,5 +1,5 @@
-//! Cadenza for macOS, Windows and Linux. The page in Resources/web is the whole interface, unchanged
-//! from the Mac app; this is the native side it talks to (see bridge.rs).
+//! Cadenza for macOS, Windows and Linux. The page in Resources/web is the whole interface; this is
+//! the native side it talks to (see bridge.rs).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -20,13 +20,13 @@ mod loginitem;
 mod macaudio;
 #[cfg(target_os = "macos")]
 mod menu;
-mod migrate;
 mod settings;
 mod shortcuts;
 mod sound;
 mod spotify_history;
 mod store;
 mod system;
+mod updater;
 mod testmode;
 mod translation;
 
@@ -48,10 +48,11 @@ pub struct Core {
     pub emit: librespot::Emit,
     pub system: Arc<system::System>,
     pub discord: Arc<discord::Discord>,
+    pub updater: Arc<updater::Updater>,
 }
 
 /// Runs before the page's own scripts. app.js looks for `window.cadenzaNative` and sends every
-/// `native(cmd, args)` through it, exactly as it uses WebKit's message handler in the Mac app.
+/// `native(cmd, args)` through it.
 const SHIM: &str = r#"
 (() => {
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -97,7 +98,7 @@ const SHIM: &str = r#"
 })();
 "#;
 
-/// Sends an event to the page: `app.onNative(event, data)`, as Bridge.swift's emit does.
+/// Sends an event to the page: `app.onNative(event, data)`.
 fn emit_to(app: &tauri::AppHandle, event: &str, data: &Value) {
     let safe: String = event.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_').collect();
     if !matches!(safe.as_str(), "player" | "eq.levels" | "librespot" | "translate.progress") { log::info!("to the page: {safe} {}", data.to_string().chars().take(160).collect::<String>()); }
@@ -132,6 +133,7 @@ fn main() {
                 | tauri_plugin_window_state::StateFlags::MAXIMIZED)
             .with_denylist(&["mini"])
             .build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _shortcut, event| {
             if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
@@ -146,7 +148,6 @@ fn main() {
                 .user_agent(format!("Cadenza/{} (https://github.com/Chedd4rr/Cadenza)", env!("CARGO_PKG_VERSION")))
                 .build()?;
             testmode::prepare();                                       // (test mode only: its first start)
-            migrate::run();                                            // (on a Mac, the first start: the Swift app's settings)
             let settings = Arc::new(settings::Settings::load());
             let store = store::Store::load();
             let auth = Arc::new(auth::Auth::new(settings.clone(), http.clone()));
@@ -159,12 +160,15 @@ fn main() {
             let lastfm = Arc::new(lastfm::LastFm::new(settings.clone(), http.clone()));
             let system = system::System::new(handle.clone());
             app.manage(system.clone());
+            let updater = updater::Updater::new(handle.clone(), settings.clone(), emit.clone());
             let core = Arc::new(Core {
                 settings: settings.clone(), store, auth, api, sound, librespot: librespot.clone(), lastfm,
                 spotify_history: Arc::new(spotify_history::SpotifyHistory::default()), http, emit,
                 system: system.clone(), discord: discord::Discord::new(settings.clone()),
+                updater,
             });
             app.manage(core.clone());
+            core.updater.start_auto();
 
             let probing = cfg!(debug_assertions) && std::env::var_os("CADENZA_PROBE").is_some();
             let shim = SHIM.replace("__OS__", std::env::consts::OS).replace("__FILES__", files_base())
@@ -176,8 +180,8 @@ fn main() {
                 .center()
                 // Cadenza's navy behind the page while it loads, instead of a white flash.
                 .background_color(tauri::window::Color(3, 12, 46, 255));
-            // On a Mac, the page reaches the top of the window with the traffic lights over it and no title,
-            // as in the Swift app. (The strip at the top still drags the window.)
+            // On a Mac, the page reaches the top of the window with the traffic lights over it and no title.
+            // (The strip at the top still drags the window.)
             #[cfg(target_os = "macos")]
             let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
             builder

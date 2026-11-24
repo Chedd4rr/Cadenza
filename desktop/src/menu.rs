@@ -1,4 +1,4 @@
-//! The Mac's menu bar, the same as the Swift app's: Cadenza, Edit (so ⌘C, ⌘V and ⌘A work in text
+//! The Mac's menu bar: Cadenza, Edit (so ⌘C, ⌘V and ⌘A work in text
 //! boxes), Controls (the main commands with their shortcuts; each one runs in the page, as if you had
 //! pressed its keys) and Window. Windows and Linux have no menu bar: everything is on the page.
 //!
@@ -12,7 +12,7 @@ use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Manager, Wry};
 
 /// (title, command, shortcut name on the keyboard page). "-" is a separator. ⌘←/→ stay out of the menu
-/// (as in the Swift app) so they keep moving the cursor in text boxes; their titles show them.
+/// so they keep moving the cursor in text boxes; their titles show them.
 const CONTROLS: &[(&str, &str, &str)] = &[
     ("Play / Pause", "toggle", "toggle"),
     ("Next Song", "next", "next"),

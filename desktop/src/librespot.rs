@@ -107,8 +107,8 @@ impl Librespot {
             }
         }).ok();
         // Closing the lid pauses the music, like taking headphones off, so it doesn't come back on by itself
-        // when the computer wakes. (The Swift app pauses as the Mac goes to sleep; here it's noticed as it
-        // wakes, within half a second, by the wall clock jumping ahead.)
+        // when the computer wakes. (It's noticed as the computer wakes, within half a second, by the
+        // wall clock jumping ahead.)
         let sleeper = Arc::clone(&me);
         std::thread::Builder::new().name("cadenza-sleep-watch".into()).spawn(move || {
             let mut last = SystemTime::now();

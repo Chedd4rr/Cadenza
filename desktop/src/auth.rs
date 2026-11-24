@@ -1,5 +1,5 @@
 //! Spotify sign-in with Authorization Code + PKCE (no client secret needed). The browser comes back to
-//! http://127.0.0.1:8888, where a tiny one-shot server catches the code. The same flow as SpotifyAuth.swift.
+//! http://127.0.0.1:8888, where a tiny one-shot server catches the code.
 
 use base64::Engine;
 use rand::Rng;

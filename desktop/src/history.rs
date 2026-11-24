@@ -1,6 +1,5 @@
 //! Cadenza's own listening history, for the Stats page. Spotify only lets apps see your last 50 plays,
-//! so Cadenza keeps its own log of what it played. The same rules and file as History.swift:
-//! a song counts once you've heard 30 seconds of it, or half of it if it's shorter; one line of JSON per
+//! so Cadenza keeps its own log of what it played. A song counts once you've heard 30 seconds of it, or half of it if it's shorter; one line of JSON per
 //! play in history.jsonl.
 
 use serde_json::{json, Map, Value};

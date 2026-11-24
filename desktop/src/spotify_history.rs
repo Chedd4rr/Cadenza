@@ -1,6 +1,5 @@
 //! Your Spotify listening history from the files Spotify sends when you ask for your data
-//! (spotify.com/account/privacy). A port of SpotifyHistory.swift, with the same rules and the same saved
-//! file, so an import made by the Mac app reads here and the other way round.
+//! (spotify.com/account/privacy). The saved file is plain JSON, so an import made earlier is picked up as it is.
 //!
 //! - Extended streaming history (Streaming_History_Audio_*.json): every play, with skip details.
 //! - Account data (StreamingHistory_music_*.json): the last year, without song links or skip details.
@@ -330,7 +329,7 @@ mod tests {
         assert_eq!(r["added"], 1, "{r}");
         assert_eq!(r["total"], 3, "{r}");
 
-        // A fresh reader loads what was saved (the Mac app's format) the same way.
+        // A fresh reader loads what was saved the same way.
         let again = SpotifyHistory::default();
         assert_eq!(again.snapshot()["plays"].as_array().unwrap().len(), 3);
         let _ = std::fs::remove_dir_all(dir);

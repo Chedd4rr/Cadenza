@@ -1,7 +1,7 @@
 //! "Listening to …" on your Discord profile, through the Discord app's local connection (Rich Presence).
 //! No Discord login or token is involved: the Discord app running on this computer shows the status. It
 //! needs a Discord application ID (free: discord.com/developers → New Application, name it "Cadenza").
-//! A port of Discord.swift: the same messages, over a local socket (macOS, Linux) or named pipe (Windows).
+//! The messages go over a local socket (macOS, Linux) or named pipe (Windows).
 
 use serde_json::{json, Value};
 use std::io::{Read, Write};

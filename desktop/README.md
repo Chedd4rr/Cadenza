@@ -1,17 +1,12 @@
-# Cadenza for Windows and Linux
+# Cadenza: the app
 
-This folder is Cadenza rebuilt on [Tauri](https://tauri.app), so it runs on Windows and Linux (and macOS)
-from one codebase. The interface is the same page as the Mac app (`Resources/web`), unchanged; only the
-native side is new, written in Rust. The Mac app in `Sources/` keeps working as before until this one
-does everything it does.
+This folder is Cadenza, built on [Tauri](https://tauri.app): one codebase for macOS, Windows and Linux.
+The interface is a web page (`Resources/web`); the native side is written in Rust.
 
-**Phases 0–6 of the [porting plan](https://claude.ai/artifact/MBPyXBUTmd1eJUxE4k9y6j) are done:** the
-window and the bridge to the page, Spotify sign-in and playback, everything the pages read and save,
-Cadenza's own sound engine, and the parts outside the window (media keys, tray, mini player and the rest).
-Phase 5, Windows, is done in a Windows 11 VM: it builds, plays, and the tray, media keys, mini player,
-links and installer all work. Still to do: one check on a real Windows PC (a VM without graphics
-acceleration makes animations and sound stutter, which could hide a real problem). Phase 6: on a Mac this
-app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed releases and updates.
+Windows was built, played and tried in a Windows 11 VM: the tray, media keys, mini player, links and
+installer all work. Still to do: one check on a real Windows PC (a VM without graphics acceleration makes
+animations and sound stutter, which could hide a real problem). After that comes signed releases and
+updates.
 
 ## What works so far
 
@@ -32,15 +27,14 @@ app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed r
 - Last.fm (Stats, play counts, the DJ, Friends, similar songs), lyrics from LRCLIB, finding a song by its
   lyrics with Genius, and offline lyrics translation (the language models download the first time).
 - Importing your Spotify history (pick the .zip Spotify sends, or the .json files), and Cadenza's own
-  listening history for Stats. Both use the same files as the Mac app.
+  listening history for Stats.
 - Playlist covers from a picture you pick.
 - Media keys and the system's Now Playing (MPRIS on Linux, the media overlay on Windows, Control Center
   on a Mac), with the song, cover and position.
 - A tray icon showing the album cover, with play/pause, skip, Show Cadenza, the mini player and Quit.
   Closing the window keeps the music going while the tray icon is there; Quit (or Ctrl+Q) ends it.
   On GNOME, tray icons need the "AppIndicator" extension (Ubuntu has it already).
-- The mini player: the same little player as the Mac app's menu-bar one, in a small window that stays on
-  top. Drag it anywhere; it remembers where. Open it from the tray, ⌘K, or `cadenza://mini`; Esc hides it.
+- The mini player: a little player in a small window that stays on top. Drag it anywhere; it remembers where. Open it from the tray, ⌘K, or `cadenza://mini`; Esc hides it.
 - A notification when the song changes while Cadenza isn't in front.
 - The global shortcut: Ctrl+Alt+P shows or hides Cadenza from anywhere (on Linux, under X11; Wayland
   doesn't let apps have global shortcuts).
@@ -66,32 +60,23 @@ app now replaces the Swift one (see "On a Mac" below). Next is phase 7, signed r
 
 ### On a Mac
 
-Phase 6 is done: this app takes over from the Swift one. `./build.sh --install` (here or in the
-project folder) builds it, signs it with your "Cadenza Local Signing" certificate, and puts it in
-/Applications in place of the Swift app, which is kept as `~/Library/Developer/Cadenza/Cadenza-swift.zip`.
-To go back: `./build.sh --swift --install` in the project folder.
+`./build.sh --install` (here or in the project folder) builds Cadenza.app, signs it with your "Cadenza
+Local Signing" certificate, and puts it in /Applications in place of the old copy.
 
-- **Your settings come over by themselves.** Both apps use the same folder, so the sign-ins, history,
-  taste profile and saved page data are already there. The first time this app opens, it also reads the
-  Swift app's settings (Client ID, theme, EQ with each device's EQ, crossfade, volume and the rest) from
-  macOS's preferences into `settings.json`, once. It changes nothing the Swift app reads, so you can go back.
-- The window looks like the Swift app's: the page reaches the top, with the traffic lights over it.
-- The same menu bar: Cadenza, Edit, Controls (with the same shortcuts) and Window.
-- Outputs come from Core Audio, and picking one switches the Mac's output, as in the Swift app. Each
-  device's EQ is saved under the same id, so the EQs you set up there carry over.
+- The window's page reaches the top, with the traffic lights over it.
+- A menu bar: Cadenza, Edit, Controls (with the same shortcuts as the keyboard page) and Window.
+- Outputs come from Core Audio, and picking one switches the Mac's output. Each device's EQ is saved under
+  its Core Audio id.
 - The window opens where you left it (on every system).
 - Closing the lid pauses the music, so it doesn't start again by itself when the computer wakes (on every
-  system; here it's noticed as the computer wakes rather than as it sleeps).
-
-Don't run this and the Swift app at the same time outside test mode: they'd share one folder and both
-appear in Spotify as "Cadenza". Quit one before opening the other.
+  system; it's noticed as the computer wakes rather than as it sleeps).
 
 ## Not yet
 
 | Comes in | What |
 | --- | --- |
 | Before release | Windows: one check on a real PC (smooth animations, clean sound, the installer) |
-| Phase 7 | Signed releases and automatic updates |
+| Releases | Signed installers and automatic updates (`../release.sh` already collects installers and checksums for a GitHub release) |
 | Later | Maybe Spotify's own Soloist as an optional engine (no EQ or crossfade, downloaded by each user) |
 
 ## Building it
@@ -121,17 +106,16 @@ call, every Spotify request with its answer, and a sound report every few second
 tests (the EQ curves, the limiter, the visualizer levels, the history import, the history log, translation
 models, Last.fm signing, covers).
 
-## Test mode: comparing it with the Mac app
+## Test mode: running a second copy
 
 `./build.sh --test` runs this app beside your normal Cadenza without the two getting in each other's way:
 
 - It has its own folder ("Cadenza Test" next to the normal one; on Linux `~/.local/share/cadenza-test`).
-  The first time, it copies your sign-ins, taste profile, history and saved page data into it, and on a Mac
-  your settings from the Mac app (Client ID, EQ, crossfade, theme…). It only ever reads your real folder,
-  that once, and never writes to it.
+  The first time, it copies your sign-ins, settings, taste profile, history and saved page data into it.
+  It only ever reads your real folder, that once, and never writes to it.
 - Its speaker is called "Cadenza (test)", so Spotify lists the two apps separately.
 
-To compare the sound, open both, play a song, and move it between "Cadenza" and "Cadenza (test)" on the
+To compare two builds, open both, play a song, and move it between "Cadenza" and "Cadenza (test)" on the
 Devices page (or from your phone): Spotify carries on at the same spot. Delete the test folder to start
 the test copy over from your current data.
 
@@ -141,34 +125,31 @@ the test copy over from your current data.
 | --- | --- |
 | Linux | `~/.local/share/cadenza` |
 | Windows | `%APPDATA%\Cadenza` |
-| macOS | `~/Library/Application Support/Cadenza` (the same folder as the Mac app) |
+| macOS | `~/Library/Application Support/Cadenza` |
 
-The files are the same as the Mac app's (see the main README's "Your data"), and only your account can
-read them.
+See the main README's "Your data" for what's in them. Only your account can read them.
 
 ## How it fits together
 
-| File | What it does | Mac app equivalent |
-| --- | --- | --- |
-| `src/main.rs` | Opens the window, connects the page, serves `cadenza-files://` | `AppDelegate.swift` |
-| `src/bridge.rs` | Answers the page's `native(cmd, args)` calls | `Bridge.swift` |
-| `src/auth.rs` | Spotify sign-in | `SpotifyAuth.swift` |
-| `src/api.rs` | Spotify Web API, with the rate-limit guard | `SpotifyAPI.swift` |
-| `src/librespot.rs` | Runs the engine, plays in it directly, reads what it's playing, recovers | `Librespot.swift` |
-| `src/embedded.rs` | librespot running inside Cadenza: login, sound out, events, Spotify Connect | (new) |
-| `src/sound.rs` | The sound engine: reading librespot, the crossfade, pause and skip, outputs | `EQ.swift`, `AudioOutputs.swift` |
-| `src/macaudio.rs` | The Mac's outputs, from Core Audio | `AudioOutputs.swift` |
-| `src/menu.rs` | The Mac's menu bar | `AppDelegate.swift` (`buildMenu`) |
-| `src/migrate.rs` | Bringing the Swift app's settings over, once | `Migration.swift` |
-| `src/dsp.rs` | The EQ, limiter, fades and visualizer levels, sample by sample | `EQ.swift` (Apple's EQ and limiter units) |
-| `src/lastfm.rs` | Last.fm, lyrics (LRCLIB) and Genius | `LastFM.swift`, `Extras.swift` |
-| `src/history.rs`, `src/spotify_history.rs` | Cadenza's own history; the Spotify history import | `History.swift`, `SpotifyHistory.swift` |
-| `src/translation.rs` | Downloads and checks translation models | `TranslationModels.swift` |
-| `src/cover.rs` | Playlist cover pictures | `Extras.swift` (`CoverPicker`) |
-| `src/system.rs` | Media keys and Now Playing, the tray, the mini player, notifications, links, the window resting | `MediaKeys.swift`, `StatusBar.swift`, `FloatingPlayer.swift`, `Notifier.swift`, `AppDelegate.swift` |
-| `src/discord.rs` | Discord's "Listening to" status | `Discord.swift` |
-| `src/settings.rs`, `src/store.rs`, `src/files.rs` | Settings, page data, private files | `Settings.swift`, `Store.swift` |
-| `librespot.sh` | Gets librespot's pinned source with Cadenza's patches ready in `librespot-src/` | `../librespot.sh` |
+| File | What it does |
+| --- | --- |
+| `src/main.rs` | Opens the window, connects the page, serves `cadenza-files://` |
+| `src/bridge.rs` | Answers the page's `native(cmd, args)` calls |
+| `src/auth.rs` | Spotify sign-in |
+| `src/api.rs` | Spotify Web API, with the rate-limit guard |
+| `src/librespot.rs` | Runs the engine, plays in it directly, reads what it's playing, recovers |
+| `src/embedded.rs` | librespot running inside Cadenza: login, sound out, events, Spotify Connect |
+| `src/sound.rs` | The sound engine: reading librespot, the crossfade, pause and skip, outputs |
+| `src/macaudio.rs` | The Mac's outputs, from Core Audio |
+| `src/menu.rs` | The Mac's menu bar |
+| `src/dsp.rs` | The EQ, limiter, fades and visualizer levels, sample by sample |
+| `src/lastfm.rs` | Last.fm, lyrics (LRCLIB) and Genius |
+| `src/history.rs`, `src/spotify_history.rs` | Cadenza's own history; the Spotify history import |
+| `src/translation.rs` | Downloads and checks translation models |
+| `src/cover.rs` | Playlist cover pictures |
+| `src/system.rs` | Media keys and Now Playing, the tray, the mini player, notifications, links, the window resting |
+| `src/discord.rs` | Discord's "Listening to" status |
+| `src/settings.rs`, `src/store.rs`, `src/files.rs` | Settings, page data, private files |
+| `librespot.sh` | Gets librespot's pinned source with Cadenza's patches ready in `librespot-src/` |
 
-The page finds the app through `window.cadenzaNative`, which works like the Mac app's WebKit message
-handler, so app.js needs no other changes.
+The page finds the app through `window.cadenzaNative`, and sends everything it needs through it.

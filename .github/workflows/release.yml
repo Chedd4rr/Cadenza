@@ -1,0 +1,94 @@
+# Makes a release: builds the installers for Mac, Windows and Linux, signs the update files, and puts
+# everything on a DRAFT GitHub release (nothing is public until you press Publish there).
+# Run it from Actions → Release → Run workflow, after raising the version in desktop/tauri.conf.json and
+# desktop/Cargo.toml (the same number in both) and pushing. First-time setup is in docs/releasing.md.
+#
+# One run costs about what Desktop app → all systems does (a few dollars of a private repository's monthly
+# allowance, most of it the Mac runner).
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # to make the draft release and upload to it
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        run: |
+          conf="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' desktop/tauri.conf.json | head -1)"
+          cargo="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' desktop/Cargo.toml | head -1)"
+          if [ -z "$conf" ] || [ "$conf" != "$cargo" ]; then
+            echo "The version in desktop/tauri.conf.json ($conf) and desktop/Cargo.toml ($cargo) don't match."; exit 1
+          fi
+          if ! grep -q '"pubkey": "[^"]' desktop/tauri.conf.json; then
+            echo "No update key in desktop/tauri.conf.json (plugins → updater → pubkey). See docs/releasing.md."; exit 1
+          fi
+          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
+            echo "The TAURI_SIGNING_PRIVATE_KEY secret isn't set. See docs/releasing.md."; exit 1
+          fi
+          echo "version=$conf" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, name: linux,   bundles: "deb,appimage" }
+          - { os: windows-latest, name: windows, bundles: "nsis" }
+          - { os: macos-latest, name: macos,   bundles: "app,dmg" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Linux libraries
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libasound2-dev libssl-dev libxdo-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Get librespot's source ready
+        run: CADENZA_CACHE="$HOME/.cadenza-librespot" ./desktop/librespot.sh
+
+      - name: Tests
+        working-directory: desktop
+        run: cargo test
+
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install Tauri's build tool
+        run: cargo binstall tauri-cli --version "^2" --no-confirm
+
+      # Builds, signs the update files with the private key, and adds this system's installers and its entry
+      # in latest.json (the file Cadenza's update check reads) to the draft release.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tauriScript: cargo tauri
+          tagName: v${{ needs.check.outputs.version }}
+          releaseName: Cadenza ${{ needs.check.outputs.version }}
+          releaseBody: See the assets below to download. Mac, Windows and Linux builds aren't signed with a paid certificate, so the first open needs the steps in the README's Install section.
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          args: --bundles ${{ matrix.bundles }} --config tauri.release.conf.json

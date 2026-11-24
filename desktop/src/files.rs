@@ -13,7 +13,7 @@ pub fn test_mode() -> bool {
 }
 
 /// Your normal Cadenza folder (where test mode copies its starting data from).
-/// - macOS: ~/Library/Application Support/Cadenza (the same folder the Swift app uses, so nothing moves)
+/// - macOS: ~/Library/Application Support/Cadenza
 /// - Windows: %APPDATA%\Cadenza
 /// - Linux: ~/.local/share/cadenza
 pub fn real_dir() -> PathBuf {

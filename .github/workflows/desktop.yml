@@ -68,6 +68,11 @@ jobs:
       - name: Get librespot's source ready
         run: CADENZA_CACHE="$HOME/.cadenza-librespot" ./desktop/librespot.sh
 
+      # The tests, on this system too (the Windows ones are the only way to run them there).
+      - name: Tests
+        working-directory: desktop
+        run: cargo test
+
       # Tauri's build tool, as a ready-made download (compiling it from source took about 10 minutes).
       - uses: cargo-bins/cargo-binstall@main
       - name: Install Tauri's build tool
