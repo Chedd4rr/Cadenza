@@ -43,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04, name: linux,   bundles: "deb,appimage" }
+          - { os: ubuntu-22.04, name: linux,   bundles: "appimage" }
           - { os: windows-latest, name: windows, bundles: "nsis" }
           - { os: macos-latest, name: macos,   bundles: "app,dmg" }
     runs-on: ${{ matrix.os }}
@@ -94,5 +94,5 @@ jobs:
           releaseBody: See the assets below to download. Mac, Windows and Linux builds aren't signed with a paid certificate, so the first open needs the steps in the README's Install section.
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           args: --bundles ${{ matrix.bundles }} --config tauri.release.conf.json
