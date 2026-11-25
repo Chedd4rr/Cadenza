@@ -1,8 +1,3 @@
-/* STUDIO · MINIMAL. Laid out like a desktop app instead of a game menu:
-   a greeting and a bento grid of tiles on Home, a full-width transport bar docked at the bottom
-   of every page, shortcuts tucked top-right. Warm paper, ink text, one blue accent, Inter.
-   The shared colour variables are re-pointed so most of the app follows automatically;
-   component skins come first, then the layout (at the end of the file). */
 @font-face { font-family: "Inter"; src: url(fonts/inter-latin-400-normal.woff2) format("woff2"); font-weight: 400; }
 @font-face { font-family: "Inter"; src: url(fonts/inter-latin-500-normal.woff2) format("woff2"); font-weight: 500; }
 @font-face { font-family: "Inter"; src: url(fonts/inter-latin-600-normal.woff2) format("woff2"); font-weight: 600; }
@@ -298,7 +293,6 @@ body * { text-shadow: none !important; }
 /* =====================================================================
    LAYOUT: Studio's desktop-app arrangement
    ===================================================================== */
-/* Top line: a quiet date/time on the left, shortcuts on the right */
 #clock { left: 6vw; top: 4.4vh; align-items: center; gap: .8vw; }
 #clock .date { font-size: 2.3vh; letter-spacing: -.01em; }
 #clock .meta { display: flex; align-items: center; gap: .6vw; padding: 0; }
@@ -306,7 +300,6 @@ body * { text-shadow: none !important; }
 #keys { top: 3.6vh; bottom: auto; right: 6vw; }
 #bg .min-rule { left: 6vw; right: 6vw; top: 10vh; }
 #bg .min-mark { display: none; }
-/* Pages use the full width (nothing sits on the right any more) */
 .view { left: 6vw; right: 6vw; width: auto; top: 13vh; bottom: 17vh; }
 #lib-grid, .ar-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3vh 1.4vw; }
 .search-bar { width: 60vw; }
@@ -351,7 +344,7 @@ body[data-view="home"] #bg .min-greet { opacity: 1; }
 #now, body:not([data-view="home"]) #now { position: fixed; left: 6vw; right: 6vw; top: auto; bottom: 2.6vh; width: auto; height: 11vh; z-index: 12;
   display: grid !important; grid-template-columns: 8.4vh minmax(0, 24vw) minmax(0, 1fr) 22vw; grid-template-rows: 1fr 1fr; column-gap: 1.6vw; align-items: center;
   padding: 1.3vh 1.6vw 1.3vh 1.3vh; background: rgb(255 255 255 / .97); border: 1px solid var(--line); border-radius: 2vh; box-shadow: var(--shadow-lg);
-  transform: none !important; opacity: 1; }   /* (a solid bar looks the same here as frosted glass, without the per-frame blur) */
+  transform: none !important; opacity: 1; }
 body[data-view="setup"] #now { opacity: 0; pointer-events: none; }
 .art-wrap, body:not([data-view="home"]) .art-wrap { grid-column: 1; grid-row: 1 / 3; width: 8.4vh; margin: 0; }
 .polaroid { border-radius: 1.1vh; box-shadow: var(--shadow); }

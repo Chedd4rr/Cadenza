@@ -1,9 +1,3 @@
-//! Test mode: running this app beside your normal Cadenza to compare them, most useful when trying a
-//! change: play the same song in both and switch back and forth.
-//!
-//! The first time, it copies what it needs from your normal Cadenza folder into its own "Cadenza Test"
-//! folder (sign-ins, settings, taste profile, history, saved page data). After that the two never share
-//! anything: test mode only ever reads from your real folder, once, and never writes to it. Delete the test folder to start over.
 
 use crate::files;
 

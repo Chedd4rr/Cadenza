@@ -1,9 +1,3 @@
-//! Opening Cadenza when you log in.
-//!
-//! On a Mac this uses Apple's own login items for apps (SMAppService), so System
-//! Settings → Login Items lists Cadenza under "Open at Login" with its icon. (The usual cross-platform way
-//! writes a launch agent that points at the program inside the app, which shows up as a bare "cadenza"
-//! with a blank icon.) Windows and Linux use the autostart plugin.
 
 use tauri::AppHandle;
 
@@ -31,8 +25,6 @@ pub fn set(app: &AppHandle, on: bool) -> bool {
     }
 }
 
-/// Builds from before this change made a launch agent instead: if one is there, move it over to a proper
-/// login item, so it's on once and with the right name and icon.
 pub fn tidy(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
@@ -69,7 +61,6 @@ mod mac {
         unsafe { svc.as_ref() }
     }
 
-    /// 0 not registered, 1 on, 2 waiting for you to allow it in System Settings, 3 not found.
     pub fn status() -> isize {
         let Some(svc) = service() else { return 0 };
         // SAFETY: `status` takes nothing and returns an NSInteger.

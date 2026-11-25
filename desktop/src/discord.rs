@@ -1,7 +1,3 @@
-//! "Listening to …" on your Discord profile, through the Discord app's local connection (Rich Presence).
-//! No Discord login or token is involved: the Discord app running on this computer shows the status. It
-//! needs a Discord application ID (free: discord.com/developers → New Application, name it "Cadenza").
-//! The messages go over a local socket (macOS, Linux) or named pipe (Windows).
 
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -37,7 +33,6 @@ impl Discord {
             st: Mutex::new(State { conn: None, connected_id: String::new(), next_try: Instant::now(), activity: None,
                                    sent_key: String::new(), sent_start: 0.0, status: "off".into() }),
         });
-        // Every 20 s while it's on: reconnect if Discord was opened (or restarted) since.
         let me = d.clone();
         std::thread::Builder::new().name("cadenza-discord".into()).spawn(move || loop {
             std::thread::sleep(Duration::from_secs(20));
@@ -47,19 +42,16 @@ impl Discord {
     }
 
     fn enabled(&self) -> bool { self.settings.bool("discord") }
-    /// Your own application ID if you set one, otherwise Cadenza's built-in one.
     fn app_id(&self) -> String {
         let own = self.settings.string("discordAppId");
         if own.is_empty() { crate::builtin::DISCORD_APP_ID.to_string() } else { own }
     }
 
-    /// For System: "connected", "waiting for Discord", "needs an application ID"…
     pub fn status(&self) -> Value {
         let status = if self.enabled() { self.st.lock().unwrap().status.clone() } else { "off".into() };
         json!({"enabled": self.enabled(), "status": status, "hasId": !self.app_id().is_empty()})
     }
 
-    /// The setting was switched, or the application ID changed: start over.
     pub fn restart(&self) {
         {
             let mut s = self.st.lock().unwrap();
@@ -71,7 +63,6 @@ impl Discord {
         if self.enabled() { self.resend(true); }
     }
 
-    /// Called whenever the song or play state changes (the page's now-playing info).
     pub fn update(&self, np: &Value) {
         let title = np.get("title").and_then(Value::as_str).unwrap_or("");
         let playing = np.get("playing").and_then(Value::as_bool).unwrap_or(false);
@@ -105,7 +96,6 @@ impl Discord {
         let send = {
             let mut s = self.st.lock().unwrap();
             s.activity = Some(a);
-            // Same song, still on time: nothing to send. A seek moves the start time, so resend then.
             let moved = (start - s.sent_start).abs() > 4000.0;
             if key != s.sent_key || moved { s.sent_key = key; s.sent_start = start; true } else { false }
         };
@@ -147,8 +137,6 @@ fn fit(s: &str) -> String {
     t
 }
 
-/// The Discord app's local connection: a socket named discord-ipc-0…9 in the temporary folders (macOS,
-/// Linux, including Flatpak and Snap Discord), or a named pipe (Windows).
 fn connect(id: &str) -> Result<Conn, String> {
     for mut c in candidates() {
         if !send(&mut c, 0, &json!({"v": 1, "client_id": id})) { continue; }
@@ -180,8 +168,6 @@ fn candidates() -> Vec<Conn> {
     for dir in dirs {
         for i in 0..10 {
             let path = dir.join(format!("discord-ipc-{i}"));
-            // Only a socket that belongs to you: /tmp is shared, and another account could leave a fake
-            // "discord-ipc-0" there to read what you're playing.
             let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
             if !meta.file_type().is_socket() || meta.uid() != me { continue; }
             if let Ok(c) = Conn::connect(&path) {
@@ -199,7 +185,6 @@ fn candidates() -> Vec<Conn> {
     (0..10).filter_map(|i| std::fs::OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok()).collect()
 }
 
-/// One message: a 4-byte opcode, a 4-byte length (little-endian), then JSON.
 fn send(c: &mut Conn, op: u32, obj: &Value) -> bool {
     let body = obj.to_string().into_bytes();
     let mut frame = Vec::with_capacity(8 + body.len());

@@ -26,13 +26,11 @@
   --text: "Barlow Condensed", "Arial Narrow", sans-serif;
   --snap: cubic-bezier(.3,1.35,.5,1);
   --out: cubic-bezier(.2,.9,.2,1);
-  /* "Album covers in the theme's colours": a cover's shadows, middle and highlights become these.
-     A theme whose dark/accent/light aren't --navy/--cyan/--white sets its own. */
   --tone-dark: var(--navy-rgb);
   --tone-mid: var(--cyan-rgb);
   --tone-light: var(--white-rgb);
 }
-body.covers-themed .art-img:not(.sg-bg) { filter: url(#cover-tone); }   /* (Stage mode's blurred backdrop keeps its own filter) */
+body.covers-themed .art-img:not(.sg-bg) { filter: url(#cover-tone); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
   width: 100%; height: 100%; overflow: hidden;
@@ -45,14 +43,11 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 input { font: inherit; color: inherit; background: none; border: 0; outline: 0; -webkit-user-select: text; user-select: text; }
 [hidden] { display: none !important; }
 body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }
-/* …except Ogmi.os's takeover and blocks, and toasts: they're things you just did, and frozen on their
-   first frame they're invisible (the warning panel and the error pop-ups start squashed flat). */
 #breach, #breach *, #deny, #deny *, #deny *::before, #deny *::after, .rg-speak, .rg-speak *, #toast, #toast * { animation-play-state: running !important; }
 body.moving #bg *, body.moving .item .label, body.moving #hl .face::after, body.moving .art-wrap, body.moving .card .in { animation-play-state: paused !important; }
 
 /* ============ Background ============ */
 #bg { position: fixed; inset: 0; overflow: hidden; contain: strict; }
-/* Background layers are built by each theme (see themes/<id>/). */
 
 /* ============ Clock ============ */
 #clock { position: fixed; left: 4vw; top: 5vh; z-index: 5; display: flex; align-items: flex-end; gap: 1.1vw; }
@@ -241,7 +236,6 @@ body[data-view="setup"] #now { opacity: 0; pointer-events: none; }
 .np-tag .v { background: var(--cyan); color: var(--navy); }
 .art-wrap { position: relative; width: 20vw; margin-right: 4vw; }
 .art-wrap::before { content: ""; position: absolute; inset: 0; background: var(--navy); transform: rotate(-7deg) translate(-1.8vw, 1vw); }
-/* Polaroid: cream frame, thick bottom edge with a handwritten caption, a strip of tape on top */
 .polaroid { position: relative; background: #f6f4ec; padding: .9vw .9vw 4.4vw; transform: rotate(4deg);
   box-shadow: 1.6vh 1.6vh 0 var(--cyan), 0 2.2vh 3.4vh rgba(0,0,0,.35); }
 .polaroid .photo { position: relative; aspect-ratio: 1; background: var(--placeholder) center/cover no-repeat;
@@ -261,14 +255,11 @@ body[data-view="setup"] #now { opacity: 0; pointer-events: none; }
 .progress .t { font-weight: 700; font-size: 2.2vh; color: var(--ice); min-width: 3.2vw; text-align: center; }
 .bar { position: relative; width: 22vw; height: 1.4vh; background: rgb(var(--navy-rgb) / .85); outline: 1px solid rgb(var(--ice-rgb) / .35); overflow: hidden; }
 .bar .fill { position: absolute; inset: 0; background: var(--white); transform-origin: left center; transform: scaleX(0); will-change: transform; }
-/* (no 1 s glide between ticks: the bar moves about 1 px a second anyway, and a constant animation kept
-   the whole window redrawing at the display's refresh rate) */
 
 /* ============ Add-to-playlist drawer ============ */
 #scrim { position: fixed; inset: 0; z-index: 40; background: rgb(var(--navy-rgb) / .55); opacity: 0; pointer-events: none; transition: opacity .2s; }
 #scrim.on { opacity: 1; pointer-events: auto; }
 #drawer { position: fixed; top: 0; bottom: 0; right: 0; width: 40vw; z-index: 41; transform: translateX(110%); transition: transform .3s cubic-bezier(.3,1.15,.5,1); pointer-events: none; }
-/* Closed: not drawn at all (and no GPU layer kept around for it), once it has slid away. */
 #drawer:not(.on) { visibility: hidden; transition-property: transform, visibility; transition-delay: 0s, .45s; }
 #drawer.on { transform: none; pointer-events: auto; }
 #drawer .panel { position: absolute; inset: 0 -6vw 0 0; background: var(--drawer-bg); transform: skewX(var(--skew)); transform-origin: bottom; border-left: .8vh solid var(--cyan); box-shadow: -1.6vh 0 0 rgb(var(--navy-rgb) / .6); }
@@ -324,7 +315,7 @@ body.playing #v-dj.live .vinyl { animation-play-state: running; }
 
 /* ============ Transition sweep ============ */
 #sweep { position: fixed; inset: 0; z-index: 30; pointer-events: none; overflow: hidden; contain: strict; }
-#sweep i { position: absolute; top: -20vh; height: 140vh; left: 0; transform: translateX(-200vw) skewX(-20deg); }   /* no will-change: a GPU layer only while it animates */
+#sweep i { position: absolute; top: -20vh; height: 140vh; left: 0; transform: translateX(-200vw) skewX(-20deg); }
 #sweep .a { width: 30vw; background: linear-gradient(90deg, rgb(var(--deep-rgb) / 0), rgb(var(--deep-rgb) / .92) 30%, rgb(var(--deep-rgb) / .92) 70%, rgb(var(--deep-rgb) / 0)); }
 #sweep .b { width: 9vw; background: var(--cyan); }
 #sweep .c { width: 2.4vw; background: var(--white); }
@@ -341,9 +332,6 @@ body.playing #v-dj.live .vinyl { animation-play-state: running; }
 #toast.show { transform: translate(-50%, 0) skewX(var(--skew)); }
 #toast.err { background: #ffdfe6; box-shadow: 1vh 1vh 0 #ff4f7b; color: #5a0620; }
 
-/* Reduce motion: animations jump to their end and stop. Endless ones (theme backgrounds, bobbing labels)
-   run once and stay still, instead of running on very fast and keeping the page redrawing. The loading
-   spinner keeps turning, so you can still tell something is happening. */
 body.reduce *, body.reduce *::before, body.reduce *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }
 body.reduce .spinner { animation-duration: .7s !important; animation-iteration-count: infinite !important; }
 .dj-actions .opt .k { min-width: 11vw; }
@@ -449,10 +437,8 @@ body.reduce .spinner { animation-duration: .7s !important; animation-iteration-c
 /* Home menu: fewer items now, so they're a little bigger */
 .item, #hl { height: 6.6vh; }
 .item .label { font-size: 5.6vh; }
-/* Sits to the left of the progress/volume bars, so the panel doesn't grow taller */
 .np-ctrl { position: absolute; right: 34vw; bottom: 0; margin: 0; transform-origin: right top;
   transition: scale .38s cubic-bezier(.3,1.2,.5,1), right .38s cubic-bezier(.3,1.2,.5,1), bottom .38s cubic-bezier(.3,1.2,.5,1); }
-/* Off Home the panel shrinks into the corner: the toolbar tucks underneath it, a bit bigger so it's easy to hit */
 body:not([data-view="home"]) .np-ctrl { right: 1vw; bottom: -12vh; scale: 1.45; }
 #now { z-index: 11; }
 
@@ -480,7 +466,6 @@ body:not([data-view="home"]) .np-ctrl { right: 1vw; bottom: -12vh; scale: 1.45; 
 body.moving #intel { animation-play-state: paused; }
 #intel { min-height: 42vh; width: 26vw; }
 #hint { max-width: 31vw; min-width: 0; line-height: 1.25; }
-/* Home lets clicks through to the Now Playing toolbar; only the menu and card catch the mouse */
 #now { z-index: 6; }
 #v-home { pointer-events: none; }
 #v-home #menu, #v-home #intel { pointer-events: auto; }
@@ -506,17 +491,14 @@ body.moving #intel { animation-play-state: paused; }
 .band.pre .hz { color: var(--white); }
 .band.on .track { border-color: var(--white); box-shadow: 0 0 0 .3vh rgb(var(--cyan-rgb) / .5); }
 .band.on .val { color: var(--white); }
-/* Parametric EQ: each column is a filter; its type or width under the frequency, unused ones faded. */
 .eq-board.para .band .hz::after { content: attr(data-sub); display: block; margin-top: .6vh; font-size: 1.2vh; color: var(--ice); opacity: .8; }
 .eq-board.para .band.unused:not(.on) { opacity: .4; }
 .eq-foot { display: flex; align-items: center; gap: 1vw; margin: 3.4vh 0 0 1vw; }
 .eq-note { font: 600 2vh/1.3 var(--text); color: rgb(var(--ice-rgb) / .75); transform: skewX(var(--skew)); max-width: 32vw; }
 #v-eq.eq-off .band .fill, #v-eq.eq-off .band .knob { opacity: .3; }
-/* eight Home items now (EQ added): a touch smaller so they clear the hint line */
 .item, #hl { height: 7vh; }
 .item .label { font-size: 6.1vh; }
 
-/* DJ set list: rows keep their full height and the list scrolls, so none get squashed or clipped */
 .dj-segs { position: relative; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; min-height: 0; padding: .6vh 2vw 3vh .4vw;
   -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent); mask-image: linear-gradient(180deg, #000 82%, transparent); }
 .dj-segs::-webkit-scrollbar { width: 0; height: 0; }
@@ -553,7 +535,6 @@ body.moving #intel { animation-play-state: paused; }
 .pal-foot { margin-top: 1vh; font: 700 1.6vh/1 var(--text); letter-spacing: .08em; color: rgb(var(--ice-rgb) / .6); }
 .pal-foot b { color: var(--cyan); margin: 0 .3vw 0 .9vw; }
 .pal-foot b:first-child { margin-left: 0; }
-/* six playlist buttons: a touch smaller, and they wrap onto a second line when there's no room */
 .pl-actions { flex-wrap: wrap; gap: .8vh .7vw; max-width: 44vw; }
 .pl-actions .chip { font-size: 1.75vh; padding: .6vh .75vw; white-space: nowrap; }
 
@@ -625,14 +606,11 @@ body.moving #intel { animation-play-state: paused; }
 .opt[data-key="grp:"] .k { color: var(--cyan); }
 .opt[data-key="grp:"].active .k { color: var(--blue); }
 
-/* Ogmi.os's pop-up only exists in the secret theme (its stylesheet shows it) */
 .rg-speak { display: none; }
 
-/* Stage covers everything: hide (and so stop rendering and animating) whatever is underneath */
 body.staged #bg, body.staged #views, body.staged #now, body.staged #clock, body.staged #keys { visibility: hidden; }
 body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-state: paused !important; }
 
-/* Liked Songs cover: a drawn heart, centred, sized to the cover */
 .liked-cover .ico { width: 44%; height: 44%; vertical-align: 0; stroke-width: 1; filter: drop-shadow(.6vh .6vh 0 var(--deep)); }
 .pl-cover .liked-cover { position: relative; }
 
@@ -655,7 +633,6 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 #deny .dn-line { margin-top: 1.6vh; font: 700 2.6vh/1.3 "JetBrains Mono", monospace; color: #d2ff1f; }
 #deny .dn-count { margin-top: 1.4vh; font: 400 1.5vh/1 "JetBrains Mono", monospace; letter-spacing: .2em; color: #e6e8df; opacity: .7; }
 
-/* the third attempt: the screen glitches out while Ogmi.os loses its grip */
 #deny.glitch { animation: none; background: transparent; box-shadow: inset 0 0 0 1.2vh #ff2d6f; }
 #deny.glitch canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; mix-blend-mode: difference; }
 #deny .dn-err { position: absolute; width: 24vw; background: #000; border: 2px solid #ff2d6f; box-shadow: .5vw .6vh 0 #d2ff1f; font: 700 1.6vh/1.35 "JetBrains Mono", ui-monospace, Menlo, monospace;
@@ -736,7 +713,7 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 #q-list .upnext .du { color: var(--cyan); letter-spacing: .1em; font-weight: 700; }
 
 /* ============ Playlist builder ============ */
-#v-builder { width: 72vw; }              /* a bit wider than other pages: two lists side by side */
+#v-builder { width: 72vw; }
 #v-builder .vh { margin-bottom: 1.2vh; }
 .bd-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2vw; height: calc(100% - 11vh); }
 .bd-pane { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 1.2vh .8vw; border: .3vh solid rgb(var(--ice-rgb) / .15); background: rgb(var(--navy-rgb) / .35); transition: border-color .15s; }
@@ -762,14 +739,12 @@ body.staged #bg *, body.staged #views *, body.staged #now * { animation-play-sta
 #v-builder .trk .in { grid-template-columns: 5vh 1fr auto auto; }
 #v-builder .trk .acts { opacity: 1; }
 #v-builder .trk:not(.active) .acts { opacity: 0; }
-/* dragging a song: it follows the pointer, and a line shows where it will land */
 .bd-drag { cursor: grab; touch-action: none; }
 .bd-drag.dragging { position: relative; z-index: 5; opacity: .85; cursor: grabbing; }
 .bd-drag.drop-before { box-shadow: 0 -.5vh 0 var(--cyan); }
 .bd-drag.drop-after { box-shadow: 0 .5vh 0 var(--cyan); }
 body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select: none; }
 .tz-times .fr-hint { grid-column: 1 / -1; }
-/* Taste: the left side is a list you can move through and correct. */
 .tz-left { margin-bottom: 2vh; }
 .tz-left .tz-head { margin: 1.4vh 0 .4vh; }
 .tz-left .tz-head:first-child { margin-top: 0; }
@@ -778,7 +753,6 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 .st-artist.tz-item.active { background: rgb(var(--cyan-rgb) / .16); box-shadow: inset 3px 0 0 var(--cyan); }
 .tz-off .active { background: none !important; box-shadow: none !important; }
 .tz-off .trk.active .in { filter: saturate(.4) opacity(.75); }
-/* Taste bars: the part built up over time in the theme's colour, the part from lately in a lighter one. */
 .tz-item i { height: 3px; overflow: hidden; }
 .tz-item i .tz-lately { position: absolute; right: 0; top: 0; bottom: 0; background: var(--white);
   background-image: repeating-linear-gradient(90deg, transparent 0 3px, rgb(0 0 0 / .35) 3px 4px); }
@@ -789,14 +763,11 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 .tz-legend { font: 600 1.15vh/1 var(--text); letter-spacing: .12em; color: var(--ice); }
 .trk.bd-artist .thumb { border-radius: 50%; }
 
-/* Keyboard page: a shortcut you can change (click its keys), and the prompt while choosing new ones. */
 .cmd.remap .v { cursor: pointer; }
 .cmd .capture { font-weight: 700; letter-spacing: .04em; animation: capture-blink 1.1s steps(2) infinite; }
 @keyframes capture-blink { 50% { opacity: .45; } }
 
-/* Text sliding to show what doesn't fit (Marquee in app.js): no "…" while it moves. */
 .mq { text-overflow: clip !important; }
-/* With Reduce motion the cut-off text isn't slid along; its full text shows in this box instead. */
 #fulltext { position: fixed; z-index: 70; max-width: 50vw; padding: 1vh 1.2vw; background: var(--deep); color: var(--white); border-left: .5vh solid var(--cyan); box-shadow: .8vh .8vh 0 rgb(0 0 0 / .35); font: 600 2vh/1.35 var(--text); pointer-events: none; opacity: 0; transition: none; }
 #fulltext.on { opacity: 1; }
 #fulltext div + div { margin-top: .4vh; color: var(--ice); }

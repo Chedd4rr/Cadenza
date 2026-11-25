@@ -1,6 +1,3 @@
-//! Cadenza's own listening history, for the Stats page. Spotify only lets apps see your last 50 plays,
-//! so Cadenza keeps its own log of what it played. A song counts once you've heard 30 seconds of it, or half of it if it's shorter; one line of JSON per
-//! play in history.jsonl.
 
 use serde_json::{json, Map, Value};
 use std::io::Write;
@@ -33,7 +30,6 @@ impl History {
         let mut c = self.cur.lock().unwrap();
         let new_uri = p.get("uri").and_then(Value::as_str).unwrap_or("").to_string();
         let playing = p.get("is_playing").and_then(Value::as_bool) == Some(true) && p.get("active").and_then(Value::as_bool) != Some(false);
-        // The time since the last report goes to the song that was playing until now.
         if let Some(since) = c.playing_since.take() { c.heard += since.elapsed(); }
         if new_uri != c.uri {
             finish_locked(&mut c);
@@ -42,7 +38,6 @@ impl History {
             c.heard = Duration::ZERO;
             c.started_at_ms = now_ms();
         }
-        // Keep the song's details (they can arrive a moment after the song itself).
         for key in ["name", "artists", "album", "image", "duration_ms"] {
             if let Some(v) = p.get(key) { c.meta.insert(key.into(), v.clone()); }
         }
@@ -83,7 +78,6 @@ fn append(entry: &Value) {
     files::write_privately(line.as_bytes(), &path);        // created readable only by you
 }
 
-/// Every play since `since` (ms since 1970; 0 = all of them), oldest first.
 pub fn entries(since: f64) -> Value {
     let Ok(text) = std::fs::read_to_string(files::path("history.jsonl")) else { return json!([]) };
     Value::Array(text.lines()

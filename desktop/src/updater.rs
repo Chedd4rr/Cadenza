@@ -1,12 +1,3 @@
-//! Updates. Cadenza looks for a newer release on GitHub, tells the page, and installs it when you say so.
-//!
-//! The release has a small file, `latest.json`, listing the newest version and where each system's
-//! installer is. Nothing is installed unless the download is signed with Cadenza's own key: the public half
-//! of that key is in tauri.conf.json (plugins → updater → pubkey), the private half stays with whoever makes
-//! the release. So someone who gets into the GitHub repository (or points the "GitHub repository" setting at
-//! another one) still can't get Cadenza to run their code without that key.
-//!
-//! Until a key has been put in tauri.conf.json this does nothing and says so. See docs/releasing.md.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,11 +9,9 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use crate::librespot::Emit;
 use crate::{files, settings::Settings};
 
-/// At most one automatic look every six hours, however often Cadenza is opened.
 const AUTO_EVERY_SECS: u64 = 6 * 3600;
 
 struct Status {
-    /// "idle", "available" or "error" (what the page's Updates row understands).
     state: &'static str,
     message: String,
     found: Option<Value>,
@@ -33,7 +22,6 @@ pub struct Updater {
     settings: Arc<Settings>,
     emit: Emit,
     status: Mutex<Status>,
-    /// The update that was found, kept so installing it doesn't have to look again.
     pending: tokio::sync::Mutex<Option<Update>>,
 }
 
@@ -64,14 +52,12 @@ impl Updater {
         *self.status.lock().unwrap() = Status { state, message: message.into(), found };
     }
 
-    /// Whether this copy of Cadenza has a key to check updates against.
     fn has_key(&self) -> bool {
         self.app.config().plugins.0.get("updater")
             .and_then(|c| c.get("pubkey")).and_then(|k| k.as_str())
             .map(|k| !k.trim().is_empty()).unwrap_or(false)
     }
 
-    /// Where the list of releases is for the repository in the settings.
     fn endpoint(&self) -> Option<url::Url> {
         let repo = self.settings.string("updateRepo");
         let ok = regex::Regex::new(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$").unwrap().is_match(&repo);
@@ -79,7 +65,6 @@ impl Updater {
         url::Url::parse(&format!("https://github.com/{repo}/releases/latest/download/latest.json")).ok()
     }
 
-    /// Looks for a newer version. Returns the status for the page, which is also pushed as an "update" event.
     pub async fn check(&self) -> Value {
         if !self.has_key() {
             self.set("idle", "Updates aren't set up in this copy of Cadenza. Get a release from GitHub, or build again", None);
@@ -113,7 +98,6 @@ impl Updater {
         v
     }
 
-    /// Downloads the update found by the last check, checks its signature, installs it and restarts.
     pub async fn install(&self) -> Value {
         let update = self.pending.lock().await.take();
         let update = match update {
@@ -130,7 +114,6 @@ impl Updater {
         log::info!("installing update {}", update.version);
         match update.download_and_install(|_, _| {}, || {}).await {
             Ok(()) => {
-                // Windows runs the installer, which closes Cadenza itself; elsewhere Cadenza starts again here.
                 let app = self.app.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(800)).await;
@@ -145,7 +128,6 @@ impl Updater {
         }
     }
 
-    /// Looks for an update when Cadenza opens (and every six hours while it stays open), if that's on.
     pub fn start_auto(self: &Arc<Self>) {
         let me = Arc::clone(self);
         tauri::async_runtime::spawn(async move {

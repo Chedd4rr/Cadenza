@@ -1,7 +1,3 @@
-//! Runs the audio engine (librespot, built into Cadenza: see embedded.rs), reads what it's playing, plays
-//! straight in it (play, skip, the queue, see "playing directly"), and looks after it: songs Spotify won't
-//! unlock, songs worth one more try, dropped connections, sound that stops arriving, and checking Spotify
-//! still lists Cadenza after the computer wakes up.
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -17,20 +13,15 @@ use crate::sound::Sound;
 
 pub type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
-/// What's known about the song playing now, for the signal path.
 #[derive(Clone, Default)]
 pub struct SongPath {
     pub uri: String,
-    /// The file Spotify sends, as librespot names it ("OGG_VORBIS_320").
     pub format: String,
-    /// How much loudness normalisation raises (+) or lowers (-) this song, in dB; None when it's off.
     pub loudness_db: Option<f64>,
     /// Levelled as part of its album (rather than on its own).
     pub album: bool,
 }
 
-/// Reads the two lines Cadenza's librespot patch writes: "file <uri> FORMAT" when a song is loaded, and
-/// "playing <uri> loudness +1.20 dB (Track)" (or "loudness off") when it starts.
 fn note_song_path(g: &mut Inner, line: &str) {
     let uri = |s: &str| -> String { s.split('<').nth(1).and_then(|x| x.split('>').next()).unwrap_or("").to_string() };
     if let Some(rest) = line.strip_prefix("file ") {
@@ -60,9 +51,8 @@ fn now_ms() -> f64 {
 struct Inner {
     /// The engine, while it's running.
     embedded: Option<Arc<crate::embedded::Engine>>,
-    /// Counts starts, so a process that ends after being replaced isn't mistaken for the current one.
     generation: u64,
-    state: String,              // stopped | starting | login | running | missing | error
+    state: String,
     log: Vec<String>,
     player: Map<String, Value>,
     /// When player.progress_ms was last true.
@@ -74,8 +64,6 @@ struct Inner {
     last_song_refusal: Option<Instant>,
     last_key_failure: Option<Instant>,
     loading_uri: String,
-    /// Which file Spotify sends for songs that were loaded lately (song link → "OGG_VORBIS_320"), and what
-    /// the song playing now is (see the signal path). Both come from log lines of Cadenza's librespot patch.
     files: std::collections::HashMap<String, String>,
     song: Option<SongPath>,
     retried: std::collections::HashMap<String, Instant>,
@@ -84,20 +72,14 @@ struct Inner {
     last_device_fix: Option<Instant>,
     last_rescue: Option<Instant>,
     last_stop_at: Option<Instant>,
-    // Playing directly in the built-in engine (see "playing directly" below).
     skip_last: Option<Instant>,
     skip_pending: u32,
     skip_flushing: bool,
-    /// Songs Spotify wouldn't play in a row, and when the last one was (for how long to wait).
     hold_streak: u32,
     last_hold: Option<Instant>,
-    /// Bumped by anything you do, so a wait after a refused song doesn't then skip over your choice.
     hold_token: u64,
-    /// While waiting after a refused song: until when, and how many more Next presses came meanwhile (done
-    /// together when the wait ends, instead of each one asking Spotify for another key straight away).
     hold_until: Option<Instant>,
     hold_skips: u32,
-    /// A song is loaded in the engine (false once it stopped with nothing left to play): Play can resume.
     track_loaded: bool,
     flowing_ticks: u32,
     stall_since: Option<Instant>,
@@ -106,11 +88,8 @@ struct Inner {
 
 fn within(t: Option<Instant>, secs: u64) -> bool { t.map_or(false, |t| t.elapsed() < Duration::from_secs(secs)) }
 
-/// Things noticed while holding the lock, done once it's let go.
 enum Then {
     CheckSound, Retry(String), RetryLater(String), Dropped(String, bool), Refused(String), Held(String),
-    // The sound engine: a new song (its length), a position report (ms, length), a jump, and letting go of
-    // sound Cadenza is holding when Spotify says it's playing.
     NewSong(Option<i64>), Position(i64, Option<i64>), Seeked, ReleaseIfHeld,
 }
 
@@ -130,13 +109,11 @@ impl Librespot {
             settings, api, sound, history, emit,
         });
         tidy_old_engine_files();
-        // Every 2 s: follow the sound, rescue a stalled engine, notice the computer waking up.
         let keeper = Arc::clone(&me);
         std::thread::Builder::new().name("cadenza-engine-keeper".into()).spawn(move || {
             let mut last = SystemTime::now();
             loop {
                 std::thread::sleep(Duration::from_secs(2));
-                // The wall clock jumping far ahead of the 2 s just slept means the computer was asleep.
                 let gap = SystemTime::now().duration_since(last).unwrap_or_default();
                 last = SystemTime::now();
                 if gap > Duration::from_secs(20) { keeper.schedule_device_check(8, "the computer woke up"); }
@@ -145,9 +122,6 @@ impl Librespot {
                 keeper.run_device_check();
             }
         }).ok();
-        // Closing the lid pauses the music, like taking headphones off, so it doesn't come back on by itself
-        // when the computer wakes. (It's noticed as the computer wakes, within half a second, by the
-        // wall clock jumping ahead.)
         let sleeper = Arc::clone(&me);
         std::thread::Builder::new().name("cadenza-sleep-watch".into()).spawn(move || {
             let mut last = SystemTime::now();
@@ -205,7 +179,6 @@ impl Librespot {
         self.start_builtin(&mut g);
     }
 
-    /// The loudness setting changed: the engine follows it from the next song, without restarting.
     pub fn loudness_changed(&self) {
         crate::embedded::set_normalize_type(&self.settings.string("normalizeType"));
         if let Some(e) = self.inner.lock().unwrap().embedded.as_ref() { e.loudness(); }
@@ -239,7 +212,6 @@ impl Librespot {
         self.set_state(g, s);
     }
 
-    /// The built-in engine stopped: on purpose (nothing to do) or not (handled like the program crashing).
     fn builtin_ended(self: &Arc<Self>, generation: u64, why: String) {
         let mut g = self.inner.lock().unwrap();
         if g.generation != generation || g.embedded.is_none() { return; }      // stopped or replaced on purpose
@@ -265,7 +237,6 @@ impl Librespot {
         if g.state != "running" && (text.contains("Authenticated as") || text.contains("Connected to AP")) {
             self.set_state(&mut g, "running");
         }
-        // librespot saves your login readable by everyone (and warns about it). Keep it to you.
         if text.contains("Authenticated as") || text.contains("credential file") {
             restrict(&self.cache_dir().join("credentials.json"), 0o600);
             restrict(&self.cache_dir(), 0o700);
@@ -277,19 +248,14 @@ impl Librespot {
             g.track_loaded = false;
             self.emit_player(&mut g);
         }
-        // A key timeout is a hiccup: worth trying the song again. A refusal ("Unable to load key", once the
-        // bundled librespot has given up retrying) means Spotify won't unlock that one song right now.
         if text.contains("audio key response timeout") { g.last_key_failure = Some(Instant::now()); }
         if let Some(c) = loading.captures(text) { g.loading_uri = c[1].to_string(); }
         if let Some(i) = text.find("Cadenza: ") { note_song_path(&mut g, &text[i + 9..]); }
         if text.contains("Unable to load key") { let u = g.loading_uri.clone(); then.push(Then::Refused(u)); }
-        // The built-in engine paused on a song it couldn't play, instead of skipping on (Cadenza's patch).
         if let Some(i) = text.find("Holding: the current track is unavailable <") {
             let uri = text[i..].split('<').nth(1).unwrap_or("").trim_end_matches('>').to_string();
             then.push(Then::Held(uri));
         }
-        // Spotify closed librespot's connection. librespot only notices about 30 s later and comes back
-        // without your playlist, so don't wait for it.
         if text.contains("Connection to server closed") || text.contains("Spirc shut down unexpectedly") {
             let active = g.player.get("active").and_then(Value::as_bool).unwrap_or(false);
             then.push(Then::Dropped("Spotify closed the connection".into(), active));
@@ -299,8 +265,6 @@ impl Librespot {
     }
 
 
-    /// The engine stopped by itself: start it again after a pause that grows with each crash, unless the
-    /// login itself is bad.
     fn after_exit(self: &Arc<Self>, mut g: std::sync::MutexGuard<'_, Inner>) {
         g.player.insert("is_playing".into(), json!(false));
         self.emit_player(&mut g);
@@ -342,8 +306,6 @@ impl Librespot {
         self.set_state(&mut g, "stopped");
     }
 
-    /// Restart engine (System → Engine settings, or the palette): if music was playing here, pick it back up
-    /// at the same song and second afterwards, as an automatic restart does.
     pub fn restart_keep_playing(self: &Arc<Self>) {
         let spot = {
             let mut g = self.inner.lock().unwrap();
@@ -366,7 +328,6 @@ impl Librespot {
         std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(600)); me.start(); });
     }
 
-    /// Waits (blocking) until librespot says it's connected, up to `timeout` seconds.
     pub fn wait_running(&self, timeout: f64) -> bool {
         let until = Instant::now() + Duration::from_secs_f64(timeout);
         while Instant::now() < until {
@@ -382,7 +343,6 @@ impl Librespot {
 
 
 
-    /// Player events, one per line (from the program's event script, or the built-in engine).
     fn handle_events(self: &Arc<Self>, text: &str) {
         let mut guard = self.inner.lock().unwrap();
         let g = &mut *guard;
@@ -398,16 +358,13 @@ impl Librespot {
             match event {
                 "track_changed" => {
                     g.track_loaded = true;
-                    g.hold_streak = 0;                          // a song loaded: Spotify is handing out keys again
-                    // A song that failed to load was to be tried again after this one: if librespot moved on
-                    // past it, go back for it.
+                    g.hold_streak = 0;
                     if let Some(failed) = g.pending_retry.take() {
                         let now = if uri.is_empty() { format!("spotify:track:{track_id}") } else { uri.to_string() };
                         if now != failed { then.push(Then::Retry(failed)); }
                     }
                     let p = &mut g.player;
                     let covers: Vec<&str> = f[6].split('|').filter(|s| !s.is_empty()).collect();
-                    // Spotify's 640 px album art has this marker in its URL; otherwise take the first.
                     let art = covers.iter().find(|c| c.contains("ab67616d0000b273")).or(covers.first()).copied().unwrap_or("");
                     p.insert("uri".into(), json!(if uri.is_empty() { format!("spotify:track:{track_id}") } else { uri.to_string() }));
                     p.insert("name".into(), json!(f[3]));
@@ -435,8 +392,6 @@ impl Librespot {
                     p.insert("active".into(), json!(true));
                     if event == "playing" { then.push(Then::CheckSound); }
                     if event == "seeked" { then.push(Then::Seeked); }        // the new spot is heard at once
-                    // Spotify says it's playing but Cadenza is still holding the sound (a "playing" report
-                    // that came late or out of order): let it go, or librespot stalls behind it.
                     if event != "paused" && now_playing { then.push(Then::ReleaseIfHeld); }
                     if let Some(pos) = ms(f[8]) {
                         let dur = g.player.get("duration_ms").and_then(Value::as_i64);
@@ -451,16 +406,12 @@ impl Librespot {
                         p.insert("progress_ms".into(), json!(prog + (now_ms() - g.pos_at) as i64));
                     }
                     g.pos_at = now_ms();
-                    // The engine stops when its list runs out but stays the device playing (it says "device
-                    // became inactive" when another one takes over).
                     g.track_loaded = false;
                     g.player.insert("is_playing".into(), json!(false));
                     g.last_stop_at = Some(Instant::now());
                     changed = true;
                 }
                 "session_disconnected" => {
-                    // The session dropped, or another device took over. The play state is left to librespot's
-                    // own "paused"/"stopped" reports.
                     let was = p.get("active").and_then(Value::as_bool).unwrap_or(false);
                     p.insert("active".into(), json!(false));
                     changed = true;
@@ -476,8 +427,6 @@ impl Librespot {
                     changed = true;
                 }
                 "unavailable" => {
-                    // Usually the next song failing to preload while this one plays on; librespot skips it
-                    // by itself either way.
                     let line = format!("librespot couldn't load a song ({track_id}); it skips it by itself.");
                     push_log(g, line);
                     then.push(Then::RetryLater(if uri.is_empty() { format!("spotify:track:{track_id}") } else { uri.to_string() }));
@@ -490,7 +439,6 @@ impl Librespot {
         self.run(then);
     }
 
-    /// Tells the page what's playing, with the position as of right now.
     fn emit_player(&self, g: &mut Inner) {
         let now = now_ms();
         g.player.insert("device".into(), json!(self.settings.device_name()));
@@ -507,9 +455,6 @@ impl Librespot {
         if !self.sound.sleep_fading() && self.sound.transition_volume() < 0.999 { self.sound.reset_transition(); }
     }
 
-    /// Spotify is playing here, but Cadenza is holding the sound. librespot can only write as fast as
-    /// Cadenza takes the sound, so it would sit stuck and the music would "hang". Unless you paused in the
-    /// last few seconds (Spotify's "paused" just hasn't arrived yet), play.
     fn release_if_held(&self) {
         if !self.sound.holding() { return; }
         if self.sound.locally_paused_at().map_or(false, |t| t.elapsed() < Duration::from_secs(4)) { return; }
@@ -517,16 +462,11 @@ impl Librespot {
         self.sound.local_resume();
     }
 
-    /// Where the engine is right now, for picking up there next time (saved when Cadenza quits).
     pub fn snapshot(&self) -> Option<Value> { Self::position_snapshot(&self.inner.lock().unwrap()) }
 
-    /// Whether librespot here is the device Spotify is playing on (for the instant controls).
     pub fn is_active_here(&self) -> bool { Self::active_here(&self.inner.lock().unwrap()) }
     pub fn is_playing_here(&self) -> bool { Self::playing_here(&self.inner.lock().unwrap()) }
 
-    /// You paused in Cadenza: the sound stopped at once and Spotify was asked to pause. A few seconds later,
-    /// check Spotify really did. If not, ask once more; if it still plays, follow Spotify, so librespot isn't
-    /// left stuck behind a paused player.
     pub fn verify_pause(self: &Arc<Self>) {
         let me = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
@@ -539,7 +479,6 @@ impl Librespot {
                 let still = status == 200 && p.get("is_playing").and_then(Value::as_bool) == Some(true)
                     && p.pointer("/device/name").and_then(Value::as_str) == Some(me.settings.device_name().as_str());
                 if !still {
-                    // Spotify did pause; its report to librespot just never arrived.
                     if status == 200 || status == 204 {
                         let mut g = me.inner.lock().unwrap();
                         g.player.insert("is_playing".into(), json!(false));
@@ -560,10 +499,6 @@ impl Librespot {
 
     // MARK: playing directly
 
-    /// Does something with the music straight in the built-in engine, instead of through Spotify's web
-    /// interface. {"ok": false} means the page should use the web interface instead: the separate program
-    /// is the engine, it isn't connected yet, the request is for another device, or (for anything but
-    /// starting something new) another device is the one playing.
     pub fn direct(self: &Arc<Self>, action: &str, a: &Value) -> Value {
         use crate::embedded::Direct;
         let no = |why: &str| json!({"ok": false, "reason": why});
@@ -574,7 +509,6 @@ impl Librespot {
             if let Some(dev) = a.get("device_id").and_then(Value::as_str) {
                 if dev != crate::embedded::device_id(&self.settings.device_name()) { return no("another device"); }
             }
-            // Next while waiting after a refused song: counted, and done when the wait ends.
             let waiting = g.hold_until.map_or(false, |t| Instant::now() < t);
             if action == "next" && waiting {
                 g.hold_skips += 1;
@@ -584,7 +518,6 @@ impl Librespot {
                 (self.emit)("engine.held", json!({"wait_ms": (left * 1000.0) as u64, "skips": n}));
                 return json!({"ok": true});
             }
-            // Play while waiting: go on now (with any Next presses counted meanwhile).
             if action == "play" && waiting {
                 let n = g.hold_skips + 1;
                 g.hold_until = None; g.hold_skips = 0; g.hold_token += 1;
@@ -593,7 +526,6 @@ impl Librespot {
                 let _ = e.direct(crate::embedded::Direct::Play);
                 return json!({"ok": true});
             }
-            // You chose something: a waiting skip is off. (Not for Cadenza lining songs up in the queue.)
             if !matches!(action, "queue" | "clear") { g.hold_token += 1; g.hold_until = None; g.hold_skips = 0; }
             (e, Self::active_here(&g), g.track_loaded)
         };
@@ -612,7 +544,6 @@ impl Librespot {
                 take_over: !active,
             },
             _ if !active => return no("another device is playing"),
-            // Nothing loaded (the list ran out): the page starts something instead.
             "play" if !loaded => return no("nothing loaded"),
             "play" => Direct::Play,
             "pause" => Direct::Pause,
@@ -632,10 +563,6 @@ impl Librespot {
         }
     }
 
-    /// One of Spotify's web-interface playback requests (media keys, the tray, the mini player, a pause
-    /// after sleep), done in the built-in engine when it can. True when it was.
-    /// For the signal path: the song playing in the built-in engine (if any) and whether Cadenza is the
-    /// device playing right now.
     pub fn song_path(&self) -> (Option<SongPath>, bool) {
         let g = self.inner.lock().unwrap();
         let here = g.player.get("active").and_then(Value::as_bool).unwrap_or(false);
@@ -656,9 +583,6 @@ impl Librespot {
         self.direct(action, &args).get("ok").and_then(Value::as_bool).unwrap_or(false)
     }
 
-    /// Next. A single press skips at once. Presses that follow quickly are gathered and done together once
-    /// they stop (one jump that many songs ahead), so skipping through ten songs fast loads two songs, not ten:
-    /// each song loaded asks Spotify for its key, and asked too often, Spotify starts refusing.
     fn direct_next(self: &Arc<Self>, engine: Arc<crate::embedded::Engine>) -> Value {
         const GAP: Duration = Duration::from_millis(350);
         let mut g = self.inner.lock().unwrap();
@@ -689,11 +613,6 @@ impl Librespot {
         json!({"ok": true})
     }
 
-    /// The built-in engine paused on a song it couldn't play (see the hold-refused patch). If Spotify refused
-    /// its key, wait before the next one, longer each time it happens again soon (1.5 s, 3 s, 6 s, 12 s, 20 s,
-    /// 30 s), so asking again doesn't just get refused again. Otherwise (the song isn't available, say) move
-    /// on almost at once. A song that only failed because its key was slow gets another try instead (see
-    /// retry_later).
     fn held(self: &Arc<Self>, uri: String) {
         const WAITS: [u64; 6] = [1500, 3000, 6000, 12000, 20000, 30000];
         let mut g = self.inner.lock().unwrap();
@@ -731,7 +650,6 @@ impl Librespot {
             match t {
                 Then::CheckSound => self.check_sound(),
                 Then::NewSong(dur) => {
-                    // A new song starts at full volume (in case the sleep fade was cut short).
                     if self.sound.transition_volume() < 0.999 && !self.sound.sleep_fading() { self.sound.ramp_transition(1.0, 1.6); }
                     self.sound.track_changed();
                     self.sound.song_position(None, dur, true);
@@ -750,18 +668,13 @@ impl Librespot {
 
     fn playing_here(g: &Inner) -> bool { g.player.get("is_playing").and_then(Value::as_bool).unwrap_or(false) }
     fn active_here(g: &Inner) -> bool { Self::running(g) && g.player.get("active").and_then(Value::as_bool).unwrap_or(false) }
-    /// librespot is busy skipping songs Spotify won't unlock: silence is expected, don't restart anything.
     fn refused_recently(g: &Inner) -> bool { within(g.last_song_refusal, 15) }
 
-    /// Spotify sometimes refuses to unlock a song ("error audio key 0 2"). It's per song and temporary:
-    /// librespot skips it and the next one usually plays. Log it, tell autoplay to leave it out a while, carry on.
     fn key_refused(&self, uri: String) {
         let mut g = self.inner.lock().unwrap();
         g.last_song_refusal = Some(Instant::now());
         g.refusals.retain(|_, t| t.elapsed() < Duration::from_secs(600));
         if uri.is_empty() { return; }
-        // Logged once per song, but the page hears about every refusal: it counts them to stop a chain of
-        // them, and a chain often goes back through songs that were refused a few minutes earlier.
         if g.refusals.insert(uri.clone(), Instant::now()).is_none() {
             push_log(&mut g, format!("Spotify won't unlock {uri} right now; librespot skips it and the next song plays."));
         }
@@ -769,8 +682,6 @@ impl Librespot {
         (self.emit)("engine.refused", json!({"uri": uri}));
     }
 
-    /// A song that didn't load only because Spotify was slow to send its key (often just before a dropped
-    /// connection) gets one more try. A song that's really unavailable fails again and is skipped for good.
     fn retry_later(self: &Arc<Self>, uri: String) {
         let mut g = self.inner.lock().unwrap();
         if g.refusals.contains_key(&uri) || !within(g.last_key_failure, 20) || within(g.last_drop, 45) || !Self::active_here(&g) { return; }
@@ -781,7 +692,6 @@ impl Librespot {
             drop(g);
             self.retry_now(uri);
         } else {
-            // Usually it's the next song, failing while it got ready: let this one finish, then go back for it.
             g.pending_retry = Some(uri);
             push_log(&mut g, "Spotify was slow to send that song's key: Cadenza will try it again after this song.".into());
         }
@@ -796,7 +706,6 @@ impl Librespot {
         });
     }
 
-    /// Where the engine is right now ({uri, position_ms, duration_ms, at}), or None if nothing's here.
     fn position_snapshot(g: &Inner) -> Option<Value> {
         let uri = g.player.get("uri").and_then(Value::as_str).filter(|u| !u.is_empty())?;
         if !Self::active_here(g) { return None; }
@@ -808,10 +717,6 @@ impl Librespot {
         Some(json!({"uri": uri, "position_ms": pos, "duration_ms": dur, "at": now as i64}))
     }
 
-    /// Spotify dropped the engine's connection while music was playing here: restart librespot straight
-    /// away and hand the page what was playing and where, so it starts the same playlist (or DJ set, radio,
-    /// true shuffle) at the same song and second. Not playing here: librespot reconnects by itself, and a
-    /// check makes sure Spotify still lists Cadenza.
     fn session_dropped(self: &Arc<Self>, reason: &str, was_active: bool) {
         let mut g = self.inner.lock().unwrap();
         if !self.settings.bool("manageLibrespot") || !Self::running(&g) { return; }
@@ -826,26 +731,23 @@ impl Librespot {
         let mut snapshot = Self::position_snapshot(&g).unwrap_or(json!({}));
         if let Some(m) = snapshot.as_object_mut() { m.remove("at"); }
         push_log(&mut g, format!("Spotify closed the engine's connection ({reason}): restarting it now and picking up where you were."));
-        g.player.insert("is_playing".into(), json!(false));     // the new librespot says "playing" once it really is
+        g.player.insert("is_playing".into(), json!(false));
         self.emit_player(&mut g);
         drop(g);
         self.restart_then_resume(Some(snapshot), 15.0);
     }
 
-    /// Restart librespot and pick the music back up: the page resumes from `spot` if given (it knows the
-    /// playlist), otherwise playback is handed back to Cadenza as it was.
     fn restart_then_resume(self: &Arc<Self>, spot: Option<Value>, timeout: f64) {
         self.restart();
         let me = Arc::clone(self);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(700));
             if !me.wait_running(timeout) { return; }
-            std::thread::sleep(Duration::from_millis(1200));     // a moment for Spotify to list the new librespot
+            std::thread::sleep(Duration::from_millis(1200));
             match &spot {
                 Some(s) if s.get("uri").is_some() => (me.emit)("engine.resume", s.clone()),
                 _ => { let m = Arc::clone(&me); tauri::async_runtime::spawn(async move { m.transfer_here(true, 10).await; }); }
             }
-            // If nothing is playing a little later (the page couldn't), fall back to a plain hand-over.
             std::thread::sleep(Duration::from_secs(10));
             if !Self::playing_here(&me.inner.lock().unwrap()) {
                 me.note("Still nothing playing after the restart: handing the music back to Cadenza.");
@@ -855,8 +757,6 @@ impl Librespot {
         });
     }
 
-    /// A few seconds after playback starts here, check the sound is really coming through. If librespot
-    /// says it's playing but no sound has reached Cadenza, restart it (at most once a minute).
     fn check_sound(self: &Arc<Self>) {
         let me = Arc::clone(self);
         std::thread::spawn(move || {
@@ -882,12 +782,8 @@ impl Librespot {
         self.restart_then_resume(spot, 12.0);
     }
 
-    /// Every 2 s while music plays here: no sound for 9 s means the engine has stalled (the output itself
-    /// is reopened by the sound watchdog). Only if Spotify agrees it's playing here, restart librespot and
-    /// pick the song back up; otherwise a missed "paused" report would un-pause the music by itself.
     fn watch_sound(self: &Arc<Self>) {
         let mut g = self.inner.lock().unwrap();
-        // You just paused: Cadenza stops the sound itself before Spotify confirms, so silence is expected.
         let paused_here = self.sound.locally_paused_at().map_or(false, |t| t.elapsed() < Duration::from_secs(12));
         let stalled = Self::running(&g) && Self::playing_here(&g) && Self::active_here(&g) && self.sound.seconds_since_audio() > 3.0
             && !Self::refused_recently(&g) && !paused_here;
@@ -913,9 +809,6 @@ impl Librespot {
         });
     }
 
-    /// The sound is the best evidence: librespot only sends it while playing. If sound has kept arriving
-    /// for a few seconds but librespot's last report said paused or stopped (reports can be missed around a
-    /// song change), show it as playing instead of leaving the page thinking the song stopped early.
     fn follow_the_sound(&self) {
         let mut g = self.inner.lock().unwrap();
         if !Self::running(&g) { g.flowing_ticks = 0; return; }
@@ -928,8 +821,6 @@ impl Librespot {
         self.emit_player(&mut g);
     }
 
-    /// After the computer wakes up, or the connection drops while nothing plays here, librespot's link to
-    /// Spotify is often dead although it still runs. A little later, check Spotify still lists Cadenza.
     pub fn schedule_device_check(&self, after_secs: u64, reason: &str) {
         self.inner.lock().unwrap().device_check_at = Some((Instant::now() + Duration::from_secs(after_secs), reason.to_string()));
     }
@@ -949,7 +840,6 @@ impl Librespot {
 
     // MARK: making sure Spotify sees Cadenza as a speaker
 
-    /// Moves Spotify playback to this librespot (keeps the position).
     pub async fn transfer_here(&self, play: bool, attempts: u32) -> bool {
         let name = self.settings.device_name();
         for _ in 0..=attempts {
@@ -968,8 +858,6 @@ impl Librespot {
         false
     }
 
-    /// The page couldn't find Cadenza among Spotify's speakers: start librespot if it isn't running, or
-    /// restart it if Spotify doesn't list it. True when it is (or should now be) listed.
     pub async fn check_device(self: &Arc<Self>) -> bool { self.check_device_because("the page couldn't find it").await }
 
     async fn check_device_because(self: &Arc<Self>, reason: &str) -> bool {
@@ -1019,7 +907,6 @@ impl Librespot {
     }
 }
 
-/// The librespot built into Cadenza (librespot.sh's pinned commit, set by build.rs).
 const LIBRESPOT_VERSION: &str = match option_env!("CADENZA_LIBRESPOT_VERSION") { Some(v) => v, None => "0.8.0" };
 
 fn push_log(g: &mut Inner, line: String) {
@@ -1036,14 +923,11 @@ fn restrict(_p: &Path, _mode: u32) {
     }
 }
 
-/// Leftovers from when librespot ran as a separate program: its events file, and on Windows the copy of
-/// Cadenza.exe it ran to report events (in a folder under ProgramData, named in event-hook-folder.txt).
 fn tidy_old_engine_files() {
     let _ = std::fs::remove_file(files::path("librespot-events.txt"));
     let note = files::path("event-hook-folder.txt");
     if let Ok(dir) = std::fs::read_to_string(&note) {
         let dir = PathBuf::from(dir.trim());
-        // Only a folder Cadenza made itself: "cadenza-" and random letters, directly in ProgramData.
         let ours = dir.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.starts_with("cadenza-"))
             && dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).map_or(false, |n| n.eq_ignore_ascii_case("ProgramData"));
         if ours { let _ = std::fs::remove_dir_all(&dir); }
@@ -1058,7 +942,6 @@ mod song_path_tests {
     #[test]
     fn the_two_log_lines_give_the_songs_file_and_loudness() {
         let mut g = Inner::default();
-        // The next song is loaded while this one plays; only the one that starts becomes "the song".
         note_song_path(&mut g, "file <spotify:track:AAA> OGG_VORBIS_320");
         note_song_path(&mut g, "playing <spotify:track:AAA> loudness -2.41 dB (Track)");
         let s = g.song.clone().unwrap();

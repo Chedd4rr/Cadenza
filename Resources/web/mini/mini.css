@@ -1,6 +1,3 @@
-/* The menu-bar mini player: one layout (#dev) restyled by each theme, plus MP3 mode (#stick).
-   The panel is transparent; everything you see, shadows included, is drawn here. */
-
 @font-face { font-family: "Silkscreen"; src: url(fonts/silkscreen-latin-400-normal.woff2) format("woff2"); unicode-range: U+0000-00FF, U+2010-2027, U+2190-21FF, U+25A0-25FF, U+2665; }
 @font-face { font-family: "Silkscreen"; src: url(fonts/silkscreen-latin-ext-400-normal.woff2) format("woff2"); unicode-range: U+0100-024F, U+1E00-1EFF; }
 @font-face { font-family: "Anton"; src: url(../fonts/anton-400.woff2) format("woff2"); }
@@ -21,7 +18,6 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { background: transparent; overflow: hidden; }
-/* Little room on top (the panel hangs right under the menu bar), more below for the shadow. */
 body {
   padding: 4px 18px 24px; width: max-content;
   -webkit-user-select: none; user-select: none; cursor: default;
@@ -268,8 +264,6 @@ body[data-style="theme"] #stick, body[data-style="mp3"] #dev { display: none; }
 [data-theme="min"] .mp3 { --shell: #f1f1ed; --shell-hi: #ffffff; --shell-lo: #c4c4be; --print: #6e7178; --trim: #d6d6d0; --scr: #f6f7f9; --scr-hi: #ffffff; --fg: #16171a; --dim: #6e7178; --acc: #3a5cff; --key: #ffffff; --key-ink: #16171a; --led: #3a5cff; }
 [data-theme="rogue"] .mp3 { --shell: #0c0d09; --shell-hi: #30342a; --shell-lo: #000; --print: #d2ff1f; --trim: #d2ff1f; --scr: #000; --scr-hi: #0d1008; --fg: #d2ff1f; --dim: #8b9a52; --acc: #ff2d6f; --key: #1a1c15; --key-ink: #d2ff1f; --led: #ff2d6f; }
 
-/* The case: a rounded slab with a soft shine, a headphone jack and hold switch on the top edge, and an
-   eyelet for a wrist strap. */
 .mp3 .body { position: relative; border-radius: 24px; padding: 16px 14px 20px;
   background:
     linear-gradient(160deg, rgb(255 255 255 / .38), transparent 32%),
@@ -324,7 +318,6 @@ body[data-style="theme"] #stick, body[data-style="mp3"] #dev { display: none; }
 .playing .led { background: var(--led); box-shadow: 0 0 5px var(--led); }
 .playing.blink .led { opacity: .35; }
 
-/* The round five-way pad: volume up/down, previous/next, and play in the middle. */
 .pad { position: relative; width: 116px; height: 116px; margin: 8px auto 0; border-radius: 50%; background: var(--key);
   background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--key) 100%, #fff 18%), var(--key) 62%, color-mix(in srgb, var(--key) 82%, #000 18%));
   box-shadow: 0 0 0 3px var(--trim), 0 0 0 4px rgb(0 0 0 / .25), 0 3px 4px rgb(0 0 0 / .3), inset 0 1px 0 rgb(255 255 255 / .55); }
@@ -343,5 +336,4 @@ body[data-style="theme"] #stick, body[data-style="mp3"] #dev { display: none; }
 .keys button:active { transform: translateY(1px); box-shadow: 0 1px 0 rgb(0 0 0 / .3); }
 .liked .keys #slike { color: #ff2d55; }
 
-/* Reduce motion (set in Cadenza, or the system's setting): no sliding, scrolling or fading. */
 body.reduce *, body.reduce *::before, body.reduce *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }

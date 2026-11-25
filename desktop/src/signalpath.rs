@@ -1,6 +1,3 @@
-//! The signal path: what happens to the sound on its way from Spotify's file to your speakers, one line per
-//! step, and a plain verdict on whether anything changes it. The page shows it (EQ page, key P, and System →
-//! Sound & EQ). It only reports; nothing here changes how the music plays.
 
 use serde_json::{json, Value};
 
@@ -9,13 +6,10 @@ use crate::settings::Settings;
 use crate::sound::{PathInfo, RATE};
 
 pub struct Input<'a> {
-    /// The song playing in the built-in engine (None before the first song).
     pub song: Option<SongPath>,
-    /// Cadenza is the device playing right now (not your phone, say).
     pub here: bool,
     pub settings: &'a Settings,
     pub out: PathInfo,
-    /// The rate the Mac's output device itself runs at (macOS only).
     pub device_rate: Option<f64>,
 }
 

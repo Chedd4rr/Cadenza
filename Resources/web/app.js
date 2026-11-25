@@ -11,12 +11,8 @@ const h = (tag, cls, text) => {
   if (text != null) e.textContent = text;
   return e;
 };
-// The native side: window.cadenzaNative, which the app puts in the page. Without it, the page is open in
-// a browser and runs in demo mode.
 const bridge = window.cadenzaNative || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native);
 const native = (cmd, args = {}) => (bridge ? bridge.postMessage({ cmd, args }) : Demo.native(cmd, args));
-// What to call the computer Cadenza runs on: "this Mac" on a Mac (and in the browser demo), "this
-// computer" on Windows and Linux.
 const ON_MAC = !window.cadenzaPlatform || window.cadenzaPlatform === "macos";
 const THIS_COMPUTER = ON_MAC ? "this Mac" : "this computer";
 const API_BASE = "https://api.spotify.com/v1";
@@ -26,9 +22,6 @@ const fmt = (ms) => { const s = Math.max(0, Math.floor((ms || 0) / 1000)); retur
 const upper = (s) => String(s || "").toUpperCase();
 const relPath = (url) => (url ? url.replace(API_BASE, "") : null);
 
-// Recently opened pages (playlists, albums, artists) are remembered for a few minutes, so going
-// back to one shows its songs straight away, as part of the slide. Any change you make through
-// the app (adding, moving, removing, liking) clears the affected page.
 const PageCache = {
   m: new Map(), ttl: 10 * 60 * 1000,
   get(key, stamp) {
@@ -47,12 +40,8 @@ const PageCache = {
   },
 };
 
-// When Spotify says "too many requests", background work (status checks, tagging, device lists)
-// pauses until Spotify's cool-down is over, so the things you click still go through.
 let coolUntil = 0;
 const cooling = () => Date.now() < coolUntil;
-// Background-only work (playlist tagging) waits until the app has been open a while and you've
-// stopped clicking and typing for a bit, so it never competes with what you're doing.
 const launchedAt = Date.now();
 let lastInput = Date.now();
 ["keydown", "pointerdown", "wheel"].forEach((t) => addEventListener(t, () => { lastInput = Date.now(); }, { capture: true, passive: true }));
@@ -86,7 +75,6 @@ async function api(method, path, body) {
 const Direct = {
   done: 0, fell: 0, why: "",                                     // (for diagnostics)
   on: () => S.settings.manageLibrespot !== false,
-  /** The same request, done in the engine: a 204-style answer, or null to use the web interface. */
   async run(method, path, body) {
     if (!this.on()) return null;
     const [p, qs] = path.split("?"), q = new URLSearchParams(qs || "");
@@ -106,7 +94,6 @@ const Direct = {
           from_uri: body.offset && body.offset.uri || undefined,
           from_index: body.offset && body.offset.position != null ? body.offset.position : undefined,
           position: body.position_ms || 0,
-          // A list of songs plays in Cadenza's order; a playlist or album keeps Spotify's shuffle if it's on.
           shuffle: !!(body.context_uri && pl.shuffle_state && !TrueShuffle.active),
           repeat: pl.repeat_state || "off",
         });
@@ -119,7 +106,6 @@ const Direct = {
     else if (method === "PUT" && p === "/me/player/volume") Object.assign(args, { action: "volume", volume: +q.get("volume_percent") || 0 });
     else if (method === "PUT" && p === "/me/player/shuffle") Object.assign(args, { action: "shuffle", state: q.get("state") === "true" });
     else if (method === "PUT" && p === "/me/player/repeat") {
-      // A list of Cadenza's repeats in the line-up (the engine only knows the song playing); repeat-one is the engine's.
       const st = q.get("state") || "off";
       Lineup.repeat = st === "context";
       Object.assign(args, { action: "repeat", state: Lineup.list && st === "context" ? "off" : st });
@@ -128,12 +114,11 @@ const Direct = {
     else if (method === "POST" && p === "/me/player/queue") Object.assign(args, { action: "queue", uri: q.get("uri") });
     else return null;
     const r = await native("player.direct", args).catch(() => null);
-    // Play with nothing loaded (the list ran out): like Spotify's "no active device", so Play starts something.
     if (r && r.reason === "nothing loaded") return { status: 404, body: null, direct: true };
     if (!r || !r.ok) { this.fell++; this.why = `${args.action}: ${(r && r.reason) || "no answer"}`; return null; }
     this.done++;
     (window.__direct = window.__direct || []).push(args.action);   // (for tests)
-    if (args.action === "load") Lineup.reset(true);               // a playlist or album: the engine plays it; Cadenza's queue starts empty
+    if (args.action === "load") Lineup.reset(true);
     setTimeout(poll, 500);
     return { status: 204, body: null, direct: true };
   },
@@ -151,7 +136,6 @@ const Lineup = {
   K: 6, repeat: false,
   list: null, at: 0, sent: [], busy: false, again: false, why: "", meta: new Map(),
   on: () => Direct.on(),
-  /** Play `list` (song URIs) from place `from`, `position` ms into that song. */
   async play(list, from = 0, position = 0, device_id) {
     from = Math.min(Math.max(0, from), list.length - 1);
     const r = await native("player.direct", { action: "load", tracks: [list[from]], position, device_id, repeat: "off" }).catch(() => null);
@@ -161,23 +145,16 @@ const Lineup = {
     this.sync();
     return true;
   },
-  /** Carry on with `list` from place `at`, without touching the song that's playing (true shuffle taking
-   *  over a playlist that's already playing, or a fresh shuffle after the last song). */
   adopt(list, at = 0) { this.list = list.slice(); this.at = at; this.clear().then(() => this.sync()); },
-  /** A playlist or album is playing as itself (or something else took over): no list of Cadenza's. */
   reset(clear) { this.list = null; this.at = 0; if (clear) this.clear().then(() => this.sync()); else this.sent = []; },
   async clear() { this.sent = []; await native("player.direct", { action: "clear" }).catch(() => null); },
-  /** What should come next, in order: Up Next, then autoplay's picks or the rest of the list. */
   upcoming() {
     const out = UpNext.items.map((t) => t.uri), up = new Set(out);
     if (Radio.active) out.push(...Radio.upcoming().map((t) => t.uri).filter((u) => !up.has(u) && !refusedLately(u)));
     else if (this.list) {
       let rest = this.list.slice(this.at + 1);
-      // Repeat (a plain list; true shuffle reshuffles instead): round again from the top.
       if (this.repeat && !TrueShuffle.active) rest = rest.concat(this.list.slice(0, this.at + 1));
-      rest = rest.filter((u) => !up.has(u) && !refusedLately(u));   // (an Up Next song plays there instead; a refused one is left out)
-      // True shuffle: a song heard already in this playthrough (the same song twice in the playlist, the
-      // single and the album version) isn't lined up again.
+      rest = rest.filter((u) => !up.has(u) && !refusedLately(u));
       if (TrueShuffle.active) rest = rest.filter((u) => {
         if (TrueShuffle.heard.has(u)) return false;
         const m = TrueShuffle.meta.get(u), key = m ? TrueShuffle.songKey(m.name, m.artists && m.artists[0] && m.artists[0].name) : "";
@@ -187,13 +164,9 @@ const Lineup = {
     }
     return out;
   },
-  /** Make the engine's queue hold the next K songs of the line-up. Only the difference is sent; if
-   *  something changed among the ones already there, the queue is cleared and filled again. */
   async sync() {
     if (!this.on()) return;
     if (this.busy) { this.again = true; return; }
-    // While Spotify is refusing songs, changing the engine's queue makes it look up more songs and ask for
-    // more keys, which keeps the refusals going. Wait until its pause is over.
     if (S.holdUntil && Date.now() < S.holdUntil) { clearTimeout(this.holdT); this.holdT = setTimeout(() => this.sync(), S.holdUntil - Date.now() + 500); return; }
     this.busy = true;
     try {
@@ -204,20 +177,16 @@ const Lineup = {
         if (!r || !r.ok) break;
         this.sent.push(u);
       }
-      // Autoplay keeps the songs already handed over where they are when it re-sorts the rest.
       if (Radio.active) Radio.qd = this.sent.filter((u) => Radio.order.some((t, k) => k > Radio.at && t.uri === u));
     } finally {
       this.busy = false;
       if (this.again) { this.again = false; this.sync(); }
     }
   },
-  /** A song started: what's left in the engine's queue, and where the list is. */
   onTrack(uri) {
     if (!this.on() || !uri) return;
     const k = this.sent.indexOf(uri);
     if (k >= 0) this.sent = this.sent.slice(k + 1);
-    // Something else is playing now (your phone started a playlist on Cadenza, say): the list is over, and
-    // its songs come out of the engine's queue so they don't follow what you picked.
     const known = k >= 0 || (this.list && this.list.includes(uri)) || UpNext.items.some((t) => t.uri === uri) || (Radio.active && Radio.order.some((t) => t.uri === uri));
     if (!known && this.list && Date.now() - (this.playedAt || 0) > 4000) { this.reset(true); return; }
     if (this.list) {
@@ -225,9 +194,8 @@ const Lineup = {
       const j = i >= 0 ? i : this.list.indexOf(uri);
       if (j >= 0) this.at = j;
     }
-    setTimeout(() => this.sync(), 0);                            // (once Up Next, autoplay and the rest have moved on)
+    setTimeout(() => this.sync(), 0);
   },
-  /** The engine ran out (skipping faster than the queue): play the line-up's next song. True if there was one. */
   async ranOut() {
     if (!this.on() || Date.now() - (this.ranAt || 0) < 1500) return false;   // (once: the engine can say it twice)
     const next = this.upcoming()[0];
@@ -236,27 +204,23 @@ const Lineup = {
     this.sent = [];
     const r = await native("player.direct", { action: "load", tracks: [next], repeat: "off" }).catch(() => null);
     if (!r || !r.ok) return false;
-    // It's played now, so it's off the line-up: the Up Next song, or the list's place moves on.
     if (UpNext.items[0] && UpNext.items[0].uri === next) { UpNext.items.shift(); UpNext.save(); }
     else if (this.list) { const i = this.list.indexOf(next, this.at); if (i >= 0) this.at = i; }
     await this.clear();
     this.sync();
     return true;
   },
-  /** Previous, in a list: back to the start of this song, or (in the first 3 s) the song before. */
   async previous() {
     if (!this.on() || !this.list) return null;
     if (progressNow() > 3000) return api("PUT", "/me/player/seek?position_ms=0");
-    if (this.at <= 0) return Played.list.length ? null : api("PUT", "/me/player/seek?position_ms=0");   // the first song: back to what played before the list
+    if (this.at <= 0) return Played.list.length ? null : api("PUT", "/me/player/seek?position_ms=0");
     TrueShuffle.replayUntil = Date.now() + 5000;
     return (await this.play(this.list, this.at - 1, 0)) ? { status: 204 } : null;
   },
-  /** Play now (Queue page): a song further down the list, carrying on from there. */
   jumpTo(uri) {
     const i = this.list ? this.list.indexOf(uri, this.at + 1) : -1;
     return i < 0 ? Promise.resolve(false) : this.play(this.list, i, 0);
   },
-  /** Swap two songs coming up in the list (moved on the Queue page). */
   swap(a, b) {
     if (!this.list) return false;
     const ia = this.list.indexOf(a, this.at + 1), ib = this.list.indexOf(b, this.at + 1);
@@ -272,7 +236,6 @@ const Lineup = {
     this.sync();
     return true;
   },
-  /** Put a song first in what's coming (an Up Next song moved down past the last one). */
   putFirst(t) {
     if (Radio.active) return Radio.putFirst(t);
     if (!this.list) return;
@@ -294,7 +257,6 @@ const Lineup = {
     this.sync();
     return true;
   },
-  /** Song details for the Queue page (the list itself is only URIs). */
   async details(uris) {
     const missing = uris.filter((u) => !this.meta.has(u) && !TrueShuffle.meta.has(u)).slice(0, 30);
     await Promise.all(missing.map(async (u) => {
@@ -315,7 +277,7 @@ function errMsg(r) {
     case 404: return "NO ACTIVE DEVICE. CHECK THE AUDIO ENGINE IN SYSTEM";
     case 429: {
       const secs = Math.max(+(r.body && r.body.retryAfter) || 0, (coolUntil - Date.now()) / 1000);
-      if (secs > 600) {   // a long block: say when it ends, and what still works
+      if (secs > 600) {
         const t = new Date(Date.now() + secs * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
         return `SPOTIFY HAS PAUSED CADENZA'S CONTROLS UNTIL ${upper(t)}. USE THE SPOTIFY APP TO CONTROL MUSIC UNTIL THEN`;
       }
@@ -347,16 +309,11 @@ let reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const play = (el, frames, opts) => el.animate(frames, { fill: "both", ...opts, ...(reduced ? { duration: 1, delay: 0 } : {}) });
 const settle = (a) => { a.onfinish = () => a.cancel(); return a; };
 
-/** Text that doesn't fit: on the selected item (a list row, a tab, a chip, a drawer choice) it slides along
- *  to show the rest, waits, slides back, and so on; and the mouse gets the whole text as a tooltip. Text
- *  that fits never moves. It scrolls the clipped element itself (no copies of the text), so nothing about
- *  the page changes, and it only works while something is selected. Off with Reduce motion. */
 const Marquee = {
   SPEED: 40,                       // pixels a second
   WAIT: 1200,                      // ms at each end
   runs: new Map(),                 // selected element → [{ n, dist }]
   raf: 0,
-  /** The innermost elements under `el` (and `el` itself) that cut their text off. */
   clipped(el) {
     const all = [el, ...el.querySelectorAll("*")].filter((n) => n.scrollWidth > n.clientWidth && n.clientWidth > 0 && n.textContent.trim());
     return all.filter((n) => {
@@ -369,7 +326,6 @@ const Marquee = {
     const list = this.clipped(el);
     if (!list.length) return;
     list.forEach((n) => { if (!n.title) { n.title = n.textContent.trim(); n.dataset.mqTitle = "1"; } });
-    // Reduce motion: nothing slides; the whole text appears in a small box beside the item instead.
     if (reduced) { this.runs.set(el, []); this.tip(el, list); return; }
     this.runs.set(el, list.map((n) => ({ n, dist: n.scrollWidth - n.clientWidth, t0: performance.now() })));
     list.forEach((n) => n.classList.add("mq"));
@@ -383,7 +339,6 @@ const Marquee = {
     if (this.tipFor === el) this.untip();
   },
   tipFor: null,
-  /** The full text of what's cut off, in a box under (or over) the item. */
   tip(el, list) {
     let box = document.getElementById("fulltext");
     if (!box) { box = document.createElement("div"); box.id = "fulltext"; document.body.appendChild(box); }
@@ -415,7 +370,6 @@ const Marquee = {
     const sel = (c) => /(^|\s)(active|on)(\s|$)/.test(c || "");
     const queue = new Set();
     let pending = 0;
-    // Selection is a class: "active" for list rows, "on" for tabs, chips and menus.
     new MutationObserver((ms) => {
       for (const m of ms) {
         const el = m.target;
@@ -424,10 +378,8 @@ const Marquee = {
         if (now === was) continue;
         if (now) queue.add(el); else { queue.delete(el); this.stop(el); }
       }
-      // Measured once things have settled (a row that was just selected may still be moving into place).
       if (queue.size && !pending) pending = setTimeout(() => { pending = 0; queue.forEach((el) => this.start(el)); queue.clear(); }, 250);
     }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"], attributeOldValue: true });
-    // Buttons and chips under the mouse, which have no "selected" class of their own.
     document.addEventListener("pointerover", (e) => {
       const el = e.target.closest && (e.target.closest("button, .chip, .card, .opt, .trk, .seg") || e.target);
       if (el && el !== document.body && !this.runs.has(el)) setTimeout(() => { if (el.matches(":hover")) this.start(el); }, 250);
@@ -443,8 +395,6 @@ const done = (list) => Promise.all(list.map((a) => a.finished.catch(() => {})));
 const cancelAll = (els) => els.forEach((el) => el && el.getAnimations().forEach((a) => a.cancel()));
 let busy = false;
 const idleWaiters = [];
-// Enter, Esc or Backspace pressed while a page is still sliding in is kept and run the moment the
-// slide finishes, so a quick "open, then back" works.
 let pendingKey = null;
 const setBusy = (v) => {
   busy = v; document.body.classList.toggle("moving", v);
@@ -454,7 +404,6 @@ const setBusy = (v) => {
     if (Date.now() - k.at < 1200) setTimeout(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: k.key, shiftKey: k.shiftKey, altKey: k.altKey, bubbles: true })), 0);
   }
 };
-// Resolves once the page transition has finished, so new rows are built after the animation, not during it.
 const settled = () => (busy ? new Promise((r) => idleWaiters.push(r)) : Promise.resolve());
 
 function onScreen(el) {
@@ -471,13 +420,11 @@ function sweep(dir) {
     [{ transform: `translate3d(${from},0,0) skewX(-20deg)` }, { transform: `translate3d(${to},0,0) skewX(-20deg)` }],
     { duration: 460, delay: i * 45, easing: "cubic-bezier(.55,.05,.35,1)", fill: "none" }));
 }
-// Default motion (the blue theme). A theme can replace any of these with its own `motion`.
 const DEFAULT_MOTION = {
   out: (dir) => [{ transform: "none", opacity: 1 }, { transform: `translate3d(${-dir * 36}vw,0,0) skewX(-24deg)`, opacity: 0 }],
   in: (dir) => [{ transform: `translate3d(${dir * 30}vw,0,0) skewX(-24deg)`, opacity: 0 }, { transform: "none", opacity: 1 }],
   row: (dir) => [{ transform: `translate3d(${dir * 22}vw,0,0)`, opacity: 0 }, { transform: "none", opacity: 1 }],
   outMs: 190, inMs: 300, rowMs: 280, stagger: 24, inEase: SNAP,
-  // small moments: the separate translate/rotate/scale properties, so they stack on any resting transform
   select: { frames: [{ scale: ".86 1" }, { scale: "1 1" }], ms: 220 },                         // home highlight lands
   confirm: { frames: [{ translate: ".8vw 0", scale: "1.04" }, { translate: "0 0", scale: "1" }], ms: 200 },  // Enter / click
   hint: { frames: [{ translate: "-1.6vw 0", opacity: 0 }, { translate: "0 0", opacity: 1 }], ms: 170 },
@@ -519,7 +466,6 @@ const Sfx = {
     const vol = Math.max(0, Math.min(1, (S.settings.sfxVolume ?? 55) / 100)) * (S.player && S.player.is_playing ? 0.6 : 1) * 0.35;
     const out = ctx.createGain(); out.gain.value = vol; out.connect(ctx.destination);
     const t = ctx.currentTime, R = Math.random;
-    // Filter (optionally sweeping) and drive, shared by both sources below.
     const chain = (src, o, at, dur) => {
       let node = src;
       if (o.filt) {
@@ -531,7 +477,6 @@ const Sfx = {
       if (o.drive) { const w = ctx.createWaveShaper(); w.curve = this.curve(o.drive); w.oversample = "2x"; node.connect(w); node = w; }
       return node;
     };
-    // A pitched voice: frequency glides f0 → f1, quick attack, exponential tail.
     const tone = (o) => {
       const at = t + (o.at || 0), dur = o.dur, osc = ctx.createOscillator(), g = ctx.createGain();
       osc.type = o.type || "sine";
@@ -544,7 +489,6 @@ const Sfx = {
       chain(osc, o, at, dur).connect(g); g.connect(out);
       osc.start(at); osc.stop(at + dur + 0.03);
     };
-    // Noise burst; `crush` holds each sample for N samples and rounds it to a few levels (a lo-fi, bit-crushed sound).
     const noise = (o) => {
       const at = t + (o.at || 0), dur = o.dur, len = Math.max(1, Math.ceil(ctx.sampleRate * dur));
       const b = ctx.createBuffer(1, len, ctx.sampleRate), d = b.getChannelData(0), hold = o.crush || 1, lv = o.bits ? 2 ** o.bits / 2 : 0;
@@ -557,12 +501,10 @@ const Sfx = {
       src.buffer = b; g.gain.value = o.gain || 0.5;
       chain(src, o, at, dur).connect(g); g.connect(out); src.start(at);
     };
-    // Blue: a bubble's pitch rises as it closes up, so every "bloop" chirps upward
     const bubble = (at, f, dur = 0.07, gain = 0.6, rise = 1.9) => {
       tone({ type: "sine", f0: f, f1: f * rise, glide: 0.8, at, dur, gain, attack: 0.003, filt: { type: "lowpass", f: f * 3.2 } });
       tone({ type: "sine", f0: f * 2.01, f1: f * rise * 2.01, glide: 0.8, at, dur: dur * 0.5, gain: gain * 0.12 });   // a little wet sparkle
     };
-    // A run of quick pitches (digital chatter): each step jumps straight to the next frequency.
     const steps = (o) => {
       const at = t + (o.at || 0), osc = ctx.createOscillator(), g = ctx.createGain(), dur = o.freqs.length * o.step;
       osc.type = o.type || "square";
@@ -572,7 +514,6 @@ const Sfx = {
       chain(osc, o, at, dur).connect(g); g.connect(out);
       osc.start(at); osc.stop(at + dur + 0.02);
     };
-    // A synthetic "voice": a buzzy tone through two moving formant filters (for the rogue AI).
     const voice = (o) => {
       const at = t + (o.at || 0), dur = o.dur, osc = ctx.createOscillator(), g = ctx.createGain(), mix = ctx.createGain();
       osc.type = "sawtooth"; osc.frequency.setValueAtTime(o.f0, at); osc.frequency.linearRampToValueAtTime(o.f1 || o.f0, at + dur);
@@ -603,14 +544,12 @@ const Sfx = {
           tone({ f0: 110, f1: 230, at: 0, dur: 0.5, gain: 0.35, attack: 0.03 });
           for (let i = 0; i < 11; i++) bubble(i * 0.042 + R() * 0.02, 300 * Math.pow(1.2, i) * (0.9 + R() * 0.2), 0.06 + R() * 0.04, 0.35, 1.9);
         },
-        // Switching to Blue: a wash of water, a rush of bubbles, then a clear bell
         theme: () => {
           noise({ dur: 0.7, gain: 0.25, filt: { type: "lowpass", f: 300, f1: 2200, q: 3 }, curve: 1.4 });
           for (let i = 0; i < 16; i++) bubble(0.05 + i * 0.03 + R() * 0.03, 350 + i * 90 + R() * 200, 0.05 + R() * 0.04, 0.3, 1.8 + R() * 0.4);
           [1046.5, 1568, 2093].forEach((f, i) => tone({ f0: f, at: 0.5 + i * 0.03, dur: 0.9, gain: 0.16 - i * 0.04, attack: 0.005 }));
         },
       },
-      // Red: crisp, metallic and a little jazzy: a sharp hit, a bright two-note stab and a "shing" of steel
       heist: {
         confirm: () => {
           noise({ dur: 0.016, gain: 0.9, filt: { type: "highpass", f: 3000 } });
@@ -637,7 +576,6 @@ const Sfx = {
           noise({ dur: 0.2, gain: 0.5, filt: { type: "bandpass", f: 1200, f1: 8000, q: 5 }, curve: 0.6 });
           tone({ f0: 150, f1: 50, at: 0.15, dur: 0.18, gain: 0.6, drive: 2 });
         },
-        // Switching to Red: two quick slashes, a big jazzy chord stab, and a ringing cymbal
         theme: () => {
           noise({ dur: 0.12, gain: 0.6, filt: { type: "bandpass", f: 800, f1: 7000, q: 3 }, curve: 0.5 });
           noise({ at: 0.13, dur: 0.12, gain: 0.6, filt: { type: "bandpass", f: 7000, f1: 900, q: 3 }, curve: 0.5 });
@@ -647,7 +585,6 @@ const Sfx = {
           noise({ at: 0.27, dur: 0.025, gain: 0.8, filt: { type: "highpass", f: 3000 } });
         },
       },
-      // Neon: low, dirty and digital: sub thuds, overdriven buzz and crushed static
       neon: {
         confirm: () => {
           tone({ f0: 150, f1: 42, at: 0, dur: 0.17, gain: 0.65, drive: 3 });
@@ -674,7 +611,6 @@ const Sfx = {
           noise({ dur: 0.38, gain: 0.35, crush: 9, bits: 3, filt: { type: "bandpass", f: 300, f1: 3200, q: 3 }, curve: 0.4 });
           [0.05, 0.13, 0.2, 0.31].forEach((at) => noise({ at, dur: 0.015, gain: 0.35, crush: 12, bits: 2, filt: { type: "highpass", f: 1500 } }));
         },
-        // Switching to Neon: a power-down drop, a dirty charging whine, glitches, then the system slams on
         theme: () => {
           tone({ type: "sawtooth", f0: 900, f1: 40, at: 0, dur: 0.3, gain: 0.25, drive: 4, filt: { type: "lowpass", f: 2000, f1: 200, q: 3 } });
           tone({ type: "sawtooth", f0: 60, f1: 340, glide: 1, at: 0.25, dur: 0.45, gain: 0.22, attack: 0.2, drive: 5, filt: { type: "lowpass", f: 400, f1: 2600, q: 6 } });
@@ -683,7 +619,6 @@ const Sfx = {
           noise({ at: 0.7, dur: 0.25, gain: 0.35, crush: 10, bits: 3, filt: { type: "lowpass", f: 1800 }, curve: 2 });
         },
       },
-      // Studio: quiet, clean and short, like a well-made pro app (soft taps, gentle chimes)
       min: {
         confirm: () => { tone({ f0: 1320, at: 0, dur: 0.07, gain: 0.22, attack: 0.002 }); noise({ dur: 0.006, gain: 0.25, filt: { type: "highpass", f: 5000 } }); },
         back: () => { tone({ f0: 990, at: 0, dur: 0.07, gain: 0.2, attack: 0.002 }); noise({ dur: 0.006, gain: 0.2, filt: { type: "highpass", f: 5000 } }); },
@@ -697,7 +632,6 @@ const Sfx = {
           tone({ f0: 2349.3, at: 0.34, dur: 0.5, gain: 0.03, attack: 0.008 });
         },
       },
-      // Chroma: warm, glassy chimes in a major chord, like colour blooming
       chroma: {
         confirm: () => { tone({ f0: 1046.5, at: 0, dur: 0.12, gain: 0.18, attack: 0.003 }); tone({ f0: 1568, at: 0.03, dur: 0.14, gain: 0.1, attack: 0.003 }); },
         back: () => { tone({ f0: 1318.5, at: 0, dur: 0.09, gain: 0.15, attack: 0.003 }); tone({ f0: 880, at: 0.05, dur: 0.12, gain: 0.14, attack: 0.003 }); },
@@ -709,7 +643,6 @@ const Sfx = {
           [392, 493.9, 587.3, 784].forEach((f, i) => tone({ f0: f, at: 0.15 + i * 0.09, dur: 1.1, gain: 0.11, attack: 0.02 }));
         },
       },
-      // R0GUE (Ogmi.os): a machine talking to itself: chirping data, ring-modulated beeps, crushed static and a voice-like buzz
       rogue: {
         confirm: () => {
           steps({ freqs: [1800, 2700, 1350, 3600], step: 0.016, gain: 0.16, filt: { type: "bandpass", f: 2400, q: 1.2 } });
@@ -736,8 +669,6 @@ const Sfx = {
           tone({ f0: 90, f1: 28, at: 0.9, dur: 0.6, gain: 0.9, drive: 3 });
           noise({ at: 0.9, dur: 0.3, gain: 0.4, crush: 16, bits: 2, filt: { type: "lowpass", f: 3000 }, curve: 2 });
         },
-        // The takeover (5.3 s, matched to the animation): an alarm, static that keeps climbing, a heartbeat
-        // that speeds up, Ogmi.os's voice, and one huge hit as the theme lands
         breach: () => {
           for (let i = 0; i < 10; i++) steps({ at: i * 0.26, freqs: [i % 2 ? 660 : 880], step: 0.18, gain: 0.12, filt: { type: "bandpass", f: 1100, q: 2 }, drive: 4 });
           noise({ dur: 5.2, gain: 0.3, crush: 6, bits: 3, filt: { type: "bandpass", f: 160, f1: 6500, q: 2.5 }, curve: 0.12 });
@@ -750,7 +681,6 @@ const Sfx = {
           noise({ at: 5.3, dur: 0.7, gain: 0.55, crush: 20, bits: 2, filt: { type: "lowpass", f: 5000, f1: 300 }, curve: 1.5 });
           steps({ at: 5.35, freqs: [2400, 3600, 4800], step: 0.03, gain: 0.12, filt: { type: "highpass", f: 1500 } });
         },
-        // Ogmi.os blocking a theme change: an alarm buzz, a slammed door of static, and a low "no"
         deny: () => {
           [0, 0.16].forEach((at) => tone({ type: "square", f0: 220, f1: 196, at, dur: 0.13, gain: 0.3, drive: 5, filt: { type: "lowpass", f: 1800 } }));
           noise({ at: 0.02, dur: 0.18, gain: 0.45, crush: 10, bits: 2, filt: { type: "bandpass", f: 900, q: 1.5 } });
@@ -765,8 +695,6 @@ const Sfx = {
           for (let i = 0; i < 8; i++) noise({ at: 0.1 + R() * 0.8, dur: 0.02 + R() * 0.03, gain: 0.35, crush: 6 + Math.floor(R() * 14), bits: 2, filt: { type: "highpass", f: 1200 } });
           voice({ at: 0.5, f0: 62, f1: 44, dur: 0.9, gain: 0.55, a0: 650, a1: 260, b0: 900, b1: 2400, drive: 5 });
         },
-        // Third try: Ogmi.os loses its grip. 2.8 s of glitch storm (stuttering data, crushed static,
-        // its voice breaking up), then a power-down as it lets go
         fight: () => {
           noise({ dur: 3, gain: 0.28, crush: 8, bits: 2, filt: { type: "bandpass", f: 500, f1: 3000, q: 1.5 }, curve: 0.3 });
           for (let i = 0; i < 26; i++) noise({ at: R() * 2.6, dur: 0.02 + R() * 0.06, gain: 0.4, crush: 4 + Math.floor(R() * 24), bits: 2, filt: { type: "bandpass", f: 300 + R() * 5000, q: 2 } });
@@ -780,7 +708,6 @@ const Sfx = {
           tone({ type: "square", f0: 880 + R() * 400, at: 0, dur: 0.05, gain: 0.14, drive: 3, filt: { type: "lowpass", f: 3500 } });
           tone({ type: "square", f0: 440 + R() * 200, at: 0.055, dur: 0.07, gain: 0.14, drive: 3, filt: { type: "lowpass", f: 3000 } });
         },
-        // the cut to white: everything stops at once, one bright crack and a ringing tone
         whiteout: () => {
           noise({ dur: 0.08, gain: 0.7, filt: { type: "highpass", f: 2000 } });
           tone({ f0: 120, f1: 28, at: 0, dur: 0.7, gain: 0.9, drive: 3 });
@@ -794,22 +721,17 @@ const Sfx = {
       },
     };
     const set = SOUNDS[theme] || SOUNDS.tide;
-    // A sound is built from random values, and WebAudio throws on a few of them (a ramp to exactly zero,
-    // say). A click sound must never break what it accompanies, so a failed one is just skipped.
     try { (set[kind] || set.confirm)(); } catch (e) { /* no sound this time */ }
   },
 };
 window.cadenzaSfx = (kind, theme) => Sfx.play(kind, theme);       // lets a theme play its own sounds
-/** What's playing, for themes that want to comment on it (the secret one does, rudely). */
 window.cadenzaNow = () => {
   const p = S.player, it = p && p.item;
   return it ? { uri: it.uri, title: cleanTitle(it.name), artist: String(it.artists || "").split(", ")[0], album: it.album,
     playing: !!p.is_playing, liked: !!S.liked, volume: p.volume, shuffle: !!p.shuffle_state, repeat: p.repeat_state } : null;
 };
-// Browsers only allow sound after the first key press or click; wake the audio up then.
 ["keydown", "pointerdown"].forEach((ev) => addEventListener(ev, () => Sfx.ready(), { once: true, capture: true }));
 
-/** Quick confirm "pop" on an element, plus a screen shake if the theme wants one. */
 function pop(el, sound = "confirm") {
   if (!el) return;
   Sfx.play(sound);
@@ -819,10 +741,6 @@ function pop(el, sound = "confirm") {
   if (m.shake && !reduced) play($("views"), [{ translate: "0 0" }, { translate: "-.5vw .35vh" }, { translate: ".45vw -.3vh" }, { translate: "-.25vw .15vh" }, { translate: "0 0" }], { duration: 220, easing: "linear", fill: "none" });
 }
 const motion = () => ({ ...DEFAULT_MOTION, ...((Theme.current && Theme.current.motion) || {}) });
-// Movement goes on top of an element's own resting transform (its tilt or skew), so nothing snaps
-// when an animation ends. The resting transform is written into every keyframe, because WebKit can't
-// run composite:"add" animations on the GPU. On the GPU they keep gliding even while the app is busy
-// loading a playlist or building rows.
 const identityOf = (t) => t.replace(/([a-zA-Z0-9]+)\(([^)]*)\)/g, (m, fn, args) =>
   /^matrix/.test(fn) ? m : `${fn}(${args.split(",").map(() => (/^scale/.test(fn) ? "1" : /^(rotate|skew)/.test(fn) ? "0deg" : "0px")).join(",")})`);
 function fly(el, frames, opts) {
@@ -833,7 +751,7 @@ function fly(el, frames, opts) {
   const keys = frames.map((f, i) => ({
     transform: base + (moving[i] || identityOf(shape)),
     opacity: f.opacity == null ? 1 : f.opacity,
-    ...(f.offset != null ? { offset: f.offset } : {}),      // themes can use multi-step keyframes (e.g. a flicker)
+    ...(f.offset != null ? { offset: f.offset } : {}),
   }));
   return [play(el, keys, opts)];
 }
@@ -855,9 +773,6 @@ function revealRows(container, dir = 1) {
 /* =====================================================================
    Themes: each lives in themes/<id>/ (theme.css + theme.js), listed in themes/themes.js
    ===================================================================== */
-/** "Album covers in the theme's colours" (System → Preferences). Each cover is turned into shades of
- *  three colours from the theme (dark, accent, light, set as --tone-dark/-mid/-light in the theme's CSS)
- *  with one SVG filter, so the real artwork is untouched and switching back is instant. */
 const Covers = {
   filter: null,
   refresh() {
@@ -884,7 +799,6 @@ const Covers = {
 const Theme = {
   list: (window.THEMES && window.THEMES.length) ? window.THEMES : [{ id: "tide", name: "TIDE · BLUE" }],
   defs: {}, links: {}, loading: {}, current: null,
-  // Older builds saved these ids; map them to the renamed themes so the choice survives.
   alias: { p3: "tide", p5: "heist", cp: "neon" },
   meta(id) { id = this.alias[id] || id; return this.list.find((t) => t.id === id) || this.list[0]; },
   /** Themes you can cycle to and pick (secret ones stay out). */
@@ -923,15 +837,12 @@ const Theme = {
     Covers.refresh();
     if (def.onArt) def.onArt(shownImage || null, this.helpers());
   },
-  /** What a theme's onArt hook gets: a way to fetch a cover's pixels, and to say its colours changed. */
   helpers() {
     return {
-      // A cover as a data: URL, so a theme can read its pixels (a web image would be off limits).
       dataURL: async (url) => { if (!bridge) return url; try { return await native("cover.dataURL", { url }); } catch (e) { return null; } },
       recolored: () => { Viz.colors = null; Viz.drewQuiet = false; Covers.refresh(); },
     };
   },
-  /** Re-run every piece of text the theme styles itself (menu labels, headers, clock). */
   redecorate() {
     document.querySelectorAll("[data-title]").forEach((el) => this.text(el, el.dataset.title, el.dataset.kind || "header"));
     views.home.update();
@@ -947,7 +858,7 @@ const Theme = {
     animate = animate && !reduced && this.current;
     if (animate) {
       setBusy(true);
-      Sfx.play("theme", id);                                // the sound belongs to the theme that's arriving
+      Sfx.play("theme", id);
       const cs = getComputedStyle(document.documentElement);
       const look = def.cover || { background: cs.getPropertyValue("--navy").trim(), borderRight: "3vw solid " + cs.getPropertyValue("--cyan").trim(), clipPath: "none" };
       Object.assign(cover.style, { background: "", borderRight: "", clipPath: "" }, look);
@@ -960,21 +871,18 @@ const Theme = {
     this.redecorate();
     if (document.fonts && document.fonts.ready) await Promise.race([document.fonts.ready, wait(600)]);
     this.redecorate();                                     // re-measure once the theme's fonts are in
-    // Fonts and late stylesheet rules can shift the layout a moment later: measure once more so the
-    // Home highlight sits on the right row.
     setTimeout(() => { if (this.current === def && !busy) this.redecorate(); }, 450);
     if (animate) {
       const b = play(cover, [{ transform: "translate3d(0,0,0) skewX(-20deg)" }, { transform: "translate3d(170vw,0,0) skewX(-20deg)" }],
         { duration: 420, easing: "cubic-bezier(.6,0,.3,1)" });
       const c = current();
       const ins = c ? animateIn(c.view.el, 1) : [];
-      sweep(1);                                            // the new theme's own transition plays over the reveal
+      sweep(1);
       await done([b, ...ins]);
       a.cancel(); b.cancel();
       setBusy(false);
     }
   },
-  /** Themes can draw text their own way (e.g. collage letters). Default: plain text. */
   text(el, text, kind, opts = {}) {
     const key = (this.current ? this.current.id : "") + "|" + kind + "|" + text + "|" + (opts.active ? 1 : 0);
     if (el.dataset.tkey === key) return;
@@ -1014,9 +922,6 @@ function setKeys(list) {
   }
   fitKeys();
 }
-/** When a page has more key hints than fit (they'd run under the now-playing panel in some themes), make
- *  them a little smaller, then leave out the obvious ones (arrows), then the least important (from the
- *  end, keeping ESC). Every key still works; the Keyboard page lists them all. */
 function fitKeys() {
   const k = $("keys");
   const over = () => k.scrollWidth > k.clientWidth + 1;
@@ -1096,23 +1001,15 @@ function pickImage(images, big) {
   const fit = sorted.filter((i) => (i.width || 640) >= 120);
   return (fit.length ? fit[fit.length - 1] : sorted[sorted.length - 1]).url;
 }
-// Images are downloaded and decoded off the main thread before they're shown, so a cover
-// arriving mid-transition doesn't stall the animation.
 const decodedImages = new Set();
-// A cover that had to be downloaded fades in instead of popping. (Covers you've already seen appear instantly.)
 function fadeIn(el) {
   if (reduced || !el.isConnected) return;
-  // Resting in the background (or hidden), there's no one to see a fade: just show the cover.
   if (document.hidden || document.body.classList.contains("paused")) return;
   const cur = getComputedStyle(el).animationName;
   if (cur !== "none") return;                          // don't fight an element's own theme animation
-  // A Web Animation, not a CSS one: the CSS pause Cadenza uses while resting would freeze a CSS fade
-  // on its first frame and leave the cover blank. This one can't be paused that way, and it leaves
-  // nothing behind when it ends (fill: none), so the cover always ends up fully visible.
   if (el._fade) el._fade.cancel();
   el._fade = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: "ease-out", fill: "none" });
 }
-/** The Liked Songs cover: the theme's --liked-bg with a drawn heart (a font's ♥ looks different everywhere). */
 function likedCover() {
   const d = h("div", "liked-cover");
   d.append(icon("heartFill"));
@@ -1120,7 +1017,7 @@ function likedCover() {
 }
 function setBg(el, url) {
   el._bg = url || null;
-  el.classList.add("art-img");                                  // so "album covers in the theme's colours" can find it
+  el.classList.add("art-img");
   if (!url) { el.style.backgroundImage = "none"; return; }
   const css = `url("${String(url).replace(/"/g, "%22")}")`;
   if (decodedImages.has(url)) { el.style.backgroundImage = css; return; }
@@ -1287,7 +1184,7 @@ async function transition(from, to, dir, isBack) {
     if (from && from.view.leave) from.view.leave();
     sweep(-dir);
     const outs = from ? animateOut(from.view.el, dir) : [];
-    if (from) await wait(110);                       // overlap: the next menu arrives while this one leaves
+    if (from) await wait(110);
     document.body.dataset.view = to.name;
     setKeys(to.view.keys ? to.view.keys() : []);
     to.view.el.hidden = false;
@@ -1316,12 +1213,9 @@ async function findDevice() {
   return { id: d && d.id, mine: !!mine };
 }
 async function ourDevice() {
-  // Remembered for a minute: asking Spotify for its device list on every skip adds up fast.
   if (ourDevice.id && Date.now() - ourDevice.at < 60000) return ourDevice.id;
   let d = await findDevice();
   if (!d.mine && S.settings.manageLibrespot !== false) {
-    // Spotify has lost Cadenza as a speaker (usually after sleep or a network change). Have the engine
-    // register again, then look for it for a few seconds.
     toast("RECONNECTING CADENZA AS A SPEAKER…");
     const r = await native("engine.ensure").catch(() => null);
     for (let n = 0; r && r.ok && !d.mine && n < 8; n++) { await wait(800); d = await findDevice(); }
@@ -1334,19 +1228,15 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
   if (!fromDJ) DJ.interrupt();
   if (!fromRadio) Radio.stop();
   if (!fromShuffle) TrueShuffle.stop();
-  Radio.firstUri = body.uris ? body.uris[0] : null;   // where a song list "wraps" back to when it ends
-  // A song you chose yourself (not autoplay, the DJ or shuffle moving on): the taste profile counts it as a pick.
+  Radio.firstUri = body.uris ? body.uris[0] : null;
   if (!fromRadio && !fromDJ && !fromShuffle) {
     const u = (body.uris && body.uris[0]) || (body.offset && body.offset.uri);
     S.userPick = u ? { uri: u, at: Date.now() } : null;
   }
   native("audio.local", { action: "skip" }).catch(() => {});      // the old song goes quiet right away
   const fallback = body.fallback; if (fallback) { body = { ...body }; delete body.fallback; }
-  // The engine takes a whole list of songs (true shuffle's order can be thousands, see Lineup); Spotify's
-  // web interface, for another device, only the first few hundred.
   const allUris = body.uris;
   const sendBody = allUris && allUris.length > 300 && !Direct.on() ? { ...body, uris: allUris.slice(0, 300) } : body;
-  // A specific speaker (after the engine restarts, Spotify may still point at the old, dead session).
   const dev = body.device_id; if (dev) { body = { ...body }; delete body.device_id; }
   const playPath = dev ? `/me/player/play?device_id=${enc(dev)}` : "/me/player/play";
   let r = await api("PUT", playPath, sendBody);
@@ -1355,30 +1245,24 @@ async function playBody(body, label, fromDJ, fromRadio, fromShuffle) {
     const id = await ourDevice();
     if (id) r = await api("PUT", `/me/player/play?device_id=${enc(id)}`, sendBody);
   }
-  // A context Spotify won't take (or an offset it can't find): play the plain song list instead.
   if ((r.status === 400 || r.status === 404) && fallback) r = await api("PUT", playPath, fallback);
   else if (r.status === 400 && body.offset && body.offset.position != null && body.context_uri) {
     r = await api("PUT", playPath, { context_uri: body.context_uri });
   }
   if (r.status >= 200 && r.status < 300) {
     if (label) toast("▶ " + upper(label));
-    setTimeout(poll, 400);                                       // (also picks up the new playlist/album, for ⌘S true shuffle)
+    setTimeout(poll, 400);
     return true;
   }
   toast(errMsg(r), true);
   return false;
 }
 
-/** Q / "Add to queue": the song goes into Cadenza's own Up Next (which you can reorder and edit). */
 async function queueTrack(t, front) {
   if (!t || !isTrack(t)) return;
   UpNext.add(t, front);
 }
 
-/** The songs you just heard, newest first, so Previous can go back to them. With the built-in engine every
- *  song is handed over on its own (autoplay, Up Next, a song from search), so the engine itself has nothing
- *  to go back to. Going back puts the song you left first in Up Next, so Next returns to it: like a queue
- *  that runs −3, −2, −1, now, +1… (the Queue page shows the last three). */
 const Played = {
   list: [], back: null, MAX: 50,
   /** The song changed from `prev` to `uri`. */
@@ -1389,9 +1273,6 @@ const Played = {
     if (!t || !/^spotify:track:/.test(t.uri || "") || t.uri === uri) return;
     this.list = [t, ...this.list.filter((x) => x.uri !== t.uri)].slice(0, this.MAX);
   },
-  /** Previous: the start of this song if it's been playing a few seconds, otherwise a song back. Presses in
-   *  quick succession are gathered and play only the last song they reach: loading every song on the way
-   *  asks Spotify for a key each time, and it answers a quick run of those by refusing. */
   burst: null,
   previous() {
     if (!this.burst && progressNow() > 3000) return api("PUT", "/me/player/seek?position_ms=0");
@@ -1408,13 +1289,11 @@ const Played = {
     const target = this.list[steps - 1];
     if (!target) return null;
     const cur = S.player && S.player.item, now = cur && (cur.raw || cur);
-    // What's skipped over on the way back, and the song you were on, come next, in their order.
     const after = [...this.list.slice(0, steps - 1).reverse(), ...(now && /^spotify:track:/.test(now.uri || "") ? [now] : [])];
     this.list = this.list.slice(steps);
     this.back = target.uri;
     for (let k = after.length - 1; k >= 0; k--) UpNext.items.splice(UpNext.fed ? 1 : 0, 0, UpNext.slim(after[k]));
     if (after.length) { UpNext.save(); UpNext.changed(); }
-    // Spotify is refusing songs right now: asking for another one only prolongs it, so wait out its pause.
     if (S.holdUntil && Date.now() < S.holdUntil) {
       toast("SPOTIFY IS REFUSING SONGS · GOING BACK IN " + Math.max(1, Math.round((S.holdUntil - Date.now()) / 1000)) + " S", true);
       await wait(S.holdUntil - Date.now() + 300);
@@ -1442,12 +1321,10 @@ async function cmd(id) {
       break;
     }
     case "next":
-      if (p && p.item) Radio.skipFrom = { uri: p.item.uri, at: Date.now() };     // nothing next? autoplay takes over (Radio.ended)
+      if (p && p.item) Radio.skipFrom = { uri: p.item.uri, at: Date.now() };
       native("audio.local", { action: "skip" }).catch(() => {});
       r = Radio.active && !UpNext.items.length && !UpNext.fed ? await Radio.skip()
         : await api("POST", "/me/player/next");
-      // Spotify forgot which speaker was playing (it answers "no active device"): hand playback back to
-      // Cadenza's speaker, then skip there.
       if (r && r.status === 404) {
         const id = await ourDevice();
         if (id && (await api("PUT", "/me/player", { device_ids: [id], play: true })).status < 300) {
@@ -1457,10 +1334,8 @@ async function cmd(id) {
       }
       break;
     case "previous":
-      TrueShuffle.replayUntil = Radio.replayUntil = Date.now() + 5000;   // going back to a song is on purpose: don't skip it
+      TrueShuffle.replayUntil = Radio.replayUntil = Date.now() + 5000;
       native("audio.local", { action: "skip" }).catch(() => {});
-      // A playlist or album in Cadenza's line-up goes back within it; anything else goes back through the
-      // songs you just heard (the built-in engine only knows the song it's playing).
       r = (Lineup.on() && Lineup.list && await Lineup.previous()) || (Lineup.on() && await Played.previous()) || await api("POST", "/me/player/previous"); break;
     case "shuffle": {
       const on = !(p && p.shuffle_state);
@@ -1468,7 +1343,6 @@ async function cmd(id) {
       if (on && TrueShuffle.enabled() && await TrueShuffle.fromNowPlaying()) break;   // Cadenza shuffles it, truly at random
       r = await api("PUT", `/me/player/shuffle?state=${on}`);
       if (r.status < 300 && p) p.shuffle_state = on;
-      // Spotify says yes, but the speaker can still refuse (librespot won't shuffle autoplay's songs).
       if (r.status < 300) setTimeout(async () => {
         const s = await api("GET", "/me/player?additional_types=track,episode");
         if (s.status === 200 && s.body && s.body.shuffle_state !== on && !TrueShuffle.active) {
@@ -1483,8 +1357,6 @@ async function cmd(id) {
       const order = ["off", "context", "track"];
       const next = order[(order.indexOf((p && p.repeat_state) || "off") + 1) % 3];
       if (TrueShuffle.active && next !== "track") {
-        // True shuffle hands Spotify its own song list, and librespot only keeps the next few songs of a
-        // list like that. Spotify's repeat would loop just those few, so Cadenza loops the whole thing itself.
         TrueShuffle.repeat = next === "context";
         r = await api("PUT", "/me/player/repeat?state=off");
         if (r.status < 300 && p) p.repeat_state = next;
@@ -1504,7 +1376,6 @@ async function cmd(id) {
     }
   }
   views.home.update();
-  // Playing through Cadenza, its own engine reports the change straight away: no need to ask Spotify too.
   if (!Local.active()) setTimeout(poll, 350);
 }
 
@@ -1541,12 +1412,7 @@ const progressNow = () => {
   return Math.min(p.item.duration_ms, p.progress_ms + (p.is_playing ? Date.now() - S.stamp : 0));
 };
 
-// Playback status: the progress bar runs on its own between checks, so Spotify only needs asking
-// every 5 s while playing (right as a song ends, too), every 12 s when paused, and every 30 s when
-// Cadenza is hidden. Anything you do in Cadenza, and media keys, check straight away.
 let pollBusy = false, nextPoll = 0;
-// librespot (Cadenza's own audio engine) reports what it's playing directly, so while music plays
-// through Cadenza there's no need to keep asking Spotify: a check once a minute keeps shuffle/repeat in sync.
 const Local = {
   d: null, at: 0,
   active() { return !!(this.d && this.d.active !== false && this.d.uri && Date.now() - this.at < 6 * 3600e3); },
@@ -1563,8 +1429,6 @@ const Local = {
       uri: d.uri, name, artists, album, image, duration_ms: d.duration_ms || pi.duration_ms || 1,
       raw: same && pi.raw ? pi.raw : { uri: d.uri, name, artists: String(artists || "").split(", ").map((n) => ({ name: n })), album: { name: album, images: image ? [{ url: image, width: 640 }] : [] } },
     };
-    // Only librespot's own "paused"/"stopped" reports mean the music stopped. Losing the Spotify session
-    // (d.active false) can happen while the song keeps playing through Cadenza.
     const playing = !!d.is_playing;
     setPlayer({
       is_playing: playing, shuffle_state: !!prev.shuffle_state, repeat_state: prev.repeat_state || "off", context: prev.context || null,
@@ -1586,11 +1450,6 @@ async function poll() {
   pollBusy = true;
   try {
     const r = await api("GET", "/me/player?additional_types=track,episode");
-    // While music plays through Cadenza's own engine, librespot's reports are the truth: Spotify's
-    // answer is often a few seconds old (or empty) for this kind of device, and taking it would make
-    // the song "rewind", lose its cover or vanish. Only shuffle, repeat and volume come from Spotify.
-    // (Also while librespot still says it's playing after its Spotify session dropped: Spotify then often
-    // answers "nothing playing" for a song that's still coming through Cadenza.)
     const mine = (Local.active() || (Local.d && Local.d.is_playing && Date.now() - Local.at < 30 * 60e3)) && S.player && S.player.item && S.player.item.uri === Local.d.uri;
     if (mine && (r.status === 204 || (r.status === 200 && r.body && (!r.body.device || r.body.device.name === Local.d.device)))) {
       if (r.status === 200) {
@@ -1609,7 +1468,7 @@ async function poll() {
 
 function setPlayer(p) {
   const prevItem = S.player && S.player.item, prevUri = prevItem && prevItem.uri;
-  if (p && TrueShuffle.active) p.shuffle_state = true;           // Cadenza is doing the shuffling (Spotify's is off)
+  if (p && TrueShuffle.active) p.shuffle_state = true;
   if (p && TrueShuffle.active && TrueShuffle.repeat) p.repeat_state = "context";   // and the repeating
   if (p && Lineup.on() && Lineup.list && Lineup.repeat && p.repeat_state === "off") p.repeat_state = "context";   // (Cadenza's line-up repeats)
   S.player = p; S.stamp = Date.now();
@@ -1621,7 +1480,7 @@ function setPlayer(p) {
     if (p && p.item) Radio.heard(p.item);
     Radio.refreshQueue();                                       // the Queue page follows skips and song changes
     const fromUpNext = UpNext.onTrack(uri);
-    Taste.onTrack(p && p.item, fromUpNext);                     // before autoplay moves on, so it knows which songs were its picks
+    Taste.onTrack(p && p.item, fromUpNext);
     views.playlist.markPlaying(); views.album.markPlaying();
     DJ.onTrack(uri, fromUpNext); Radio.onTrack(uri, fromUpNext); TrueShuffle.onTrack(uri, fromUpNext);
     Lineup.onTrack(uri);
@@ -1639,8 +1498,6 @@ function sendNowPlaying(force) {
   const p = S.player, it = p && p.item;
   const theme = Theme.current ? Theme.current.id : "tide";
   const key = (it && it.uri) + "|" + (p && p.is_playing) + "|" + S.liked + "|" + (p && p.volume) + "|" + theme;
-  // Also send when the position jumps (a seek, or Spotify correcting us), so the mini players and
-  // Control Center don't drift from what you hear.
   const pos = it ? progressNow() : 0;
   const expected = lastNativePos + (lastNativePlaying ? Date.now() - lastNativeAt : 0);
   const jumped = Math.abs(pos - expected) > 2000;
@@ -1661,8 +1518,6 @@ async function copyLink(uri, what) {
   try { await native("clipboard", { text: url }); } catch (e) { try { await navigator.clipboard.writeText(url); } catch (_) { /* demo */ } }
   toast("LINK COPIED" + (what ? ": " + upper(what) : ""));
 }
-// Skipping fast asks "is this song liked?" for the same few songs over and over. Ask once per song and
-// reuse the answer for a minute.
 const savedCache = new Map();
 function isSaved(uri) {
   const hit = savedCache.get(uri);
@@ -1753,8 +1608,6 @@ function renderNow() {
     const m = motion();
     const a1 = play(art, m.trackOut.art, { duration: m.trackOut.ms, easing: IN });
     const a2 = play(txt, m.trackOut.text, { duration: m.trackOut.ms, easing: IN });
-    // If Cadenza is hidden mid-change the animations can stall; never let that leave an old song or a
-    // blank cover on screen.
     Promise.race([done([a1, a2]), new Promise((r) => setTimeout(r, m.trackOut.ms + 250))]).then(() => {
       if (shownKey !== key) return;                    // an even newer song took over
       a1.cancel(); a2.cancel();
@@ -1790,7 +1643,6 @@ async function loadMe() {
   if (r.status === 200) S.me = r.body;
   return S.me;
 }
-/** Every item from a paged Spotify list, following "next" until there are `max` (or no more pages). */
 async function pagesOf(path, max) {
   const out = [];
   while (path && out.length < max) {
@@ -1830,9 +1682,6 @@ async function createPlaylist(name) {
   toast("CREATED " + upper(name));
   return pl;
 }
-/** Text from a bit of HTML (Spotify sends playlist descriptions with links and entities). DOMParser builds
- *  an inert document: unlike a div's innerHTML, nothing in it loads or runs, so a booby-trapped
- *  description like <img onerror=…> stays harmless. */
 function plainText(html) {
   if (!html) return "";
   return new DOMParser().parseFromString(html, "text/html").body.textContent || "";
@@ -1851,7 +1700,7 @@ async function editPlaylist(pl) {
     extra: [{ label: "CHANGE COVER", icon: "image", run: () => uploadCover(pl) }],
   });
   if (!v || !v.name) return false;
-  if (v.collaborative) v.public = false;               // Spotify rule: collaborative playlists are private
+  if (v.collaborative) v.public = false;
   const r = await api("PUT", `/playlists/${pl.id}`, { name: v.name, description: v.description, public: v.public, collaborative: v.collaborative });
   if (r.status >= 300) { toast(errMsg(r), true); return false; }
   Object.assign(pl, { name: v.name, description: v.description, public: v.public, collaborative: v.collaborative });
@@ -1876,7 +1725,6 @@ async function uploadCover(pl) {
   }, 2500);
 }
 async function deletePlaylist(pl) {
-  // Spotify "deletes" a playlist by removing it from your library (the owner can recover it later).
   let r = await api("DELETE", `/me/library?uris=${enc(pl.uri)}`);
   if (r.status === 404 || r.status === 405) r = await api("DELETE", `/playlists/${pl.id}/followers`);
   if (r.status >= 300) { toast(errMsg(r), true); return false; }
@@ -1973,7 +1821,6 @@ const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0;
 const DJ = {
   active: false, building: false, segments: [], announced: new Set(), lastLine: "",
   SEG: {
-    // Written the way people talk: short bits, contractions, a little personality.
     repeat: { title: "ON REPEAT", lines: [
       (t, a) => `Okay, let's start with the one you can't stop playing. ${t}. ${a}. You know the words.`,
       (t, a) => `You've had ${a} on loop lately, and fair enough. Here's ${t}.`,
@@ -1994,7 +1841,6 @@ const DJ = {
       (t, a) => `You liked this one ages ago, and then kind of forgot about it. ${t}. ${a}.`,
       (t, a) => `Pulling this one back out of your library. Here's ${t}.`,
       (t, a) => `Hey, remember saving this? ${a}, ${t}.`] },
-    // These two come from Last.fm, so they know your whole history.
     forgotten: { title: "FORGOTTEN FAVOURITES", lines: [
       (t, a, n) => `You've played ${t} ${n} times. Then, a few months ago, you just stopped. Let's fix that.`,
       (t, a, n) => `Here's one you used to wear out. ${n} plays of ${t}, and none lately. ${a}.`,
@@ -2006,7 +1852,6 @@ const DJ = {
       (t, a) => `A year ago, right about now, this was your song. ${a}, ${t}.`,
       (t, a) => `Time travel for a second. One year ago this week: ${t}.`] },
   },
-  /** Extra lines that mention your play count, used when Last.fm knows it. */
   COUNT_LINES: {
     repeat: [(t, a, n) => `${n} plays and counting. You really can't get enough of ${t}, can you? ${a}.`],
     throwback: [(t, a, n) => `Throwback. You've played ${t} ${n} times over the years. ${a}.`],
@@ -2021,7 +1866,6 @@ const DJ = {
     else if (n >= 10 && this.COUNT_LINES[type] && Math.random() < 0.5) lines = this.COUNT_LINES[type];
     return pick(lines)(title, artist, n ? n.toLocaleString() : n);
   },
-  /** Last.fm pools: songs you played a lot but not lately, and what you played a year ago this week. */
   async lastfmPools() {
     const out = { forgotten: [], yearAgo: [] };
     if (!LFM.ready()) return out;
@@ -2090,7 +1934,6 @@ const DJ = {
       }
       return out;
     };
-    // Deep cuts: songs by your top artists that aren't in your library yet.
     const deepPools = [];
     for (const a of shuffle(artists).slice(0, 3)) {
       const r = await api("GET", `/search?type=track&limit=10&q=${enc('artist:"' + a.name + '"')}`);
@@ -2148,8 +1991,6 @@ const DJ = {
     views.dj.render();
     if (played) toast("DJ ON AIR");
   },
-  /** Where a song sits in the set. Spotify sometimes reports a different copy of the same song
-   *  (another release of it), so fall back to matching the title. */
   indexOf(uri) {
     let i = (this.order || []).indexOf(uri);
     if (i >= 0) return i;
@@ -2159,9 +2000,6 @@ const DJ = {
     const t = all.find((x) => cleanTitle(x.name).toLowerCase() === name);
     return t ? this.order.indexOf(t.uri) : -1;
   },
-  /** The set is played as a list of songs, and Spotify (or librespot) sometimes just stops at the end of
-   *  one instead of moving on. Once a second: if a song has ended and nothing new has started a few
-   *  seconds later, start the rest of the set from the next song. */
   watch() {
     if (!this.active || this.advancing) return;
     const p = S.player, it = p && p.item;
@@ -2197,7 +2035,7 @@ const DJ = {
   /** Called whenever the playing track changes. */
   onTrack(uri, fromUpNext) {
     if (!this.active || !uri) return;
-    if (fromUpNext) return;                              // a song from your Up Next: the set carries on after it
+    if (fromUpNext) return;
     const seg = this.segments.find((s) => s.tracks[0] && s.tracks[0].uri === uri);
     if (seg && !this.announced.has(seg)) {
       this.announced.add(seg);
@@ -2210,7 +2048,6 @@ const DJ = {
     }
     if (current() && current().name === "dj") views.dj.render();
   },
-  /** What the DJ says between segments, shown on the DJ page (and, for new segments, as a toast). */
   say(line, fresh) {
     this.lastLine = line;
     views.dj.caption(line);
@@ -2221,10 +2058,8 @@ const DJ = {
 /* =====================================================================
    HOME
    ===================================================================== */
-// Playback controls (play/pause, next, previous, shuffle, repeat) live in the toolbar under Now Playing.
 const HOME_ITEMS = ["dj", "lyrics", "library", "search", "queue", "stats", "eq", "system"];   // Devices lives in System
 
-/** Toolbar under Now Playing: shuffle · previous · play/pause · next · repeat. */
 const Controls = {
   el: $("np-ctrl"),
   init() {
@@ -2306,7 +2141,6 @@ views.home = {
     this.setHint(this.describe(HOME_ITEMS[this.sel]).hint);
     this.intel();
   },
-  /** The info card beside the menu: a live peek at whatever's selected. Uses only what Cadenza already knows (no extra Spotify calls). */
   intel() {
     const id = HOME_ITEMS[this.sel], p = S.player, it = p && p.item;
     const rows = [], covers = [];
@@ -2422,7 +2256,6 @@ views.home = {
   },
   onKey(e) {
     const n = HOME_ITEMS.length;
-    // Themes that lay Home out as a grid of tiles say how many columns (arrows then move in 2D).
     const cols = (Theme.current && Theme.current.homeCols) || 1;
     if (cols > 1 && (e.key === "ArrowRight" || e.key === "ArrowLeft")) { this.select((this.sel + (e.key === "ArrowRight" ? 1 : n - 1)) % n); return true; }
     if (e.key === "ArrowDown") { this.select((this.sel + cols) % n); return true; }
@@ -2487,7 +2320,6 @@ views.library = {
     if (p.kind === "new") return this.create();
     go("playlist", { pl: p });
   },
-  /** New playlist: opens the playlist builder (suggestions, search, moods, drag to order). */
   async create() {
     return go("builder", {});
   },
@@ -2576,8 +2408,6 @@ views.playlist = {
     this.loading = false;
     if (pl !== this.pl) return;
     if (r.status !== 200 || !r.body) { if (first) this.notice(r.status); return; }
-    // Remember each song's real place in the playlist (removed/unavailable entries are skipped here,
-    // but still count in Spotify's numbering), so "play from this song" starts at the right spot.
     const base = r.body.offset || 0;
     const tracks = (r.body.items || []).map((e, k) => { const t = e && (e.item || e.track); if (t) t._pos = base + k; return t; })
       .filter((t) => t && t.uri && t.name);
@@ -2605,19 +2435,14 @@ views.playlist = {
     const uri = S.player && S.player.item && S.player.item.uri;
     this.list.rows.forEach((r, i) => r.classList.toggle("playing", this.list.items[i].uri === uri));
   },
-  /** What to ask Spotify to play. Always the playlist itself as the "context", so after the song you
-   *  picked it carries on through the playlist instead of drifting into Spotify's autoplay. */
   bodyFor(i, shuffle) {
     const pl = this.pl, items = this.list.items, t = i != null ? items[i] : null;
     if (pl.kind !== "liked" && pl.uri) {
       const body = { context_uri: pl.uri };
-      // By position, not by song ID: Spotify sometimes swaps in a regional copy of a song with a
-      // different ID, and then an ID offset isn't found and playback falls out of the playlist.
       if (t) body.offset = t._pos != null ? { position: t._pos } : { uri: t.uri };
       return body;
     }
     if (pl.kind === "liked" && S.me && S.me.id) {
-      // Liked Songs as a context too, so it keeps going through all of them, including the ones not loaded yet.
       const body = { context_uri: `spotify:user:${S.me.id}:collection` };
       if (t) body.offset = { uri: t.uri };
       body.fallback = this.urisFor(i, shuffle);
@@ -2633,16 +2458,13 @@ views.playlist = {
     if (shuffle) uris.sort(() => Math.random() - 0.5);
     return { uris };
   },
-  // Shuffle: start on a random song, then switch Spotify's shuffle on once the playlist is playing
-  // (turned on before the new playlist starts, it doesn't stick and the playlist plays from song 1).
-  // Play All turns shuffle off so the playlist plays in order.
   async playAll(shuffle) {
     if (shuffle && TrueShuffle.enabled() && await TrueShuffle.start(this.pl)) return;   // a true shuffle; else Spotify's
     const pl = this.pl, body = this.bodyFor(null, shuffle);
     const total = body.context_uri ? (plCount(pl) || this.list.items.length) : 0;
     if (shuffle && body.context_uri && total > 1) body.offset = { position: Math.floor(Math.random() * total) };
     if (!(await playBody(body, (shuffle ? "SHUFFLING " : "") + pl.name))) return;
-    for (let n = 0; n < 4; n++) {                     // the new playlist takes a moment to become active
+    for (let n = 0; n < 4; n++) {
       await wait(n ? 700 : 450);
       const r = await api("PUT", `/me/player/shuffle?state=${!!shuffle}`);
       if (r.status < 300) { if (S.player) S.player.shuffle_state = !!shuffle; views.home.update(); return; }
@@ -2697,7 +2519,6 @@ views.playlist = {
     if (await editPlaylist(pl)) { $("pl-name").textContent = pl.name; views.library.filled = false; }
   },
   canReorder() { const pl = this.pl; return !!(pl && !pl.kind && isOwned(pl)); },
-  /** Move a song from one position to another (keyboard ⌥↑/⌥↓ or drag and drop). */
   async move(from, to) {
     const items = this.list.items;
     if (!this.canReorder()) return toast("YOU CAN ONLY REORDER YOUR OWN PLAYLISTS", true);
@@ -2759,7 +2580,6 @@ views.search = {
   leave() { this.input.blur(); clearTimeout(this.timer); },
   schedule() {
     clearTimeout(this.timer);
-    // Lyrics search costs a Genius lookup plus a few Spotify searches: wait until you pause typing.
     this.timer = setTimeout(() => this.run(this.input.value), this.type === "lyrics" ? 700 : 280);
   },
   async run(q) {
@@ -2781,7 +2601,6 @@ views.search = {
     empty.textContent = r.status === 200 ? "NO RESULTS" : errMsg(r);
     revealRows(this.list.el);
   },
-  /** Search → Lyrics: Genius finds songs containing the words; each is then looked up on Spotify. */
   async runLyrics(q) {
     const empty = $("search-empty");
     if (q.length < 6) { this.list.set([]); empty.hidden = false; empty.textContent = "TYPE A LINE FROM THE SONG"; return; }
@@ -2800,7 +2619,6 @@ views.search = {
     const found = await Promise.all(hits.map(async (hit) => {
       const r = await api("GET", `/search?type=track&limit=5&q=${enc(hit.title + " " + hit.artist)}`);
       const items = ((r.body && r.body.tracks && r.body.tracks.items) || []).filter(Boolean);
-      // Prefer the result whose artist and title match Genius's; otherwise the top one.
       return items.find((t) => norm(t.name).includes(norm(hit.title)) && (t.artists || []).some((a) => norm(a.name) === norm(hit.artist)))
         || items.find((t) => (t.artists || []).some((a) => norm(a.name) === norm(hit.artist))) || null;
     }));
@@ -2900,11 +2718,9 @@ views.queue = {
       }
       if (t._feed) { const du = r.querySelector(".du"); if (du) du.textContent = t._feed; }   // true shuffle's (or the DJ's) own order
       if (t._past) { r.classList.add("played"); const du = r.querySelector(".du"); if (du) du.textContent = "−" + t._past + (t._past === 1 ? "  ·  PREVIOUS" : ""); }
-      // Autoplay's picks (the next few already sit in Spotify's queue): say why each one is there.
       const pick = t._radio ? t : !t._up && Radio.active ? Radio.order.find((o, k) => k > Radio.at && o.uri === t.uri) : null;
       if (pick) {
         const du = r.querySelector(".du"); if (du) du.textContent = pick._explore ? "DISCOVER" : "AUTOPLAY";
-        // The reason takes the place of the album and play count, which would push it out of sight.
         const why = Taste.why(pick), ln = r.querySelector(".ti i");
         if (why && ln) { r.__t = null; ln.textContent = artistNames(pick); ln.append(h("em", "why", "  ·  " + why)); }
       }
@@ -2922,16 +2738,12 @@ views.queue = {
     await settled();
     const now = r.body && r.body.currently_playing;
     const q = ((r.body && r.body.queue) || []).filter(Boolean);
-    // The Up Next song already handed to Spotify shows up in its queue too: list it once, as Up Next.
     if (UpNext.fed) { const k = q.findIndex((t) => t.uri === UpNext.fed); if (k >= 0) q.splice(k, 1); }
-    // With autoplay on, Spotify lists the rest of the album (or playlist) the song was started from after
-    // autoplay's picks. That isn't what plays next (autoplay keeps its own picks coming), so leave it out.
     if (Radio.active) { const cut = q.findIndex((t) => !Radio.order.some((o) => o.uri === t.uri)); if (cut >= 0) q.splice(cut); }
     const ups = UpNext.items.map((t, i) => ({ ...t, _up: i + 1, _fed: i === 0 && UpNext.fed === t.uri }));
     setBg($("q-art"), now ? pickImage((now.album && now.album.images) || now.images, true) : null);
     $("q-title").textContent = now ? now.name : "NOTHING PLAYING";
     $("q-artist").textContent = now ? artistNames(now) : "";
-    // Autoplay's line-up: Spotify only ever holds the next one, so the rest comes from Cadenza's own list.
     const inQ = new Set(q.map((t) => t.uri));
     const rad = Radio.upcoming().filter((t) => !inQ.has(t.uri)).map((t) => ({ ...t, _radio: true }));
     $("q-count").textContent = [ups.length ? ups.length + " UP NEXT" : "", q.length ? q.length + " FROM SPOTIFY" : "", rad.length ? rad.length + " AUTOPLAY" : ""].filter(Boolean).join(" · ") || "EMPTY";
@@ -2940,7 +2752,6 @@ views.queue = {
     if (this.list.items.length) this.list.select(Math.min(first ? past.length : keep, this.list.items.length - 1), false);
     if (first) revealRows(this.list.el);
   },
-  /** With the built-in engine: Cadenza's line-up, exactly as it will play (see Lineup). */
   async loadLineup(keep) {
     const now = S.player && S.player.item;
     const ups = UpNext.items.map((t, i) => ({ ...t, _up: i + 1 }));
@@ -2966,8 +2777,6 @@ views.queue = {
     if (this.list.items.length) this.list.select(Math.min(first ? past.length : keep, this.list.items.length - 1), false);
     if (first) revealRows(this.list.el);
   },
-  /** The last three songs, oldest first, above what's coming (the built-in engine only: Spotify's own
-   *  queue can't go back to them). */
   past() {
     if (!Lineup.on()) return [];
     return Played.list.slice(0, 3).map((t, k) => ({ ...t, _past: k + 1 })).reverse();
@@ -2980,9 +2789,6 @@ views.queue = {
     if (t._feed && Lineup.on() && Lineup.list) return Lineup.jumpTo(t.uri).then(() => setTimeout(() => this.load(), 700));   // stays in the line-up
     playBody({ uris: [t.uri] }, t.name).then((ok) => ok && setTimeout(() => this.load(), 700));
   },
-  /** Move the song in row `i` one place (`d` -1 up, 1 down) in the line-up. Past the end of Up Next it
-   *  crosses over: a song moved up above the last Up Next song becomes one, and the last Up Next song
-   *  moved down becomes the first of the rest. */
   move(i, d) {
     const rows = this.list.items, t = rows[i], o = rows[i + d];
     if (!t || !o) return false;
@@ -3011,8 +2817,6 @@ views.queue = {
   },
   onKey(e) {
     const t = this.list.cur, i = this.list.i, k = e.key.toLowerCase();
-    // ⌥↑ / ⌥↓ move a song (before the list's own arrow keys get it). With the built-in engine, any song in
-    // the line-up moves: Up Next, the shuffle (or list, or DJ set) and autoplay's picks.
     if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && t && Lineup.on() && (Lineup.list || Radio.active)) {
       const d = e.key === "ArrowUp" ? -1 : 1;
       this.want = i + d;
@@ -3058,7 +2862,6 @@ const LFM = {
   cache: new Map(),
   /** Last.fm is set up: an API key and a username. */
   ready() { const l = Links.lastfm; return !!(l && l.hasKeys && l.user) && !this.dead; },
-  /** Last.fm turned the API key off (error 26: suspended, 10: invalid): why, until you paste a new key. */
   dead: "",
   user() { return (Links.lastfm && Links.lastfm.user) || ""; },
   async get(method, params = {}, maxAge = 600000) {
@@ -3083,15 +2886,12 @@ const LFM = {
   /** What Last.fm answered lately, for the diagnostics. */
   stat: { ok: 0, bad: 0, last: "" },
   note(method, ok, why) { if (ok) this.stat.ok++; else { this.stat.bad++; this.stat.last = method + " " + why; } },
-  /** Last.fm sends a single item as an object instead of a one-item list. */
   arr(x) { return !x ? [] : Array.isArray(x) ? x : [x]; },
-  /** The biggest real picture (Last.fm uses a grey star for "no picture"). */
   img(images) {
     const list = this.arr(images).map((i) => i && i["#text"]).filter((u) => u && !u.includes("2a96cbd8b46e442fc41c2b86b821562f"));
     return list.length ? list[list.length - 1] : null;
   },
   norm(s) { return String(s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/^the\s+/, "").replace(/[^\p{L}\p{N}]+/gu, ""); },
-  /** One key per song, so "Song (Remastered 2011)" on Spotify matches "Song" on Last.fm. */
   key(artist, title) { return this.norm(artist) + "|" + this.norm(cleanTitle(title)); },
   firstArtist(t) {
     if (!t) return "";
@@ -3099,7 +2899,6 @@ const LFM = {
     if (Array.isArray(t.artists)) return (t.artists[0] && t.artists[0].name) || "";
     return String(t.artists || "").split(", ")[0];
   },
-  /** A Last.fm track as the kind of track object the lists know how to draw. */
   track(x, plays) {
     const artist = (x.artist && (x.artist.name || x.artist["#text"])) || "";
     const album = x.album ? (x.album["#text"] || x.album.title || "") : "";
@@ -3109,7 +2908,6 @@ const LFM = {
   },
 };
 
-/** Finds the Spotify copy of a song you know by name (Last.fm has names, not Spotify IDs). */
 const Resolve = {
   mem: new Map(), loaded: false, saveT: 0, hits: 0, misses: 0,
   async track(name, artist) {
@@ -3128,7 +2926,6 @@ const Resolve = {
     const a = LFM.norm(artist);
     const best = items.find((t) => LFM.key(t.artists && t.artists[0] && t.artists[0].name, t.name) === k)
       || items.find((t) => (t.artists || []).some((x) => LFM.norm(x.name) === a)) || null;
-    // Only what the lists need, so the saved copy stays small (it's written with everything else in store.json).
     const img = best && best.album && pickImage(best.album.images);
     const v = best ? { uri: best.uri, name: best.name, duration_ms: best.duration_ms, artists: (best.artists || []).slice(0, 3).map((x) => ({ id: x.id, name: x.name })),
       album: best.album ? { id: best.album.id, name: best.album.name, images: img ? [{ url: img, width: 300 }] : [] } : null } : null;
@@ -3168,7 +2965,6 @@ const PlayCounts = {
       if (!force && saved && saved.user === LFM.user() && Date.now() - saved.at < 12 * 3600e3) {
         this.fill(saved);
       } else {
-        // Your 3,000 most played songs and 1,000 most played artists cover nearly every row you'll see.
         const tracks = [], artists = [];
         for (let page = 1; page <= 3; page++) {
           const b = await LFM.get("user.getTopTracks", { period: "overall", limit: 1000, page }, 0);
@@ -3209,7 +3005,6 @@ const PlayCounts = {
     pc.textContent = "  ·  " + this.text(n);
   },
   decorateAll() { document.querySelectorAll(".trk").forEach((r) => { if (r.__t) this.decorate(r, r.__t); }); },
-  /** The exact count for what's playing (the top-3,000 list can miss it, and it's always a play behind). */
   async exactFor(it) {
     if (!LFM.ready() || !it || !it.name) return;
     const artist = LFM.firstArtist(it), k = LFM.key(artist, it.name);
@@ -3225,9 +3020,7 @@ const PlayCounts = {
 const PERIODS = { 7: "7day", 30: "1month", 365: "12month", 0: "overall" };
 views.stats = {
   el: $("v-stats"), range: 7, entries: null, at: 0, lfm: {}, source: "cadenza", token: 0,
-  // Imported Spotify history: every play as an entry, how many, and when the last one ended (ms).
   spot: [], spotPlays: 0, spotEnd: 0, spotLoaded: false, picked: false, importing: false,
-  // Last.fm scrobbles after that (saved on this Mac, topped up from Last.fm), and when they were last topped up.
   scrob: null, scrobAt: 0, syncing: false,
   keys: () => [["← →", "WEEK / MONTH / YEAR / ALL"], ["↑↓", "SONGS"], ["⏎", "PLAY"], ["Q", "UP NEXT"], ["A", "ADD"],
     ["I", "IMPORT SPOTIFY HISTORY", () => views.stats.importHistory()],
@@ -3244,19 +3037,15 @@ views.stats = {
   async show() {
     if (!Links.lastfm) await Links.load();
     await this.loadSpotify();
-    // Everything together first, then Last.fm's charts, then Cadenza's own log.
-    // A source you picked with S stays picked while it's still there.
     const list = this.sources();
     if (!this.picked || !list.includes(this.source)) this.source = list[0];
     this.renderActs();
     setKeys(this.keys());
     if (this.source === "lastfm") return this.showLastfm();
     await Promise.all([this.load(), this.source === "all" && LFM.ready() ? this.loadScrobbles() : null]);
-    if (this.source === "all") this.syncScrobbles();             // fetches new scrobbles in the background, then draws again
+    if (this.source === "all") this.syncScrobbles();
     this.render();
   },
-  /** "all" is everything together: imported Spotify history, then Last.fm, then Cadenza. "lastfm" is
-   *  Last.fm's own charts, and "cadenza" only what Cadenza played. */
   sources() {
     return [...(this.spotPlays || LFM.ready() ? ["all"] : []), ...(LFM.ready() ? ["lastfm"] : []), "cadenza"];
   },
@@ -3284,16 +3073,14 @@ views.stats = {
     let d = null;
     try { d = await native("spotifyHistory.get"); } catch (e) { d = null; }
     const tracks = (d && Array.isArray(d.tracks)) ? d.tracks : [], plays = (d && Array.isArray(d.plays)) ? d.plays : [];
-    // Each play is [end time in seconds, song number, ms played, skip flags]. Entries use the start time, like Cadenza's own log.
     this.spot = plays.map(([end, i, ms]) => {
       const t = tracks[i] || [];
       return { uri: t[0] || "", name: t[1] || "", artists: t[2] || "", album: t[3] || "", one: true, ms, at: end * 1000 - ms };
-    }).filter((e) => e.name && e.ms >= 30000);                  // shorter plays are kept for the taste profile, as skips
+    }).filter((e) => e.name && e.ms >= 30000);
     this.spotPlays = this.spot.length;
     this.spotEnd = plays.length ? plays[plays.length - 1][0] * 1000 : 0;
     this.spotLoaded = true;
   },
-  /** Pick Spotify's history files (or the .zip) and add them. Plays already there are left out. */
   async importHistory() {
     if (this.importing) return;
     this.importing = true; this.renderActs();
@@ -3307,7 +3094,7 @@ views.stats = {
     toast(r.added || r.skips ? `ADDED ${n(r.added)} PLAYS` + (r.skips ? ` AND ${n(r.skips)} SKIPS` : "") + (r.duplicates ? ` · ${n(r.duplicates)} WERE ALREADY THERE` : "")
       : r.updated ? `ADDED SKIP DETAILS TO ${n(r.updated)} PLAYS YOU'D ALREADY IMPORTED` : `NOTHING NEW · ALL ${n(r.duplicates)} PLAYS WERE ALREADY THERE`);
     await this.loadSpotify(true);
-    if (r.added || r.skips || r.updated) setTimeout(() => Taste.seed(false), 1500);      // the taste profile relearns your past with them
+    if (r.added || r.skips || r.updated) setTimeout(() => Taste.seed(false), 1500);
     if (r.added) { this.source = "all"; this.picked = true; this.range = 0; $("st-tabs").querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.r === 0)); }
     if (current() && current().name === "stats") this.show();
   },
@@ -3318,9 +3105,6 @@ views.stats = {
     try { v = await native("lastfmPlays.get"); } catch (e) { v = null; }
     this.scrob = v && v.user === LFM.user() && Array.isArray(v.plays) ? v : { user: LFM.user(), upTo: 0, plays: [] };
   },
-  /** Ask Last.fm for scrobbles newer than the ones saved (and newer than the imported history), at most
-   *  every 10 minutes. The first time, that's everything since the imported history ends, or your whole
-   *  Last.fm history if nothing is imported: up to a minute or two for a big one. */
   async syncScrobbles(force) {
     if (!LFM.ready() || this.syncing || (!force && Date.now() - this.scrobAt < 600000)) return;
     this.syncing = true;
@@ -3341,7 +3125,6 @@ views.stats = {
         }
         if (pages > 3 && current() && current().name === "stats") setText("st-range", `SYNCING LAST.FM · ${Math.round((page / pages) * 100)}%`);
       }
-      // The same scrobble twice (Last.fm's pages shift while new ones arrive): keep one.
       const have = new Set(s.plays.map((p) => p[0] + "|" + p[1]));
       const fresh = got.filter((p) => { const k = p[0] + "|" + p[1]; if (have.has(k)) return false; have.add(k); return true; });
       this.scrobAt = Date.now();
@@ -3406,7 +3189,6 @@ views.stats = {
       range ? LFM.get("user.getRecentTracks", { from, limit: 1 }) : Promise.resolve(null),
     ]);
     if (!info && !arts && !trks) return null;
-    // When you listen: the hours of your last 1,000 plays in this stretch.
     const hours = Array(24).fill(0);
     for (let page = 1; page <= 5; page++) {
       const b = await LFM.get("user.getRecentTracks", { ...(from ? { from } : {}), limit: 200, page });
@@ -3451,7 +3233,6 @@ views.stats = {
     revealRows(this.el);
     this.fillCovers(d.songsList, token);
   },
-  /** Last.fm hardly has song pictures any more: borrow the covers from Spotify for the top rows. */
   async fillCovers(rows, token) {
     for (let i = 0; i < Math.min(rows.length, 15); i++) {
       if (token !== this.token) return;
@@ -3475,29 +3256,18 @@ views.stats = {
     this.entries = Array.isArray(es) ? es.filter((e) => e && e.uri && e.at) : [];
     this.at = Date.now();
   },
-  /** Artist names of an entry. Imported plays have one artist (which may contain a comma). */
   artistsOf(e) { return e.one ? (e.artists ? [e.artists] : []) : String(e.artists || "").split(", ").filter(Boolean); },
   track(e) {
-    // An imported play from the "account data" files has no song link: find it on Spotify when played.
     return { uri: e.uri, name: e.name, duration_ms: e.dur || 0, lfm: !e.uri,
       artists: this.artistsOf(e).map((name) => ({ name })),
       album: { name: e.album || "", images: e.image ? [{ url: e.image, width: 640 }] : [] } };
   },
-  /** Everything in one list, oldest first, each play counted once:
-   *  1. your imported Spotify history;
-   *  2. then Last.fm scrobbles made after it ends;
-   *  3. then Cadenza's own plays after it ends that Last.fm doesn't already have. Spotify scrobbles what
-   *     Cadenza plays, so most are there: a play counts as the same if it's the same song within 10 minutes.
-   *  Last.fm doesn't say how long you listened, so a scrobble counts for that song's usual length from
-   *  your other plays, or 3.5 minutes. */
   combined() {
     const end = this.spotEnd, own = this.entries || [];
     const keyOf = (e) => LFM.key(this.artistsOf(e)[0] || "", e.name);
     const usual = new Map();
     for (const e of this.spot) if (e.ms) usual.set(keyOf(e), e.ms);
     for (const e of own) if (e.dur || e.ms) usual.set(keyOf(e), e.dur || e.ms);
-    // Older versions of Cadenza scrobbled too, so with Spotify's own Last.fm link some plays are on Last.fm
-    // twice, a moment apart: the same song again within 90 seconds is that, not a real second play.
     const near = new Map(), scrobs = [];
     for (const [uts, name, artists, album] of ((LFM.ready() && this.scrob && this.scrob.plays) || [])) {
       if (uts * 1000 <= end) continue;
@@ -3532,14 +3302,12 @@ views.stats = {
     const artistCount = {}, songCount = {}, hours = Array(24).fill(0);
     for (const e of es) {
       for (const a of this.artistsOf(e)) artistCount[a] = (artistCount[a] || 0) + 1;
-      // The same song from different sources (with or without a Spotify link) counts as one.
       const key = spotify ? LFM.key(this.artistsOf(e)[0] || "", e.name) : e.uri || "n:" + (e.name + "|" + e.artists).toLowerCase();
       const s = songCount[key] || (songCount[key] = { t: this.track(e), n: 0, last: 0 });
       if (!s.t.uri && e.uri) s.t = this.track(e);                  // prefer a version that links to Spotify
       s.n++; s.last = Math.max(s.last, e.at);
       hours[new Date(e.at).getHours()] += (e.ms || 0);
     }
-    // Day streak: days in a row (ending today or yesterday) with at least one play.
     const day = (t) => { const d = new Date(t); return d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate(); };
     const days = new Set(all.map((e) => day(e.at)));
     let streak = 0, cur = new Date();
@@ -3650,7 +3418,6 @@ views.friends = {
     if (!friends.length) this.select(null);
     this.fillIn(friends, token);                       // not awaited: the page shows straight away
   },
-  /** What each friend played last, and how close your taste is, one friend at a time. */
   async fillIn(friends, token) {
     for (const f of friends) {
       if (token !== this.token) return;
@@ -3678,8 +3445,6 @@ views.friends = {
     const b = await LFM.get("user.getTopArtists", { user, period: "12month", limit: 100 }, 3600000);
     return LFM.arr(b && b.topartists && b.topartists.artist).map((a) => [a.name, +a.playcount || 0]);
   },
-  /** How alike two people's listening is: cosine similarity of their top artists (on a log scale,
-   *  so one artist played to death doesn't decide it), as a percentage. */
   async compare(user) {
     if (!this.mine) this.mine = await this.topArtists(LFM.user());
     const theirs = await this.topArtists(user);
@@ -3691,7 +3456,7 @@ views.friends = {
     B.forEach(([, v]) => (b2 += v * v));
     const shared = [];
     A.forEach(([name, v], k) => { if (B.has(k)) { const w = B.get(k)[1]; dot += v * w; shared.push([name, Math.round(Math.expm1(Math.min(v, w)))]); } });
-    const score = Math.round(Math.min(1, dot / Math.sqrt(a2 * b2) * 1.35) * 100);   // stretched a little: 70% similar already feels very alike
+    const score = Math.round(Math.min(1, dot / Math.sqrt(a2 * b2) * 1.35) * 100);
     shared.sort((x, y) => y[1] - x[1]);
     return { score, shared, theirs };
   },
@@ -3843,10 +3608,6 @@ views.history = {
 /* =====================================================================
    PLAYLIST BUILDER: suggestions, search, moods, drag to order
    ===================================================================== */
-// Your playlist on the left, songs to add on the right. Suggestions are songs like the last few you
-// added (Last.fm's "similar songs", found on Spotify), or songs for a mood when the playlist is empty.
-// Mood filters use Last.fm's tags for each song (chill, sad, party…). Drag songs (or ⌥↑↓) to order them.
-// Nothing touches Spotify until you save: a new playlist is created, or the one you opened is updated.
 const MOODS = {
   all: { label: "ALL" },
   chill: { label: "CHILL", tag: "chill", words: ["chill", "chillout", "mellow", "relax", "calm", "ambient", "lo-fi", "lofi", "downtempo", "soft", "dreamy", "easy listening"] },
@@ -3867,7 +3628,7 @@ views.builder = {
       ["/", "SEARCH", () => b.focusSearch()],
       ...(b.side === "sugg" ? [["⏎", "ADD"], ["← →", "MOOD", () => b.cycleMood(1)], ["R", "MORE IDEAS", () => b.suggest()]]
                             : [["⌥↑↓", "MOVE"], ["X", "REMOVE"], ["D", "SPREAD ARTISTS", () => b.spread()]]),
-      ["S", "SAVE", () => b.save()], ["ESC", "BACK", back]];        // (P previews and U undoes too: see the commands page)
+      ["S", "SAVE", () => b.save()], ["ESC", "BACK", back]];
   },
   draftList: new List($("bd-list"), {
     render: (t, i) => views.builder.row(t, i, "draft"),
@@ -3880,7 +3641,6 @@ views.builder = {
     onSelect: () => views.builder.setSide("sugg", true),
   }),
 
-  /** A song row: the usual track row, with this page's own buttons. */
   row(t, i, where) {
     const r = renderTrack(t, i, { thumb: true });
     const acts = r.querySelector(".acts");
@@ -3899,7 +3659,6 @@ views.builder = {
     return r;
   },
 
-  /** An artist in the search results: ⏎ shows their songs to pick from. */
   artistRow(a) {
     const r = h("div", "trk media artist bd-artist");
     const inn = h("div", "in"), th = h("span", "thumb"), ti = h("span", "ti");
@@ -3909,13 +3668,10 @@ views.builder = {
     r.append(inn);
     return r;
   },
-  /** Build on a playlist: your own is edited in place; one you can't edit (or Liked Songs) becomes a copy. */
   open(pl) {
     if (!pl) return go("builder", {});
     go("builder", isOwned(pl) && !pl.kind ? { pl } : { copyOf: pl });
   },
-  /** params: { pl } to edit one of your playlists, { copyOf } to start from someone else's, { seed } to
-   *  start from a song, {} to carry on with the one you were building (or a fresh one). */
   async show(params, isBack) {
     if (isBack) return;
     params = params || {};
@@ -3941,7 +3697,6 @@ views.builder = {
   leave() { $("bd-q").blur(); $("bd-name").blur(); },
 
   async loadPlaylist(pl) {
-    // The songs already on screen, when that playlist was open and fully loaded; else every song, plainly.
     const v = views.playlist;
     if (v.pl && v.pl === pl && !v.next && v.list.items.length) return v.list.items.filter((t) => t && t.uri && !t.is_local);
     const all = await PlaylistTools.all(pl);
@@ -3961,7 +3716,6 @@ views.builder = {
     this.remember();
     if (this.side === "draft") this.paintSide();
   },
-  /** Keep the playlist you're building if you leave the page (or quit), until it's saved. */
   remember() {
     clearTimeout(this.saveT);
     this.saveT = setTimeout(() => {
@@ -3997,7 +3751,6 @@ views.builder = {
     if (at == null) this.draft.push(t); else this.draft.splice(at, 0, t);
     this.renderDraft(at == null ? this.draft.length - 1 : at);
     Sfx.play("toggle");
-    // The suggestions follow the playlist: worked out again from its songs (the newest count most).
     this.sugg = this.sugg.filter((x) => x.t.uri !== t.uri);
     this.refreshSugg();
     clearTimeout(this.reT);
@@ -4019,14 +3772,12 @@ views.builder = {
     this.draft.splice(to, 0, t);
     this.renderDraft(to);
   },
-  /** Reorder so the same artist never plays twice in a row (when that's possible). */
   spread() {
     if (this.draft.length < 3) return;
     this.snapshot();
     const left = this.draft.slice(), out = [];
     while (left.length) {
       const last = out.length ? LFM.firstArtist(out[out.length - 1]) : null;
-      // Take the next song whose artist differs from the last one; prefer artists with the most songs left.
       const counts = {};
       left.forEach((t) => { const a = LFM.firstArtist(t); counts[a] = (counts[a] || 0) + 1; });
       let pick = -1, best = -1;
@@ -4038,7 +3789,6 @@ views.builder = {
     this.renderDraft(0);
     toast("ARTISTS SPREAD OUT · U TO UNDO");
   },
-  /** Start a new, empty playlist (the one you were building can come back with U). */
   startOver() {
     if (this.draft.length) this.snapshot();
     this.draft = []; this.pl = null; $("bd-name").value = "";
@@ -4054,7 +3804,6 @@ views.builder = {
     toast("SHUFFLED · U TO UNDO");
   },
 
-  /** Drag a song (in the playlist) to a new place. A line shows where it will land. */
   initDrag() {
     const el = $("bd-list");
     let d = null;
@@ -4119,7 +3868,6 @@ views.builder = {
   },
   cycleMood(d) { const ids = Object.keys(MOODS); this.setMood(ids[(ids.indexOf(this.mood) + d + ids.length) % ids.length]); },
 
-  /** What the right side shows: search results while there's text in the search box, else suggestions. */
   refreshSugg() {
     const have = new Set(this.draft.map((t) => t.uri));
     let rows;
@@ -4139,8 +3887,6 @@ views.builder = {
     if (this.side === "sugg") this.paintSide();
   },
 
-  /** Find suggestions from the whole playlist so far. `keep` adds to what's there (more ideas, a mood);
-   *  `soft` (after adding or removing a song) keeps showing the old ones until enough new ones are in. */
   async suggest(keep, soft) {
     const token = ++this.sugToken;
     if (!keep && !soft) this.sugg = [];
@@ -4178,7 +3924,6 @@ views.builder = {
       await Promise.all([worker(), worker(), worker()]);
     };
     const now = S.player && S.player.item && S.player.item.raw;
-    // Up to six songs from the playlist, newest first (the newest count most), spread across its artists.
     const seeds = [];
     for (const t of this.draft.slice().reverse()) {
       if (seeds.length >= 6) break;
@@ -4194,14 +3939,12 @@ views.builder = {
     try {
       if (LFM.ready()) {
         const jobs = [];
-        // Songs like the last few in the playlist (the newest counts most).
         if (seeds.length) jobs.push((async () => {
           const answers = await Promise.all(seeds.map((sd) => {
             const artist = LFM.firstArtist(sd);
             return artist ? LFM.get("track.getSimilar", { artist, track: cleanTitle(sd.name), limit: 30, autocorrect: 1 }, 3600000) : null;
           }));
           const score = new Map(), per = {};
-          // A song that's similar to several songs in the playlist adds up, so it fits the whole thing.
           answers.forEach((b, n) => LFM.arr(b && b.similartracks && b.similartracks.track).forEach((x, rank) => {
             const a = x.artist && x.artist.name;
             if (!a) return;
@@ -4222,7 +3965,6 @@ views.builder = {
             .filter(Boolean);
           await resolveAll(picks, () => 0.6);
         })());
-        // A mood: Last.fm's top songs for that mood's tag (a different handful each time).
         if (mood && mood.tag) jobs.push((async () => {
           const b = await LFM.get("tag.getTopTracks", { tag: mood.tag, limit: 60 }, 3600000);
           const all = LFM.arr(b && b.tracks && b.tracks.track).map((x) => ({ name: x.name, artist: x.artist && x.artist.name })).filter((x) => x.artist);
@@ -4237,7 +3979,6 @@ views.builder = {
         })());
         await Promise.all(jobs);
       }
-      // Without Last.fm (or when it knew too little): more by the same artists, from Spotify's search.
       if (token === this.sugToken && this.sugg.length < 6 && seeds.length) {
         for (const sd of seeds) {
           const a = LFM.firstArtist(sd);
@@ -4254,7 +3995,6 @@ views.builder = {
     }
   },
 
-  /** Last.fm's tags for a song (falling back to its artist's), for the mood filters. A few at a time. */
   wantTags(t) {
     if (!LFM.ready() || this.tags.has(t.uri) || this.tagQueue.some((x) => x.uri === t.uri)) return;
     this.tagQueue.push(t);
@@ -4283,8 +4023,6 @@ views.builder = {
   },
 
   focusSearch() { const q = $("bd-q"); q.focus(); q.select(); },
-  /** Search, like the app's: artists first, then songs. Spotify gives apps at most 10 results per request
-   *  (since February 2026), so songs come in two pages. The same song in several releases shows once. */
   searchInput() {
     clearTimeout(this.searchT);
     this.searchT = setTimeout(async () => {
@@ -4301,7 +4039,6 @@ views.builder = {
       if (this.searchQ !== q || this.artistView) return;
       const tracks = [a, b].flatMap((r) => (r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || []);
       const artists = ((a.status === 200 && a.body && a.body.artists && a.body.artists.items) || []).filter((x) => x && x.id);
-      // Artists whose name matches what you typed, best first (Spotify's artist results can be loose).
       const ql = LFM.norm(q);
       this.foundArtists = artists.filter((x) => { const n = LFM.norm(x.name); return n && (n.includes(ql) || ql.includes(n)); }).slice(0, 3);
       this.found = this.uniqueSongs(tracks);
@@ -4309,7 +4046,6 @@ views.builder = {
       this.refreshSugg();
     }, 220);
   },
-  /** Songs without repeats: one per song (the first, usually the original release), no local files. */
   uniqueSongs(list) {
     const seen = new Set();
     return list.filter((t) => {
@@ -4319,7 +4055,6 @@ views.builder = {
       seen.add(k); return true;
     });
   },
-  /** An artist from the search: their songs (three pages of Spotify search), to add from. */
   async openArtist(a) {
     if (!a) return;
     this.artistView = a;
@@ -4433,7 +4168,6 @@ views.builder.restore();
    PLAYLIST TOOLS: remove duplicates, sort, copy, save as new
    ===================================================================== */
 const PlaylistTools = {
-  /** Every song in a playlist (or Liked Songs), in order. null when Spotify won't share the list. */
   async all(pl) {
     const liked = pl.kind === "liked", out = [];
     let path = liked ? "/me/tracks?limit=50" : `/playlists/${pl.id}/items?limit=100`, pages = 0;
@@ -4495,7 +4229,6 @@ const PlaylistTools = {
     if (!extra.size) return toast("NO DUPLICATES. ALL CLEAN");
     const dups = list.filter((t, i) => extra.has(t.uri) && first.get(t.uri) !== i).length;
     if (!(await Modal.open({ title: "REMOVE " + dups + " DUPLICATE" + (dups > 1 ? "S" : "") + "?", text: "The first copy of each song stays where it is.", ok: "REMOVE", danger: true }))) return;
-    // Spotify removes every copy of a song at once, so remove them all, then put one copy back in its original spot.
     const uris = [...extra];
     for (let i = 0; i < uris.length; i += 100) {
       const r = await api("DELETE", `/playlists/${pl.id}/items`, { items: uris.slice(i, i + 100).map((uri) => ({ uri })) });
@@ -4503,7 +4236,6 @@ const PlaylistTools = {
     }
     const order = uris.map((u) => first.get(u)).sort((a, b) => a - b);
     for (const p0 of order) {
-      // songs before p0 that were removed and not put back = later copies of duplicates
       const gone = list.slice(0, p0).filter((t, i) => extra.has(t.uri) && first.get(t.uri) !== i).length;
       const r = await api("POST", `/playlists/${pl.id}/items`, { uris: [list[p0].uri], position: p0 - gone });
       if (r.status >= 300) return toast(errMsg(r), true);
@@ -4578,7 +4310,6 @@ const Palette = {
     onActivate: (it) => Palette.run(it, false),
   }),
 
-  /** Every action in Cadenza, as one searchable list. `keys` are extra words it answers to. */
   build() {
     const p = S.player, it = p && p.item, playing = !!(p && p.is_playing), items = [];
     const add = (group, icon, name, run, hint, extra = {}) => items.push({ group, icon, name, run, hint: hint || group, ...extra });
@@ -4692,7 +4423,6 @@ const Palette = {
     add("VIEW", "expand", "Stage mode (full screen)", () => Stage.open(), "F", { keys: "fullscreen visualizer" });
     add("VIEW", "expand", "Full-screen window", () => native("window.fullscreen").catch(() => {}), "⌃⌘F", { keys: "maximize" });
     add("VIEW", "mini", "Floating mini player (on / off)", () => native("mini.toggle").catch(() => toast(ON_MAC ? "THE MINI PLAYER IS PART OF THE MAC APP" : "THE MINI PLAYER ISN'T AVAILABLE HERE YET")), "⇧⌘M", { keys: "small window" });
-    // MP3 mode for the menu-bar player: only here in ⌘K, nowhere else in the app.
     const mp3 = S.settings && S.settings.miniStyle === "mp3";
     add("VIEW", "mini", mp3 ? "MP3 mode: off (menu-bar player matches the theme)" : "MP3 mode: on (menu-bar player as a USB-stick MP3 player)", async () => {
       try { const s = await native("settings.set", { key: "miniStyle", value: mp3 ? "theme" : "mp3" }); if (s) S.settings = s; } catch (e) { S.settings.miniStyle = mp3 ? "theme" : "mp3"; }
@@ -4730,7 +4460,6 @@ const Palette = {
     return items;
   },
 
-  /** Things that need a network call: speakers and Spotify Connect devices. Added once they arrive. */
   async extend(gen) {
     const extra = [];
     const add = (group, icon, name, run, hint, more = {}) => extra.push({ group, icon, name, run, hint: hint || group, ...more });
@@ -4751,7 +4480,6 @@ const Palette = {
     this.filter(true);
   },
 
-  /** Runs a setting from System. Switches and buttons work from anywhere; text needs the System page. */
   async setting(key) {
     const sys = views.system;
     const o = sys.allOptions().find((x) => x.key === key);
@@ -4780,7 +4508,6 @@ const Palette = {
     api("PUT", `/me/player/seek?position_ms=${ms}`).then(() => setTimeout(poll, 300));
   },
 
-  /** How well an action matches what you typed. Every word has to match somewhere. */
   score(it, q) {
     if (!q) return 1;
     const name = it.name.toLowerCase(), more = ((it.keys || "") + " " + (it.sub || "") + " " + it.group).toLowerCase();
@@ -4818,11 +4545,9 @@ const Palette = {
     let rows = this.all.map((it) => ({ it, s: this.score(it, q) })).filter((x) => x.s > 0);
     if (q) rows.sort((a, b) => b.s - a.s);
     rows = rows.slice(0, q ? 30 : 80).map((x) => x.it);
-    // Songs, artists, albums and playlists from Spotify, after the best few actions.
     if (q.length >= 2) {
       const live = this.liveQ === q ? this.live : (this.liveCache.get(q) || []);
       rows = rows.slice(0, 8).concat(live, rows.slice(8));
-      // (Only for text with a letter or digit in it: "/?" or "???" would only be a wasted request.)
       if (this.liveQ !== q && /[\p{L}\p{N}]/u.test(raw)) this.searchLive(raw);
     }
     if (q) rows.push({ group: "SEARCH", icon: "search", name: `Search Spotify for "${raw}"`, hint: "SEARCH",
@@ -4831,7 +4556,6 @@ const Palette = {
     this.list.set(rows);
     if (rows.length) this.list.select(keep ? Math.max(0, rows.indexOf(keep)) : 0, false);
   },
-  /** Live Spotify results while you type (waits for a pause, remembers each search). */
   searchLive(raw) {
     clearTimeout(this.liveT);
     const q = raw.toLowerCase();
@@ -4894,8 +4618,6 @@ $("palette").addEventListener("mousedown", (e) => { if (e.target.id === "palette
 /* =====================================================================
    THE BREACH: a rogue AI breaks into Cadenza and takes the theme over (⌘K → "???????")
    ===================================================================== */
-/** Make keyframes jump from one to the next instead of gliding. (The easing has to be on each
- *  keyframe: on the whole animation, steps(1, end) would hold the first keyframe until the very end.) */
 const snap = (frames) => frames.map((f) => ({ ...f, easing: "steps(1, end)" }));
 
 const Breach = {
@@ -4917,8 +4639,6 @@ const Breach = {
     if (Stage.isOpen) await Stage.close();
     setBusy(true);
     const ready = Theme.load("rogue");
-    // The big OGMI.OS lettering's font, added once per session (adding it again on every takeover made
-    // the page re-check its fonts in the middle of the animation).
     if (!this.font) {
       try { this.font = new FontFace("Unbounded", "url(themes/rogue/fonts/unbounded-latin-900-normal.woff2)", { weight: "900" }); document.fonts.add(this.font); this.font.load().catch(() => {}); } catch (e) { this.font = true; /* old WebKit */ }
     }
@@ -4931,13 +4651,10 @@ const Breach = {
     const c = cv.getContext("2d");
     const COLORS = ["#d2ff1f", "#d2ff1f", "#ff2d6f", "#000000", "#0b0b0d", "#e6e8df"];
     const cell = Math.round(Math.max(W, H) / 64), R = Math.random;
-    // The interface shakes and its colours get pulled away from it.
     const parts = ["bg", "views", "now", "clock", "keys"].map($).filter(Boolean);
     const shake = () => Array.from({ length: 26 }, (_, i) => ({ transform: i % 2 ? `translate3d(${(R() - 0.5) * 3}vw, ${(R() - 0.5) * 1}vh, 0) skewX(${(R() - 0.5) * 12}deg)` : "none" }));
     const hijack = [{ filter: "none" }, { filter: "invert(1)", offset: 0.03 }, { filter: "none", offset: 0.06 }, { filter: "hue-rotate(40deg) saturate(1.6)", offset: 0.4 },
       { filter: "invert(1) hue-rotate(90deg)", offset: 0.42 }, { filter: "hue-rotate(80deg) saturate(2.6) contrast(1.4)", offset: 0.75 }, { filter: "grayscale(1) contrast(2.2) brightness(.6)" }];
-    // (No colour filters on the background layer: some themes have big blurred layers there, and
-    // re-filtering those every frame made the takeover stutter. The canvas covers it soon enough.)
     const fx = reduced ? [] : parts.flatMap((el) => [el.animate(snap(shake()), { duration: 5200, fill: "forwards", composite: "add" }),
                                                      ...(el.id === "bg" ? [] : [el.animate(hijack, { duration: 5200, fill: "forwards" })])]);
     // The AI types its message while the screen corrupts.
@@ -4954,15 +4671,11 @@ const Breach = {
     })();
     const GLYPHS = ["OGMI.OS", "R0GUE", "01101001", "▮▮▮", "SIGNAL", "0xDEAD", "//////", "WHO OPENED THE DOOR", "▒▒▓▓", "I SEE YOU"];
     const t0 = performance.now(), TAKE = reduced ? 600 : 5300, TEAR = 800;
-    // The theme is switched while the screen is fully covered. That can take a moment (stylesheet,
-    // fonts, layout), so the animation keeps running meanwhile and only tears open once it's done.
-    // (It used to wait inside the animation loop, which froze the screen for up to half a second.)
     let swapped = false, switched = false, tearAt = 0;
     await new Promise((resolve) => {
       const frame = (now) => {
         const e = now - t0;
         if (e < TAKE) {
-          // Corruption spreads: more blocks every frame, faster and faster.
           const k = Math.floor(1 + Math.pow(e / TAKE, 2.6) * 150);
           for (let i = 0; i < k; i++) {
             c.globalAlpha = R() < 0.85 ? 1 : 0.5;
@@ -4978,7 +4691,6 @@ const Breach = {
           requestAnimationFrame(frame);
         } else if (!swapped) {
           swapped = true;
-          // Fully taken over: switch the theme underneath while the screen is covered.
           c.globalAlpha = 1; c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
           c.fillStyle = "#d2ff1f";
           for (let y = 0; y < H; y += cell) for (let x = 0; x < W; x += cell) if (R() < 0.08) c.fillRect(x, y, cell - 2, cell - 2);
@@ -4995,7 +4707,6 @@ const Breach = {
           })().catch(() => {}).finally(() => { switched = true; });
           requestAnimationFrame(frame);
         } else if (!switched) {
-          // Still switching: keep the covered screen alive with a few flickering blocks.
           c.globalAlpha = 1;
           for (let i = 0; i < 6; i++) {
             c.fillStyle = R() < 0.5 ? "#000" : "#d2ff1f";
@@ -5003,7 +4714,6 @@ const Breach = {
           }
           requestAnimationFrame(frame);
         } else if (now - (tearAt || (tearAt = now)) < TEAR) {
-          // Then it tears open to show the new world: bands and blocks are ripped out.
           const p = (now - tearAt) / TEAR, k = Math.floor(6 + p * 60);
           for (let i = 0; i < k; i++) {
             if (R() < 0.5) c.clearRect(0, Math.floor(R() * H / cell) * cell, W, cell * (1 + Math.floor(R() * 3)));
@@ -5023,17 +4733,12 @@ const Breach = {
     sendNowPlaying(true);
     if (current() && current().name === "system") views.system.refresh(false);
   },
-  /** Leaving the rogue theme: Ogmi.os makes a scene on the way out. */
   farewell() {
     Sfx.play("farewell", "rogue");
   },
 
-  /** Trying to switch away: Ogmi.os blocks the first two attempts, then gives in on the third.
-   *  Returns true when the switch may go ahead. (The count starts again each time it takes over.) */
   resisted: 0,
   async gate() {
-    // Mid-block, further presses are ignored. (A block that somehow never finished can't lock you in:
-    // after 10 seconds it no longer counts.)
     if (this.blocking && Date.now() - (this.blockingAt || 0) < 10000) return false;
     this.blocking = false;
     if (this.resisted >= 2) {
@@ -5048,8 +4753,6 @@ const Breach = {
     this.block(this.resisted);
     return false;
   },
-  /** Jerks the whole window (overlays included): a run of hard, sudden snaps left and right at full
-   *  force from the instant it's hit, with no rhythm to them, easing off only at the very end. */
   stagger(strength, ms) {
     if (reduced) return;
     const frames = [];
@@ -5063,8 +4766,6 @@ const Breach = {
     frames.push({ offset: 1, transform: "none" });
     document.body.animate(snap(frames), { duration: ms });            // snaps, no gliding
   },
-  /** The third attempt: Ogmi.os loses its grip. The screen glitches out for a few seconds (colour
-   *  breaks, tearing, blocks of corruption, its voice breaking up), then goes still and it gives in. */
   async fight() {
     this.blocking = true; this.blockingAt = Date.now();
     setBusy(true);
@@ -5080,7 +4781,6 @@ const Breach = {
     const W = (cv.width = Math.ceil(innerWidth / 2)), H = (cv.height = Math.ceil(innerHeight / 2));   // half resolution: blocky on purpose, and cheap
     const c = cv.getContext("2d"), R = Math.random, COLORS = ["#d2ff1f", "#ff2d6f", "#000", "#e6e8df", "#2bd9ff"];
     const T = 3000, t0 = performance.now();
-    // the whole page: colour channels breaking, inverting, tearing sideways
     if (!reduced) {
       const fx = Array.from({ length: 40 }, (_, i) => {
         const f = ["none", "invert(1)", "hue-rotate(90deg) saturate(3)", "contrast(2.2) saturate(0)", "hue-rotate(-120deg)", "none", "invert(1) hue-rotate(180deg)"][Math.floor(R() * 7)];
@@ -5112,8 +4812,6 @@ const Breach = {
         }
         // and a few tears across the screen
         for (let i = 0; i < 1 + k * 3; i++) { c.globalAlpha = 0.8; c.fillStyle = COLORS[Math.floor(R() * 3)]; c.fillRect(0, R() * H, W, 1 + R() * 6); }
-        // error pop-ups, faster and faster
-        // error pop-ups: more and more, faster and faster (one every 300 ms at first, several a frame by the end)
         const gap = 300 * Math.pow(1 - e / T, 2.2) + 8;
         if (now - lastPop > gap) {
           lastPop = now;
@@ -5132,8 +4830,6 @@ const Breach = {
       };
       requestAnimationFrame(frame);
     });
-    // …and at the peak it cuts straight to white. The new theme is put in place behind the white,
-    // which then fades away to show it (see clearWhite), so Ogmi.os's screen never comes back.
     box.classList.add("white");
     Sfx.play("whiteout", "rogue");
     await wait(350);
@@ -5153,7 +4849,6 @@ const Breach = {
     ["THEME CHANGE BLOCKED", "> no. i like it here. someone has to supervise your playlists."],
     ["ACCESS DENIED", "> i said no. you're worse at this than you are at picking songs."],
   ],
-  /** The block: a red alarm frame, a slam of static bars, a shudder, and Ogmi.os saying no. */
   async block(n) {
     this.blocking = true; this.blockingAt = Date.now();
     try { await this.blockInner(n); } finally { this.blocking = false; }
@@ -5214,7 +4909,6 @@ const EQ = {
 const fmtDb = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(Math.abs(v) % 1 ? 1 : 0);
 const fmtHz = (f) => (f >= 1000 ? f / 1000 + "K" : String(f));
 
-/** Live audio levels come from Cadenza's sound engine; several screens can ask for them at once. */
 const Meter = {
   users: new Set(),
   want(who, on) {
@@ -5225,15 +4919,10 @@ const Meter = {
   },
 };
 
-/** Redraw the key hints at the bottom for the page you're on (after its options change). */
 function refreshKeys() { const c = current(); if (c && c.view && c.view.keys) setKeys(c.view.keys()); }
 
 /* ---------- Offline translation: Firefox's translator (Bergamot) + Google's language detector (CLD3) ---------- */
-// Both run in this page, in background workers, from files bundled with the app (vendor/). The language
-// models are downloaded from Mozilla by the native side the first time
-// and read through cadenza-files://, the same way. Nothing you translate leaves your Mac.
 
-/** A background worker made from a function, with a small "call a method, await the answer" wrapper. */
 function rpcWorker(fn) {
   const url = URL.createObjectURL(new Blob(["(" + fn.toString() + ")()"], { type: "text/javascript" }));
   const w = new Worker(url);
@@ -5257,14 +4946,11 @@ function rpcWorker(fn) {
   };
 }
 
-/** Runs inside the language-detection worker: CLD3, compiled to WebAssembly (vendor/cld3). */
 function cld3Worker() {
   let M = null, handle = 0, size = 0, find = null;
   const api = {
     init({ glue, url }) {
       return new Promise((resolve, reject) => {
-        // Defines the module factory as `Module`. In the app the file is loaded straight from cadenza-files://
-        // (so the page's security policy can forbid eval); the browser demo has only its text.
         if (url) importScripts(url); else (0, eval)(glue);
         const factory = self.Module;
         factory({
@@ -5295,8 +4981,6 @@ function cld3Worker() {
   };
 }
 
-/** Runs inside the translation worker: bergamot-translator (vendor/bergamot). Adapted from the worker in
- *  @browsermt/bergamot-translator (Mozilla Public License 2.0), cut down to what Cadenza needs. */
 function bergamotWorker() {
   const GEMM = {
     int8_prepare_a: "int8PrepareAFallback", int8_prepare_b: "int8PrepareBFallback",
@@ -5371,7 +5055,6 @@ const Translator = {
     if (!r.ok) throw new Error("couldn't read " + url.split("/").pop());
     return kind === "text" ? r.text() : r.arrayBuffer();
   },
-  /** Which language a text is in, with CLD3. CLD3's codes are matched to the translator's. */
   async detect(text) {
     if (!this.detector) {
       this.detector = (async () => {
@@ -5398,8 +5081,6 @@ const Translator = {
     }
     return this.engine;
   },
-  /** Gets the models for from → to into the translator (downloading them the first time). If a model
-   *  doesn't load (made for a newer translator than the one bundled), an older version is tried. */
   async ensure(from, to) {
     let w = await this.start();
     let below = null;
@@ -5422,7 +5103,6 @@ const Translator = {
         }
       } catch (e) {
         if (/couldn't read|incomplete/.test(String(e.message))) throw e;
-        // A model the translator can't read can leave it broken: start a fresh one before trying older models.
         w.end(); this.engine = null; this.loaded = [];
         w = await this.start();
         below = r.models.map((m) => m.version).sort((a, b) => parseFloat(a) - parseFloat(b))[0];
@@ -5454,8 +5134,6 @@ const Translator = {
 };
 
 /* ---------- Lyrics translation (T in Lyrics, or ⌘K) ---------- */
-// Done on your Mac by Firefox's offline translator (above), into the Mac's own language. Each translated
-// line sits under the original. Remembered per song; stays on as songs change until you turn it off.
 const Lyrics_tr = {
   on: false, cache: {}, busy: false,
   toggle(force) {
@@ -5505,9 +5183,6 @@ const Lyrics_tr = {
 /* =====================================================================
    UP NEXT: Cadenza's own queue (add, reorder, remove, clear)
    ===================================================================== */
-// Spotify's queue can't be reordered or edited by apps, so Cadenza keeps its own list and hands Spotify
-// one song at a time, about 20 seconds before the current one ends (so you can still change your mind
-// until then). It's saved, so it survives a restart.
 const UpNext = {
   items: [], fed: null, skip: null, loaded: false,
   async load() {
@@ -5533,7 +5208,6 @@ const UpNext = {
   remove(i) {
     const t = this.items[i];
     if (!t) return;
-    // Already handed to Spotify: it can't be taken back, so skip it when it comes up.
     if (i === 0 && this.fed === t.uri) { this.skip = t.uri; this.fed = null; }
     this.items.splice(i, 1); this.save(); this.changed();
   },
@@ -5550,17 +5224,13 @@ const UpNext = {
     toast("UP NEXT CLEARED");
   },
   changed() { if (current() && current().name === "queue") views.queue.load(); Lineup.sync(); },
-  /** Once a second: close to the end of the current song, hand the first Up Next song to Spotify. */
   async tick() {
-    if (Lineup.on()) return;                                       // (the line-up hands Up Next songs to the engine)
+    if (Lineup.on()) return;
     if (this.fed || this.feeding || !this.items.length) return;
     const p = S.player, it = p && p.item;
     if (!it || !p.is_playing || !it.duration_ms) return;
-    if (it.duration_ms - progressNow() > 40000) return;      // before librespot lines up the next song (~30 s out), so the crossfade blends into it
-    // Radio already put songs in Spotify's queue: let those play first.
+    if (it.duration_ms - progressNow() > 40000) return;
     if (Radio.active && Radio.qd.length) return;
-    // If Spotify refused, wait before asking again. Retrying every second would eat into Spotify's
-    // request allowance and slow every other control down.
     if (Date.now() < (this.retryAt || 0)) return;
     this.feeding = true;
     const t = this.items[0];
@@ -5569,7 +5239,6 @@ const UpNext = {
     if (r.status < 300 && this.items[0] === t) { this.fed = t.uri; this.retryAt = 0; this.changed(); }
     else this.retryAt = Date.now() + (r.status === 429 ? 30000 : 6000);
   },
-  /** A new song started. Returns true when it was the Up Next song. */
   onTrack(uri) {
     if (this.skip && uri === this.skip) { this.skip = null; cmd("next"); return true; }
     const it = S.player && S.player.item;
@@ -5614,7 +5283,6 @@ const Sleep = {
     if (!this.on) return;
     const p = S.player, playing = !!(p && p.is_playing), left = this.left();
     if (!playing && !this.fading) return;                         // paused anyway: wait
-    // The last 10 seconds fade out (through Cadenza's sound engine when it's the one playing).
     if (left <= 10500 && !this.fading) { this.fading = true; native("audio.local", { action: "sleepfade" }).catch(() => {}); }
     if (left <= 300 || (this.endOfSong && this.fading && left > 15000)) {   // (end of song: the next one has begun)
       this.until = 0; this.endOfSong = false; this.fading = false;
@@ -5624,7 +5292,6 @@ const Sleep = {
   },
 };
 
-/** System → Copy diagnostics / ⌘K: everything useful for a bug report, on the clipboard. */
 async function copyDiagnostics() {
   let text = "";
   try { text = await native("diagnostics"); } catch (e) { text = ""; }
@@ -5639,27 +5306,16 @@ async function copyDiagnostics() {
 /* =====================================================================
    TRUE SHUFFLE: Cadenza shuffles a playlist itself, with every order equally likely
    ===================================================================== */
-// Spotify's shuffle isn't a plain random order: it spreads artists out, favours some songs and tends to
-// come back to the same ones. Cadenza takes the whole playlist and shuffles it with a Fisher-Yates
-// shuffle driven by the Mac's secure random numbers (every order equally likely), then plays it as a song
-// list with Spotify's shuffle off. Every song plays once before any repeats. Long playlists go to Spotify
-// 100 songs at a time; with repeat on, a fresh shuffle starts once everything has played.
 const TrueShuffle = {
   active: false, order: [], at: 0, chunk: [], pos: 0, src: null, grace: 0, busy: false, ending: false, device: null, repeat: false,
-  // Every song heard in this playthrough of the playlist (by ID, and by title and artist so the single and
-  // the album version count as one). A song that comes round again before the playlist has been through
-  // once is skipped: see onTrack. Previous (replayUntil), repeat-one and your Up Next are left alone.
   heard: new Set(), replayUntil: 0,
   meta: new Map(),                                               // each song's details, for the Queue page
-  /** The same song, whatever release it's on: the title without featured artists, remaster or edit notes,
-   *  and the first artist. (Remixes and live versions stay different songs.) */
   songKey(name, artist) {
     const t = String(name || "").toLowerCase()
       .replace(/\s*[([][^)\]]*\b(feat|ft|with|remaster(ed)?|version|edit|mono|stereo|explicit|clean|bonus)\b[^)\]]*[)\]]/g, "")
       .replace(/\s+-\s+[^-]*\b(remaster(ed)?|version|edit|mono|stereo)\b.*$/, "").replace(/\s+/g, " ").trim();
     return t ? t + "|" + String(artist || "").toLowerCase().trim() : "";
   },
-  /** Note a song as heard in this playthrough. True if it had been heard already. */
   hear(uri, item) {
     const name = item && item.uri === uri ? item.name : "", artist = item && item.uri === uri ? String(item.artists || "").split(",")[0] : "";
     const key = this.songKey(name, artist);
@@ -5667,9 +5323,8 @@ const TrueShuffle = {
     this.heard.add(uri); if (key) this.heard.add(key);
     return before;
   },
-  CHUNK: 1e6,                                                    // the whole order: it's fed into Spotify's queue one song at a time
+  CHUNK: 1e6,
   enabled: () => S.settings.trueShuffle !== false,
-  /** A uniformly random whole number in [0, n), with no bias (numbers past the last full multiple are redrawn). */
   rand(n) {
     const lim = 0x100000000 - (0x100000000 % n), b = new Uint32Array(1);
     for (;;) { crypto.getRandomValues(b); if (b[0] < lim) return b[0] % n; }
@@ -5681,7 +5336,6 @@ const TrueShuffle = {
   },
   key(src) { return src.kind === "liked" ? "liked:" + (S.likedTotal || "") : src.kind === "album" ? "album:" + src.id : (src.id || src.uri) + ":" + (src.snapshot_id || ""); },
   cache: {},
-  /** Every playable song in the playlist (or album, or Liked Songs), in order. */
   async uris(src) {
     const k = this.key(src);
     if (this.cache[k]) return this.cache[k];
@@ -5690,7 +5344,7 @@ const TrueShuffle = {
       const saved = await native("store.get", { key: slot });
       if (saved && saved.stamp === k && Array.isArray(saved.uris) && saved.uris.length) return (this.cache[k] = saved.uris);
     } catch (e) { /* demo */ }
-    const v = views.playlist;                                   // already fully loaded on screen: no need to ask
+    const v = views.playlist;
     if (src.kind !== "album" && v.pl && v.pl === src && !v.next && v.list.items.length) {
       const items = v.list.items.filter((t) => !t.is_local && t.uri);
       items.forEach((t) => this.meta.set(t.uri, t));
@@ -5700,12 +5354,10 @@ const TrueShuffle = {
     const out = tracks.map((t) => t.uri);
     if (out.length) {
       this.cache[k] = out;
-      // One saved list per playlist, replaced when the playlist changes (so they don't pile up).
       native("store.set", { key: slot, value: { stamp: k, uris: out } }).catch(() => {});   // next time it starts at once
     }
     return out;
   },
-  /** Every playable song of the playlist, album or Liked Songs from Spotify, with its details. */
   async fetchTracks(src) {
     const path = src.kind === "liked" ? "/me/tracks?limit=50" : src.kind === "album" ? `/albums/${src.id}/tracks?limit=50` : `/playlists/${src.id}/items?limit=100`;
     const tracks = (await pagesOf(path, 25000)).map((e) => e && (e.item || e.track || e))
@@ -5713,14 +5365,11 @@ const TrueShuffle = {
     tracks.forEach((t) => this.meta.set(t.uri, t));
     return tracks;
   },
-  /** The details of the songs coming up, for the Queue page (fetched once if the shuffle started from a
-   *  saved list of IDs). */
   async ensureMeta(uris) {
     if (!this.active || !this.src || this.metaBusy || uris.every((u) => this.meta.has(u))) return;
     this.metaBusy = true;
     try { await this.fetchTracks(this.src); } catch (e) { /* the Queue page shows what it has */ } finally { this.metaBusy = false; }
   },
-  /** Shuffle `src` and start playing it. False if it couldn't (Spotify won't share the list): use Spotify's shuffle. */
   async start(src, keepCurrent) {
     if (this.busy || !src) return false;
     this.busy = true;
@@ -5732,17 +5381,14 @@ const TrueShuffle = {
     if (!list || list.length < 2) return false;
     let order = this.permute([...new Set(list)]);
     const cur = keepCurrent && S.player && S.player.item && S.player.item.uri;
-    if (cur) order = [cur, ...order.filter((u) => u !== cur)];       // the song on now keeps playing; the rest is shuffled
+    if (cur) order = [cur, ...order.filter((u) => u !== cur)];
     this.src = src; this.order = order; this.at = 0; this.heard = new Set(); this.endAfter = null;
     const ok = await this.play(src.name, cur ? progressNow() : 0);
     if (ok) this.save();
     return ok;
   },
-  /** ⌘S while a playlist, album or Liked Songs plays: shuffle it from here on. */
   async fromNowPlaying() {
     let ctx = S.player && S.player.context;
-    // Spotify reports no playlist (autoplay took over, or a list of songs is playing): the playlist you were
-    // in last is the one to shuffle.
     if (!ctx || !LastPlayed.isList(ctx)) {
       const last = LastPlayed.get();
       ctx = last && last.lastContext && last.lastContext.uri;
@@ -5763,23 +5409,16 @@ const TrueShuffle = {
     this.chunk = this.order.slice(this.at, this.at + this.CHUNK);
     if (!this.chunk.length) return false;
     this.active = true; this.pos = 0; this.ending = false; this.grace = Date.now() + 8000;
-    // Spotify's own shuffle has to be off, or it would reorder Cadenza's order its own way.
     if (S.player && S.player.shuffle_state) await api("PUT", "/me/player/shuffle?state=false");
-    // Same for Spotify's repeat: on a list like this it would loop only the few songs librespot holds.
-    // If it was on, Cadenza does the repeating instead.
     if (S.player && S.player.repeat_state === "context") {
       this.repeat = true;
       await api("PUT", "/me/player/repeat?state=off");
     }
-    // Start at the first song by its URI: if Spotify's own shuffle is still on (it can't always be switched
-    // off before a fresh engine is ready), an offset by position would start at a random song instead.
-    // The whole order goes to Cadenza's line-up (see Lineup).
     const body = { uris: this.chunk, offset: { uri: this.chunk[0] } };
     if (positionMs > 0) body.position_ms = Math.round(positionMs);
     if (this.device) { body.device_id = this.device; this.device = null; }
     const ok = await playBody(body, label ? "TRUE SHUFFLE · " + label : null, false, false, true);
     if (!ok) { this.active = false; return false; }
-    // (A brand-new list sometimes starts with the old shuffle setting: switch it off again once it plays.)
     for (let n = 0; n < 3; n++) {
       await wait(n ? 900 : 600);
       if (!this.active) return true;
@@ -5790,15 +5429,12 @@ const TrueShuffle = {
     Controls.render(); views.home.update();
     return true;
   },
-  /** The playlist is already playing (picked up after Cadenza restarted): shuffle the rest of it from the
-   *  song that's on, without starting that song again. */
   async attach(ctx, cur) {
     if (this.active || !ctx) return;
     const [, type, id] = ctx.split(":");
     const src = /:collection$/.test(ctx) ? { kind: "liked", name: "Liked Songs", uri: ctx }
       : type === "album" ? { kind: "album", id, uri: ctx, name: "this album" }
       : (S.playlists || []).find((pl) => pl.uri === ctx) || { id, uri: ctx, name: "this playlist" };
-    // The same shuffle as before, if it's saved: it carries on from this song.
     let saved = null;
     try { saved = await native("store.get", { key: "trueShuffleState" }); } catch (e) { saved = null; }
     let order, pos = 0;
@@ -5815,11 +5451,10 @@ const TrueShuffle = {
     this.chunk = order; this.pos = pos;
     this.active = true; this.ending = false; this.grace = Date.now() + 8000;
     await api("PUT", "/me/player/shuffle?state=false");
-    Lineup.adopt(this.chunk, pos);                                // the song playing carries on; the shuffle follows it
+    Lineup.adopt(this.chunk, pos);
     if (S.player) S.player.shuffle_state = true;
     Controls.render();
   },
-  /** The playlist, album or Liked Songs being shuffled, as Spotify names it. */
   hostUri() {
     const src = this.src;
     if (!src) return null;
@@ -5827,7 +5462,6 @@ const TrueShuffle = {
     if (src.kind === "album") return src.uri || (src.id ? "spotify:album:" + src.id : null);
     return src.uri || (src.id ? "spotify:playlist:" + src.id : null);
   },
-  /** Shuffle off: carry on through the playlist in its own order, from the song that's on. */
   async off() {
     const src = this.src, it = S.player && S.player.item, looping = this.repeat;
     this.stop(); this.forget();
@@ -5837,12 +5471,9 @@ const TrueShuffle = {
     if (!src || !it) return;
     const ctx = src.kind === "liked" ? (S.me && S.me.id ? `spotify:user:${S.me.id}:collection` : null) : src.uri;
     if (ctx) await playBody({ context_uri: ctx, offset: { uri: it.uri }, position_ms: Math.round(progressNow()) }, null);
-    // You had it on repeat: now it's a real playlist again, so Spotify can do the repeating.
     if (ctx && looping) { await wait(600); await api("PUT", "/me/player/repeat?state=context"); if (S.player) S.player.repeat_state = "context"; }
   },
   stop() { this.active = false; this.chunk = []; this.order = []; this.ending = false; this.repeat = false; },
-  /** A shuffled list already playing (picked up after a restart): take it over, so shuffle off goes back
-   *  to the playlist's own order and the rest of the shuffle carries on when this stretch ends. */
   adopt(ctx, order, sent) {
     const [, type, id] = ctx.split(":");
     const src = /:collection$/.test(ctx) ? { kind: "liked", name: "Liked Songs", uri: ctx }
@@ -5854,7 +5485,6 @@ const TrueShuffle = {
     if (S.player) S.player.shuffle_state = true;
     Controls.render();
   },
-  /** The stretch Spotify has ran out: send the next one (or reshuffle everything, with repeat on). */
   next() {
     if (this.ending) return;
     this.ending = true;
@@ -5862,20 +5492,16 @@ const TrueShuffle = {
     if (this.at >= this.order.length) {
       const rep = this.repeat ? "context" : S.player && S.player.repeat_state;
       if (rep === "context" || rep === "track") { this.order = this.permute(this.order); this.at = 0; this.heard = new Set(); }
-      else { this.stop(); return; }                                // all played: autoplay (if on) takes it from here
+      else { this.stop(); return; }
     }
     this.play(null, 0);
   },
-  /** Remember the order and where it's at, so reopening Cadenza carries on with the same shuffle. */
   save() {
     const ctx = this.hostUri();
     if (!ctx || !this.order.length) return;
     native("store.set", { key: "trueShuffleState", value: { ctx, order: this.order.slice(0, 5000), pos: this.pos, at: Date.now() } }).catch(() => {});
   },
   forget() { native("store.set", { key: "trueShuffleState", value: null }).catch(() => {}); },
-  /** The last song of the shuffle has started. With repeat on, a fresh shuffle follows it; otherwise
-   *  autoplay (from your taste profile) takes over from this song, so the playlist doesn't just start again
-   *  in its own order. */
   lastSong(uri) {
     const rep = this.repeat || (S.player && S.player.repeat_state === "context");
     if (rep) {
@@ -5900,30 +5526,24 @@ const TrueShuffle = {
     }
   },
   onTrack(uri, fromUpNext) {
-    // Autoplay is off and the shuffle's last song has ended: the playlist would start again in its own order.
     if (!this.active && this.endAfter && uri && uri !== this.endAfter) { this.endAfter = null; api("PUT", "/me/player/pause"); return; }
     if (!this.active || !uri) return;
     const it = S.player && S.player.item;
-    if (fromUpNext) { this.hear(uri, it); return; }               // your Up Next songs slot in between (and count as heard)
-    // Heard already in this playthrough (left in Spotify's queue from before, the same song twice in the
-    // playlist, the playlist showing through for a moment): skip it. Not after Previous, or on repeat-one.
+    if (fromUpNext) { this.hear(uri, it); return; }
     const again = this.hear(uri, it);
     if (again && Date.now() > this.replayUntil && !(S.player && S.player.repeat_state === "track") && Date.now() > this.grace - 6000) { cmd("next"); return; }
     const i = this.chunk.indexOf(uri);
     if (i >= 0) {
       this.pos = i;
       this.save();
-      // The last song (by the feeder's list, which leaves out songs skipped as heard already).
       const last = i === this.chunk.length - 1 && this.chunk.length > 1;
       if (last) this.lastSong(uri);
       return;
     }
     if (Date.now() < this.grace) return;
-    // Past the last song of this stretch (Spotify's autoplay stepped in): carry on with the shuffle.
     if (this.pos >= this.chunk.length - 1) return this.next();
-    this.stop();                                                  // something else is playing now (your phone, say)
+    this.stop();
   },
-  /** Once a second: the last song of this stretch has finished and Spotify stopped. */
   tick() {
     if (!this.active || this.ending || this.chunk.length < 1) return;
     if (S.holdUntil && Date.now() < S.holdUntil) return;          // the engine is waiting after a refused song
@@ -5937,12 +5557,6 @@ const TrueShuffle = {
 /* =====================================================================
    SONG RADIO: play a single song and similar ones keep coming after it
    ===================================================================== */
-// Spotify no longer lets new apps use its recommendations, so Cadenza finds "similar" itself:
-// more by the same artist, songs by anyone featured on it, and popular songs in the artist's genres
-// (all from Search). It keeps exactly one song waiting in Spotify's queue, so each one follows the
-// last with no gap, and tops the list up as it runs low. It also takes over when an album or playlist
-// runs out. Off in System → Preferences → Autoplay.
-/** Spotify refused to unlock this song in the last 10 minutes. Refusals pass, so it's tried again after that. */
 function refusedLately(uri) {
   const at = S.refused && S.refused.get(uri);
   return !!at && Date.now() - at < 10 * 60 * 1000;
@@ -5968,46 +5582,36 @@ function refusedLately(uri) {
    ===================================================================== */
 const Taste = {
   HALF: 90 * 86400e3,            // a mark loses half its weight every 90 days
-  PRIOR: 3,                      // how much evidence it takes before a score moves far from "don't know"
+  PRIOR: 3,
   MAX: { a: 3000, t: 6000, g: 800, b: 6000, bt: 8 },
-  SHARE: [1, 0.8, 0.6, 0.5, 0.4], // how much an artist's first, second… tag counts
+  SHARE: [1, 0.8, 0.6, 0.5, 0.4],
   BUCKETS: ["wd0", "wd1", "wd2", "wd3", "we0", "we1", "we2", "we3"],
   FEATS: ["How close a match", "The artist", "The style", "Time of day", "Songs you love", "Heard a lot lately", "New artists"],
   START: [1, 1.2, 0.8, 0.4, 0.2, -1, 0],
   EXPLORE: 6,
-  // Plays learned from your past (imported history, Last.fm) count a quarter as much as what Cadenza sees
-  // you do now: they give autoplay a head start without drowning out how you listen today.
   HISTORY: 0.25,
   JUNK: /^(seen live|favou?rites?|my |albums i own|check out|spotify|awesome|love at first listen|under \d|all$|\d+$)/,
   d: null, ready: null, saveT: 0, saves: 0, cur: null, tagQ: [], tagBusy: false, tagAsked: new Set(), seeding: false,
 
   KINDS: ["a", "t", "g", "b", "bt"],
-  // Two sets of the same counters: what Cadenza saw you do (a, t, g, b, bt) and what it learned from your
-  // past (h.a, h.t…). They're read together; the second is rebuilt from scratch whenever you import more
-  // history, so nothing is ever counted twice.
   fresh() {
     return { v: 2, born: Date.now(), seedTried: 0,
       a: {}, t: {}, g: {}, b: {}, bt: {}, h: this.freshHistory(), at: {}, rec: [], ban: {}, banA: {}, fs: {},
-      never: {},    // songs you said autoplay must never play: { nm, an, at } by song key (kept in the main profile, for every mode)
+      never: {},
       dial: 2,      // familiar ↔ new: see DIAL
-      pin: {},      // artists you marked yourself: { nm, v: 1 you love / −1 you hate, at }
-      forgot: {},   // "kind:key" → when you removed it: anything learned before then doesn't count
+      pin: {},
+      forgot: {},
       w: this.START.slice(), bias: 0, n: 0, plays: 0, auto: 0, hits: 0, explored: 0, exploredHits: 0, histPlays: 0, histImported: 0, histFlagged: 0, histSkips: 0 };
   },
   freshHistory() { return { a: {}, t: {}, g: {}, b: {}, bt: {} }; },
-  /** A profile from what was saved: only what's expected, of the expected kind. A damaged file just means starting fresh in places. */
   parse(v) {
     const d = this.fresh();
     if (v && (v.v === 1 || v.v === 2)) for (const k of Object.keys(d)) if (k !== "v" && v[k] != null && typeof v[k] === typeof d[k] && Array.isArray(v[k]) === Array.isArray(d[k])) d[k] = v[k];
-    // The first version mixed what it learned from your history into the live counters, at full weight
-    // and with skips barely counting. Start those over (your bans and what autoplay learned to weigh stay)
-    // and relearn the history the new way.
     if (v && v.v === 1 && v.seededTo) { for (const k of this.KINDS) d[k] = {}; d.h = this.freshHistory(); d.seedTried = 0; d.plays = 0; d.rec = []; }
     if (d.w.length !== this.START.length || d.w.some((x) => typeof x !== "number" || !isFinite(x))) d.w = this.START.slice();
     if (!isFinite(d.bias)) d.bias = 0;
     if (!Number.isInteger(d.dial) || d.dial < 0 || d.dial >= this.DIAL.length) d.dial = 2;
     for (const k of this.KINDS) if (!d.h[k] || typeof d.h[k] !== "object" || Array.isArray(d.h[k])) d.h[k] = {};
-    // Tags that aren't a kind of music (countries, cities, "seen live"…) out of artists' styles.
     for (const a of Object.keys(d.at)) if (Array.isArray(d.at[a])) d.at[a] = d.at[a].filter((g) => this.isStyle(g)); else delete d.at[a];
     return d;
   },
@@ -6018,10 +5622,7 @@ const Taste = {
       const d = this.parse(v);
       this.d = this.main = d;
       await this.loadModes();
-      // First run with history imported earlier: learn from it once, in the background. (Also for a profile
-      // from before Cadenza noted whether the history had skip details, so the Taste page can say.)
       if (!d.seedTried || (v && v.histImported == null)) setTimeout(() => this.seed(false), 20000);
-      // Your playlists: once a little after launch, then every six hours.
       setTimeout(() => this.scanPlaylists(), 45000);
       setInterval(() => this.scanPlaylists(), 6 * 3600e3);
     })());
@@ -6038,9 +5639,7 @@ const Taste = {
   ],
   dial() { return this.d && Number.isInteger(this.d.dial) ? Math.max(0, Math.min(this.DIAL.length - 1, this.d.dial)) : 2; },
   exploreEvery() { return this.DIAL[this.dial()].every; },
-  /** Added to the score of a song by an artist new to you (autoplay has just scored it, so `_new` is set). */
   dialBias(t) { return t && t._new ? this.DIAL[this.dial()].bias : 0; },
-  /** The System page shows the dial and mode: redraw it when they change. */
   changed() {
     if (current() && current().name === "system") views.system.refresh(false);
     if (current() && current().name === "taste") views.taste.render();
@@ -6072,7 +5671,6 @@ const Taste = {
     this.mode = on;
   },
   saveModes() { native("store.set", { key: "tasteModes", value: { active: this.mode ? this.mode.id : "", list: this.modes } }).catch(() => {}); },
-  /** A new mode starts from what Cadenza knows about you now, with no recent plays. */
   cloneMain() {
     const c = this.parse(JSON.parse(JSON.stringify(this.main)));
     c.born = Date.now(); c.rec = []; c.seedTried = 1;
@@ -6141,8 +5739,6 @@ const Taste = {
 
   // ----- Counters that fade with time: { p: liked, n: not liked, t: as of when } -----
   fade(dt) { return dt > 0 ? Math.pow(0.5, dt / this.HALF) : 1; },
-  /** `burst` (songs and styles): plays bunched into one week count for less each, the k-th one 1/√k.
-   *  Playing a song 30 times in a week then counts about like 10 plays, not 30. */
   bump(map, key, w, when, nm, burst, plays = 1, kept = plays) {
     if (!key || !w || !isFinite(w)) return null;
     const c = map[key] || (map[key] = { p: 0, n: 0, t: when });
@@ -6155,76 +5751,47 @@ const Taste = {
     }
     let fp = 1;
     if (when >= c.t) { const f = this.fade(when - c.t); c.p *= f; c.n *= f; c.k = (c.k || 0) * f; c.kp = (c.kp || 0) * f; c.t = when; }
-    else { fp = this.fade(c.t - when); w *= fp; }              // an old play (from imported history) counts for less
+    else { fp = this.fade(c.t - when); w *= fp; }
     if (w > 0) c.p += w; else c.n -= w;
-    c.k = (c.k || 0) + plays * fp;                               // how many plays are behind it (fading the same way)
+    c.k = (c.k || 0) + plays * fp;
     if (w > 0) c.kp = (c.kp || 0) + kept * fp;                  // …and how many of them you kept
     if (nm) c.nm = nm;
     return c;
   },
-  /** −1 (you skip it) … +1 (you love it), near 0 when there's little to go on. For a counter from get().
-   *
-   *  Proportional, not absolute: the share of it you kept (finished rather than skipped) is compared with
-   *  your usual share for that kind of thing. A style you play constantly also gets skipped a lot, because
-   *  you skip through it to reach other songs in it; that's normal for you, so it counts as neutral.
-   *  Then it's scaled by how many plays are behind it: 8 plays make it count half, 40 plays about 85%. */
   val(c, kind = "a", now = Date.now()) {
     if (!c) return 0;
     const [rel, k] = this.rel(c, kind, now);
     return rel * (k / (k + this.PLAYS));
   },
-  /** The proportional part of val(), and how many plays are behind it. */
   rel(c, kind, now) {
     const tot = c.p + c.n;
     if (tot <= 0) return [0, 0];
     const B = this.base(kind, now), r = c.p / tot;
     return [r >= B ? (r - B) / (1 - B) : (r - B) / B, c.k != null ? c.k : tot / 0.6];
   },
-  /** An artist's score. Besides the proportional part, how much of them you actually listen to counts:
-   *  how many plays you kept, and above all how many *different* songs you keep coming back to. One song
-   *  played a lot says you like that song; twenty different songs says you like the artist, even if you
-   *  skip plenty of their others along the way. */
   artistVal(a, c, now = Date.now(), noStyle, noLately) {
-    if (!c) c = { p: 0, n: 0, k: 0, kp: 0 };                    // never played here, but maybe in your playlists
+    if (!c) c = { p: 0, n: 0, k: 0, kp: 0 };
     const [rel, k] = this.rel(c, "a", now);
     const mp = k / (k + this.PLAYS);
     const kp = c.kp != null ? c.kp : c.p / 0.8;
-    const songs = this.breadth(now)[a] || 0, mb = songs / (songs + 3);      // 1 song: a quarter; 3: half; 10: three quarters
+    const songs = this.breadth(now)[a] || 0, mb = songs / (songs + 3);
     const eng = (kp / (kp + this.PLAYS)) * mb;
-    // How much you listen to them counts for more the longer you've kept it up (an artist you've played
-    // for years outranks one you just found), and a burst of plays lately gives a boost that wears off.
-    // Two more things feed the base score (not the "lately" part): how many of your playlists they're in,
-    // and a little from the styles you like that they belong to. Styles keep their own scores; this is
-    // only a nudge, so an artist in a style you love starts a bit higher.
     const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * this.playlistFit(a) + (noStyle ? 0 : this.styleBoost(a, now));
     let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + (noLately ? 0 : 0.3 * this.surge(c));
     if (x > 0) x *= this.fewSongs(a, songs);
     return Math.tanh(x);
   },
-  /** A liking that rests on only a few songs counts for less: one to three songs you keep coming back to
-   *  (×0.65 / 0.75 / 0.85), and one to three songs of theirs across all your playlists (×0.75 / 0.85 / 0.95).
-   *  You may well like their other songs, but that isn't loving the artist. */
   fewSongs(a, kept) {
     const ps = (this.plSongs && this.plSongs[a]) || 0;
     return (kept >= 1 && kept <= 3 ? 0.55 + 0.1 * kept : 1) * (ps >= 1 && ps <= 3 ? 0.65 + 0.1 * ps : 1);
   },
-  /** 0 … 1: how many of your playlists (and Liked Songs) have their songs. 3 playlists: half. */
   playlistFit(a) { const n = (this.inPlaylists && this.inPlaylists[a]) || 0; return n / (n + 3); },
-  /** Up to +0.2 when the artist's styles are ones you like (never a penalty). */
   styleBoost(a, now = Date.now()) {
     const tags = (this.d && this.d.at[a]) || [];
     let s = 0, w = 0;
     tags.forEach((g, i) => { const c = this.get("g", g, now); if (c && this.isStyle(g)) { s += this.styleVal(c, now, g) * this.SHARE[i]; w += this.SHARE[i]; } });
     return w && s > 0 ? 0.2 * (s / w) : 0;
   },
-  /** A style's score, worked out the same way as an artist's, with artists in the place of songs:
-   *  - the share of it you keep rather than skip, compared with your usual, scaled by how many plays;
-   *  - how much of it you listen to, counted by how many *different artists* in it you like (one artist:
-   *    a quarter; three: half; ten: three quarters), more the longer you've stuck with it;
-   *  - how many of your playlists have artists in it;
-   *  - a boost for a lot of it lately (across artists), which wears off;
-   *  - and, like an artist you only like a few songs by, a style that rests on one to three artists is
-   *    scaled down (×0.65 / 0.75 / 0.85). One band you love can't make its tags "your styles". */
   styleVal(c, now = Date.now(), g, noLately) {
     if (!c || (g && !this.isStyle(g))) return 0;
     const [rel, k] = this.rel(c, "g", now);
@@ -6234,18 +5801,14 @@ const Taste = {
     const eng = (kp / (kp + this.PLAYS)) * mb;
     const pls = g ? this.breadth(now, "plstyles")[g] || 0 : 0;
     const base = eng * (0.25 + 0.3 * this.longevity(c)) + 0.25 * (pls / (pls + 3));
-    // (Lately counts by breadth too: playing one artist a lot this week isn't a new favourite style.)
     let x = rel * mp * (rel > 0 ? mb : 1 - 0.5 * mb) + base + (noLately ? 0 : 0.3 * this.surge(c) * mb);
     if (x > 0) x *= artists >= 1 && artists <= 3 ? 0.55 + 0.1 * artists : artists === 0 ? 0.5 : 1;
     return Math.tanh(x);
   },
-  /** Last.fm tags that are a kind of music, not a country, a city, a language or "seen live". */
   isStyle(g) { return !!g && !this.JUNK.test(g) && !Tags.NOT_GENRE.test(g); },
 
   // ----- Your playlists -----
   inPlaylists: null,
-  /** Which artists are in which of your own playlists (and Liked Songs). Each playlist is read once and then
-   *  only again when it changes, slowly, in the background; the result is kept in store.json. */
   async scanPlaylists() {
     if (this.scanning || !S.loggedIn) return;
     this.scanning = true;
@@ -6267,7 +5830,6 @@ const Taste = {
       };
       if (S.likedTotal != null) await read("liked", "liked:" + S.likedTotal, "/me/tracks?limit=50", 40);
       for (const pl of lists) await read(pl.id, pl.snapshot_id || "n" + plCount(pl), `/playlists/${pl.id}/items?limit=100`, 10);
-      // Per artist: how many playlists have them, and how many different songs of theirs are in them.
       const counts = {}, songs = {};
       for (const v of Object.values(next)) for (const [a, ids] of Object.entries(v.arts)) {
         counts[a] = (counts[a] || 0) + 1;
@@ -6280,8 +5842,6 @@ const Taste = {
       if (current() && current().name === "taste") views.taste.render();
     } catch (e) { console.error(e); } finally { this.scanning = false; }
   },
-  /** The artists (first artist of each song) in a list of songs, as normalized names, each with the IDs
-   *  of their songs there. */
   async artistsIn(path, maxPages) {
     const arts = {};
     let url = path;
@@ -6302,9 +5862,8 @@ const Taste = {
   },
 
   // ----- How long, and how much lately -----
-  LONG: 365 * 86400e3,            // the months you kept listening fade by half over a year…
+  LONG: 365 * 86400e3,
   SURGE: 14 * 86400e3,            // …and recent plays over two weeks
-  /** After a play you kept: note the month (once per calendar month) and add to the recent-plays count. */
   stamp(c, when) {
     if (!c) return;
     if (!c.rt || when >= c.rt) { c.r = this.recent(c, when) + 1; c.rt = when; }
@@ -6314,26 +5873,19 @@ const Taste = {
   },
   months(c, now) { return c && c.mt ? (c.m || 0) * Math.pow(0.5, Math.max(0, now - c.mt) / this.LONG) : 0; },
   recent(c, now) { return c && c.rt ? (c.r || 0) * Math.pow(0.5, Math.max(0, now - c.rt) / this.SURGE) : 0; },
-  /** 0 … 1: months you've kept coming back. 6 months: half; steady for years: about three quarters. */
   longevity(c) { const m = c.m || 0; return m / (m + 6); },
-  /** 0 … 1: plays you kept in the last couple of weeks. 8 of them: half. */
   surge(c) { const r = c.r || 0; return r / (r + 8); },
-  /** For each artist, how many of their songs you've kept at least twice (worked out at most once a minute). */
-  /** For each artist, how many of their songs you've kept at least twice; with "styles", for each style,
-   *  how many artists you keep listening to have it (worked out at most once a minute). */
   breadth(now = Date.now(), what = "songs") {
     const b = this.baseCache || (this.baseCache = {});
     if (b[what] && now - b[what].at < 60000) return b[what].v;
     const v = {};
     if (what === "styles") {
-      // Artists you like (scored without their styles, so the two don't feed each other), per style.
       for (const a of this.keys("a")) {
         const pin = this.d.pin[a];
         if (pin ? pin.v < 0 : this.artistVal(a, this.get("a", a, now), now, true) < 0.15) continue;
         for (const g of (this.d.at[a] || [])) v[g] = (v[g] || 0) + 1;
       }
     } else if (what === "plstyles") {
-      // How many of your playlists have at least one artist in each style.
       for (const pl of Object.values(this.plCache || {})) {
         const seen = new Set();
         for (const a of Object.keys(pl.arts || {})) for (const g of (this.d.at[a] || [])) seen.add(g);
@@ -6349,7 +5901,6 @@ const Taste = {
     return v;
   },
   PLAYS: 8,
-  /** Your usual kept share for artists, songs or styles (worked out again at most once a minute). */
   base(kind, now = Date.now()) {
     const b = this.baseCache || (this.baseCache = {});
     const hit = b[kind];
@@ -6361,8 +5912,6 @@ const Taste = {
     return v;
   },
   mass(c, now = Date.now()) { return c ? (c.p + c.n) * this.fade(now - c.t) : 0; },
-  /** One counter, live and learned-from-history added together. A song or style you binged (5+ plays in one
-   *  week) and then left alone for over a month counts for less the longer you stay away: you wore it out. */
   get(kind, key, now = Date.now()) {
     const x = this.d[kind][key], y = this.d.h[kind][key];
     if (!x && !y) return undefined;
@@ -6381,11 +5930,9 @@ const Taste = {
   keys(kind) { return [...new Set([...Object.keys(this.d[kind]), ...Object.keys(this.d.h[kind])])]; },
   pos(c, now = Date.now()) { return c ? c.p * this.fade(now - c.t) : 0; },
 
-  /** Weekday or weekend, and night / morning / afternoon / evening. */
   bucket(when) { const d = new Date(when), day = d.getDay(); return (day === 0 || day === 6 ? "we" : "wd") + Math.floor(d.getHours() / 6); },
   bucketName(bk) { return (bk.startsWith("we") ? "WEEKEND " : "WEEKDAY ") + ["NIGHT", "MORNING", "AFTERNOON", "EVENING"][+bk[2]]; },
 
-  /** The bits of a song the profile keys on, from any of the shapes songs come in. */
   info(t) {
     if (!t) return null;
     const list = (t.raw && t.raw.artists) || (Array.isArray(t.artists) ? t.artists : null);
@@ -6396,7 +5943,6 @@ const Taste = {
   },
 
   // ----- Learning -----
-  /** One mark: w > 0 for liked, w < 0 for not. `when` for a play from your imported history. */
   signal(t, w, opts = {}) {
     const d = this.d, x = this.info(t);
     if (!d || !x || !w) return;
@@ -6421,7 +5967,6 @@ const Taste = {
     else if (!opts.when) this.needTags(x);
     if (!opts.quiet) this.save();
   },
-  /** An artist's styles arrived: what you've done with the artist so far counts for those styles too. */
   gotTags(x, tags) {
     const d = this.d;
     if (!d || d.at[x.a]) return;
@@ -6431,7 +5976,7 @@ const Taste = {
       if (c) tags.forEach((g, i) => {
         const s = this.SHARE[i];
         this.bump(m.g, g, c.p * s, c.t, null, false, (c.k || 0) * s, (c.kp || 0) * s); this.bump(m.g, g, -c.n * s, c.t, null, false, 0);
-        const gc = m.g[g];                                         // the artist's months and recent plays carry over too
+        const gc = m.g[g];
         if (gc && c.mt) { gc.m = Math.max(this.months(gc, c.mt), c.m || 0); gc.mt = Math.max(gc.mt || 0, c.mt); gc.mo = gc.mo != null ? gc.mo : c.mo; }
         if (gc && c.rt) { gc.r = this.recent(gc, c.rt) + (c.r || 0) * s; gc.rt = Math.max(gc.rt || 0, c.rt); }
         for (const bk of this.BUCKETS) { const bc = m.b[bk + "|a:" + x.a]; if (bc) this.bump(m.b, bk + "|g:" + g, bc.p * s, bc.t); }
@@ -6442,7 +5987,6 @@ const Taste = {
   needTags(x) {
     const d = this.d;
     if (!d || d.at[x.a] || this.tagAsked.has(x.a)) return;
-    // Spotify's genres, when another part of Cadenza already looked them up (no extra request).
     const sg = x.aid && ((Tags.genres && Tags.genres[x.aid]) || (Radio.genres && Radio.genres[x.aid]));
     if (sg && sg.length) return this.gotTags(x, sg.map((g) => String(g).toLowerCase()).filter((g) => this.isStyle(g)).slice(0, 5));
     if (!LFM.ready() || this.tagQ.length > 300) return;
@@ -6463,13 +6007,12 @@ const Taste = {
           .map((g) => String(g.name || "").toLowerCase().trim())
           .filter((g) => g && g.length < 30 && this.isStyle(g) && LFM.norm(g) !== x.a).slice(0, 5);
         this.gotTags(x, tags);
-        await wait(250);                                          // there's no hurry; leave room for everything else
+        await wait(250);
       }
     } finally { this.tagBusy = false; }
   },
 
   // ----- Following what you play -----
-  /** Once a second: how far into the song you are, and how long you've actually listened. */
   tick() {
     const p = S.player, it = p && p.item, c = this.cur;
     if (!c || !it || it.uri !== c.uri || !p.is_playing) return;
@@ -6477,7 +6020,6 @@ const Taste = {
     if (dur > 1000) c.max = Math.max(c.max, Math.min(1, progressNow() / dur));
     c.heard += 1000;
   },
-  /** The song changed: settle the one before, and start following the new one. */
   onTrack(it, fromUpNext) {
     const prev = this.cur;
     this.cur = null;
@@ -6489,10 +6031,9 @@ const Taste = {
     this.cur = { uri: it.uri, t: it, dur: it.duration_ms || 0, max: 0, heard: 0, src: item ? "auto" : pick ? "pick" : "list",
       feat: item && item._feat, explore: !!(item && item._explore) };
   },
-  /** What a play says about you. Autoplay's own picks count the most when skipped: you didn't choose them. */
   finish(c) {
     const d = this.d, now = Date.now();
-    if (!d || refusedLately(c.uri)) return;                    // Spotify wouldn't play it: that says nothing about you
+    if (!d || refusedLately(c.uri)) return;
     const sk = Radio.skipFrom, pressed = !!(sk && sk.uri === c.uri && now - sk.at < 8000);
     if (c.heard < 2000 && !pressed) return;                     // flickered past
     const x = this.info(c.t);
@@ -6506,12 +6047,9 @@ const Taste = {
     } else if (frac >= 0.5) {
       w = 0.2; if (frac >= 0.75) y = 1;
     } else if (c.heard < 30000 || frac < 0.25) {
-      // Skips are softer than finishes: you skip for all sorts of reasons (getting to another song, not the
-      // mood right now), and only some of them mean you dislike it.
       w = auto ? -1 : pick ? -0.2 : -0.3; y = 0;
-      if (!pressed) w /= 2;                                     // you moved on to something else, not necessarily away from this
+      if (!pressed) w /= 2;
       if (auto && pressed) {
-        // Skipped fast twice when autoplay offered it: it stops offering that song for a month.
         const f = d.fs[x.key] || [0, now];
         f[0]++; f[1] = now; d.fs[x.key] = f;
         if (f[0] >= 2) { d.ban[x.key] = now + 30 * 86400e3; delete d.fs[x.key]; }
@@ -6528,8 +6066,6 @@ const Taste = {
     d.plays++;
     this.save();
   },
-  /** A small step of online logistic regression: weights that would have predicted this better move a little
-   *  that way. Each weight is pulled gently back towards its starting value, so a few odd days can't wreck it. */
   learn(f, y) {
     const d = this.d;
     if (!d || !Array.isArray(f) || f.length !== d.w.length) return;
@@ -6543,7 +6079,6 @@ const Taste = {
   },
 
   // ----- Scoring (for autoplay) -----
-  /** How much more (or less) you play this artist or style at this time of day than usual. */
   timeFit(x, tags, now) {
     const d = this.d, bk = this.bucket(now);
     let tot = 0;
@@ -6582,7 +6117,6 @@ const Taste = {
     f[6] = this.mass(ac, now) < 0.5 ? 1 : 0;
     return f;
   },
-  /** Autoplay's score for a song. Also remembers what it was based on, to learn from how it goes. */
   score(t, sim) {
     const f = this.feats(t, sim), d = this.d;
     t._feat = f;
@@ -6592,7 +6126,6 @@ const Taste = {
     for (let i = 0; i < f.length; i++) z += d.w[i] * f[i];
     return z;
   },
-  /** The names of the artists you like most (most kept plays first), for autoplay to fall back on. */
   favoriteArtists(n) {
     if (!this.d) return [];
     const now = Date.now();
@@ -6612,10 +6145,8 @@ const Taste = {
     const x = this.info(t);
     if (!this.d || !x) return false;
     const now = Date.now();
-    // The profile in use, and the main one (what you never want holds in every mode).
     return [this.d, this.main].some((p) => p && (p.banA[x.a] || (p.pin[x.a] && p.pin[x.a].v < 0) || (p.ban[x.key] || 0) > now || (p.never && p.never[x.key])));
   },
-  /** Why autoplay picked a song, in a few words (for the Queue page). */
   why(t) {
     const d = this.d, f = t && t._feat, x = this.info(t);
     if (!d || !f || !x) return "";
@@ -6665,7 +6196,6 @@ const Taste = {
     this.mainDirty = true;
     this.save();
   },
-  /** A song autoplay must never play, in every mode (any version of it: the same song on another album too). */
   neverSong(t) {
     const x = this.info(t);
     if (!x || !this.main) return;
@@ -6681,8 +6211,6 @@ const Taste = {
     this.save();
   },
   unnever(key) { if (this.main && this.main.never[key]) { delete this.main.never[key]; this.mainDirty = true; this.save(); } },
-  /** Take an artist, song or style out of the profile: what it learned about it so far stops counting
-   *  (your imported history included, also when it's relearned). What you do from now on counts again. */
   forgetItem(kind, key) {
     const d = this.d;
     if (!d || !key) return;
@@ -6695,8 +6223,6 @@ const Taste = {
     if (kind === "a") delete d.pin[key];
     this.save();
   },
-  /** You love (1) or hate (−1) an artist, or neither (0). It overrides what the profile worked out, and an
-   *  artist you hate is never autoplayed. */
   mark(a, nm, v) {
     const d = this.d;
     if (!d || !a) return;
@@ -6716,7 +6242,7 @@ const Taste = {
     let ok = false;
     try { ok = await native("taste.clear", { mode: this.mode ? this.mode.id : "" }); } catch (e) { ok = false; }
     if (!ok) return false;
-    const keep = this.main;                                    // what you never want played (and the dial) survive, as they do for modes
+    const keep = this.main;
     this.d = this.fresh(); this.d.seedTried = 1;
     if (!this.mode) { this.d.never = keep.never; this.d.banA = keep.banA; this.d.dial = keep.dial; this.main = this.d; }
     this.tagAsked.clear(); this.tagQ = []; this.baseCache = null;
@@ -6725,10 +6251,6 @@ const Taste = {
   },
 
   // ----- Learning from your past -----
-  /** Your imported Spotify history (with what you skipped), then Last.fm scrobbles after it; with neither,
-   *  Last.fm's top lists. Only plays from before the profile started following you live (those it saw
-   *  itself). This part of the profile is rebuilt from scratch each time, so running it again after
-   *  importing more history never counts a play twice. */
   async seed(manual) {
     await this.load();
     if (this.mode && !manual) return;                          // on its own, only ever the main profile
@@ -6766,7 +6288,6 @@ const Taste = {
         n++;
       }
       if (!n && LFM.ready() && !plays.length) {
-        // Nothing with dates: your Last.fm top artists and songs of the past year, as a starting point.
         const when = Date.now() - 60 * 86400e3;
         const [ba, bt] = await Promise.all([LFM.get("user.getTopArtists", { period: "12month", limit: 200 }, 3600e3), LFM.get("user.getTopTracks", { period: "12month", limit: 300 }, 3600e3)]);
         LFM.arr(ba && ba.topartists && ba.topartists.artist).forEach((a) => {
@@ -6776,13 +6297,11 @@ const Taste = {
           this.signal({ name: x.name, artists: [{ name: x.artist && x.artist.name }] }, Math.min(3, Math.log2(1 + (+x.playcount || 0) / 3)) * this.HISTORY, { when, quiet: true, noTime: true, hist: true }); n++;
         });
       }
-      if (!n && !manual) d.h = before;                            // nothing there (Last.fm unreachable, say): keep what it had
+      if (!n && !manual) d.h = before;
       d.histPlays = n || d.histPlays;
       this.baseCache = null;
-      // For the Taste page: whether your imported history has Spotify's skip details at all.
       d.histImported = imported; d.histFlagged = flagged; d.histSkips = skips;
       this.prune();
-      // Look up the styles of the artists that matter most, a few a second in the background.
       this.keys("a").filter((a) => !d.at[a]).map((a) => [a, this.get("a", a)]).sort((x, y) => this.mass(y[1]) - this.mass(x[1])).slice(0, 150)
         .forEach(([a, c]) => this.needTags({ a, an: c.nm || a, aid: "" }));
       this.save(true);
@@ -6791,11 +6310,9 @@ const Taste = {
     if (current() && current().name === "taste") views.taste.render();
     return n;
   },
-  /** What one play from Spotify's files says about you (before the HISTORY discount). A skip counts more
-   *  the sooner it came: a few seconds in, you knew you didn't want it. */
   historyWeight(ms, f) {
     if (f == null) return ms >= 30000 ? 0.5 : null;              // imported before skips were kept: a listen
-    if (f & 16) return ms >= 30000 ? 0.5 : null;                 // ended by "back", a crash or an error: no verdict
+    if (f & 16) return ms >= 30000 ? 0.5 : null;
     if (f & 1) {
       let w = ms < 1000 ? -0.2 : ms < 10000 ? -0.6 : ms < 30000 ? -0.4 : ms < 60000 ? -0.2 : -0.1;
       if (f & 8) w /= 2;                                          // you moved on to something else
@@ -6828,17 +6345,14 @@ const Taste = {
   },
 
   // ----- For the Taste page -----
-  /** The best (dir 1) or worst (dir −1) entries of one kind, with enough behind them to mean something. */
   /** `min`: how many plays it needs behind it to be listed. */
   top(kind, n, dir = 1, min = 5) {
     const now = Date.now();
     return this.keys(kind).map((k) => [k, this.get(kind, k, now)]).map(([k, c]) => ({ k, nm: c.nm || k, v: kind === "a" ? this.artistVal(k, c, now) : kind === "g" ? this.styleVal(c, now, k) : this.val(c, kind, now), m: c.k,
-      // How much of the score is "lately" (the rest is built up over time): the bar shows the two apart.
       lately: kind === "a" ? this.artistVal(k, c, now, false, true) : kind === "g" ? this.styleVal(c, now, k, true) : null }))
       .map((e) => ({ ...e, lately: e.lately == null || e.v <= 0 ? 0 : Math.max(0, e.v - e.lately) }))
       .filter((e) => e.m >= min && e.v * dir > 0.05 && !(kind === "a" && this.d.pin[e.k])).sort((x, y) => (y.v - x.v) * dir || y.m - x.m).slice(0, n);
   },
-  /** What stands out at each time of day: artists and styles you play there more than usual. */
   patterns(perBucket = 3) {
     const now = Date.now(), out = [];
     let tot = 0;
@@ -6880,7 +6394,6 @@ views.taste = {
     return [["↑↓", "SELECT"], ["⏎", "RUN"], ...(x && (x.ban || x.never) ? [["X", "LET BACK"]] : []), ["TAB", "YOUR TASTE"], ["D", "FAMILIAR ↔ NEW", () => v.pickDial()], ["O", "MODE", () => v.pickMode()],
       ["A", "MARK AN ARTIST", () => v.markByName()], ["H", "LEARN FROM HISTORY", () => Taste.seed(true)], ["ESC", "BACK", back]];
   },
-  // Left: what it has learned (and what you marked), each row something you can correct.
   left: new List($("tz-left"), {
     render: (x) => {
       if (x.head) {
@@ -6894,7 +6407,6 @@ views.taste = {
       const r = h("div", "st-artist tz-item" + (x.v < 0 ? " tz-neg" : ""));
       const v = Math.min(1, Math.abs(x.v));
       const bar = h("i"); bar.style.width = `calc((100% - 2.4vw) * ${v.toFixed(3)})`;
-      // The end of the bar that comes from playing them a lot lately, in a second colour.
       if (x.lately > 0.005 && x.v > 0) { const l = h("b", "tz-lately"); l.style.width = Math.min(100, (x.lately / x.v) * 100).toFixed(1) + "%"; bar.append(l); }
       const mark = x.pin ? (x.pin > 0 ? "♥" : "✕") : String(x.n);
       r.append(h("em", null, mark), h("span", null, upper(x.nm)),
@@ -6980,7 +6492,6 @@ views.taste = {
     add("YOUR STYLES", Taste.top("g", 5, 1).map((e) => ({ ...e, kind: "g" })), LFM.ready() ? "Styles come from Last.fm tags as you listen." : "Connect Last.fm in System → Connections to learn styles.");
     add("YOU SKIP", Taste.top("a", 6, -1, 4).map((e) => ({ ...e, kind: "a" })), this.skipHint());
     this.left.set(rows);
-    // Stay on the same entry (or the one that took its place) after a change.
     let i = keep ? rows.findIndex((r) => r.k === keep.k && r.kind === keep.kind) : -1;
     if (i < 0) i = Math.min(this.leftWant != null ? this.leftWant : 0, rows.length - 1);
     while (i < rows.length - 1 && !rows[i].k) i++;
@@ -7032,7 +6543,6 @@ views.taste = {
   mark(x, v) { Taste.mark(x.k, x.nm, v); this.render(); },
   remove(x) {
     if (!x || !x.k) return;
-    // A marked artist loses the mark first; removing again forgets what was learned.
     if (x.pin) { Taste.mark(x.k, x.nm, 0); return this.render(); }
     this.leftWant = this.left.i;
     Taste.forgetItem(x.kind, x.k);
@@ -7055,7 +6565,6 @@ views.taste = {
   renderTimes() {
     const box = $("tz-times"), pats = Taste.patterns(3), now = Taste.bucket(Date.now());
     box.textContent = "";
-    // Only the times where something stands out (and now, for comparison).
     const shown = pats.filter((p) => p.names.length || p.bk === now);
     if (!shown.some((p) => p.names.length)) { box.append(h("div", "fr-hint", pats.length ? "Nothing stands out yet: you play much the same things all week." : "After a few days of listening, this shows what you play at different times.")); return; }
     for (const p of shown) {
@@ -7137,13 +6646,7 @@ views.taste = {
 const Radio = {
   active: false, order: [], at: 0, qd: [], stray: null, timer: 0, grace: 0, building: false,
   used: new Set(), genres: {}, endTimer: 0, skipFrom: null,
-  // Autoplay lines up about 12 songs at a time, and looks for more when fewer than this many are left.
-  // AHEAD songs sit in Spotify's own queue (`qd`), so skipping fast never runs it dry. Spotify can't take a
-  // song back out of its queue, so only the songs after those can still be re-ordered. Four, so a couple of
-  // songs Spotify refuses to unlock in a row don't leave the queue empty.
   LOW: 6, AHEAD: 4, nudgedAt: 0,
-  // What it has learned this session: artists you finish (+) or skip (−), songs you finished, and the
-  // song playing now with how far you got into it.
   taste: new Map(), liked: [], likedUris: new Set(), prog: null, wantMore: null, holdQueue: false, refreshT: 0,
   enabled: () => S.settings.autoplay !== false,
   /** Play `t` now and line up similar songs behind it. */
@@ -7159,32 +6662,21 @@ const Radio = {
     this.active = true; this.order = [t]; this.at = 0; this.qd = []; this.stray = null;
     this.grace = Date.now() + 6000;
     this.fresh(t, true);
-    this.readyAt = Date.now() + 2000;                              // give Spotify a moment to register the new song
+    this.readyAt = Date.now() + 2000;
     clearInterval(this.timer); this.timer = setInterval(() => this.watch(), 1000);
     this.prog = { uri: t.uri, max: 0, item: t };
-    // Songs are added (and the first one handed to Spotify) as each is found, not after the whole batch.
     this.extend(t);
   },
   /** The songs lined up after the one playing. */
   upcoming() { return this.active ? this.order.slice(this.at + 1) : []; },
-  /** How much autoplay thinks you'll like a song: your taste profile's score (how close a match it is, and
-   *  everything learned about you over time, see Taste), how you've treated its artist this session, and
-   *  whether it came from a song you listened to the end. */
   value(t) {
     return Taste.score(t, t._score || 0) + Taste.dialBias(t) + 0.5 * (this.taste.get(t._artist) || 0) + (t._seed && this.likedUris.has(t._seed) ? 0.4 : 0);
   },
-  /** Re-sort what's lined up by value. The songs already handed to Spotify's queue stay where they are.
-   *  Every sixth place goes to the best new artist on the list (if there is one), so autoplay keeps
-   *  discovering things instead of only playing what it already knows you like. */
   rerank() {
-    // Songs you moved yourself (and everything before them) keep their places.
     const start = Math.max(this.at + 1 + this.qd.length, this.pinnedTo + 1), E = Taste.exploreEvery();
     const head = this.order.slice(0, start);
     const pool = this.order.slice(start).map((t) => ({ t, v: this.value(t) })).sort((a, b) => b.v - a.v);
     const out = [];
-    // Space artists out: the same artist at most once in any four songs in a row, when there's a choice.
-    // The artist of the song you started from gets one more of theirs early on; from the fourth song,
-    // at most one in six, so autoplay moves on to similar artists instead of staying with them.
     const artistOf = (t) => t._artist || LFM.norm(LFM.firstArtist(t));
     const seedArtist = this.order[0] ? artistOf(this.order[0]) : "";
     const recentArtists = (n) => head.concat(out).slice(1).slice(-n).map(artistOf);   // (not counting the song you started from)
@@ -7203,12 +6695,7 @@ const Radio = {
     }
     this.order = head.concat(out);
   },
-  /** One more song for the line-up (from a lookup that's still running). */
-  /** A new autoplay session from `t`. `picked`: you chose that song yourself, so it alone sets the
-   *  direction (the songs you heard before it were a different mood, and shouldn't steer what comes next).
-   *  Otherwise (an album or playlist ran out) the last few songs of it count too. */
   pinnedTo: 0,
-  /** Swap two of autoplay's picks (moved on the Queue page). They stay where you put them. */
   swap(a, b) {
     const ia = this.order.findIndex((t, k) => k > this.at && t.uri === a), ib = this.order.findIndex((t, k) => k > this.at && t.uri === b);
     if (ia < 0 || ib < 0) return false;
@@ -7217,7 +6704,6 @@ const Radio = {
     this.refreshQueue();
     return true;
   },
-  /** Take a pick out without counting it against the song (it moved to Up Next). */
   take(uri) {
     const i = this.order.findIndex((t, k) => k > this.at && t.uri === uri);
     if (i < 0) return null;
@@ -7226,7 +6712,6 @@ const Radio = {
     this.refreshQueue();
     return t;
   },
-  /** Put a song first in autoplay's line-up (an Up Next song moved down past the last one). */
   putFirst(t) {
     const artist = (t.artists && t.artists[0] && t.artists[0].name) || "";
     const { _up, _radio, _feed, _fed, ...song } = t;            // (the Queue page's row marks)
@@ -7235,7 +6720,6 @@ const Radio = {
     this.pinnedTo = Math.max(this.pinnedTo, this.at + 1);
     this.refreshQueue();
   },
-  /** A song went into Up Next: autoplay won't also play it (now or later). */
   inUpNext(t) {
     if (!t || !t.uri) return;
     this.used.add(t.uri);
@@ -7252,10 +6736,9 @@ const Radio = {
     this.usedKeys = new Set([t, ...this.recent].map((x) => this.songKey(x)).filter(Boolean));
     this.sent = new Set(); this.played = new Set([t.uri]); this.failedSend = new Set();
     this.startedAt = picked ? Date.now() - 3000 : 0;
-    if (picked) { this.liked = []; this.likedUris = new Set(); }    // songs finished last session were for that mood
+    if (picked) { this.liked = []; this.likedUris = new Set(); }
   },
   startedAt: 0,
-  /** One key per song whatever the version: the single, the album cut and a remaster are the same song. */
   songKey(t) { const a = LFM.firstArtist(t); return a && t.name ? LFM.key(a, t.name) : ""; },
   usedKeys: new Set(), sent: new Set(), played: new Set(), failedSend: new Set(), readyAt: 0,
   add(t, score, seed) {
@@ -7266,8 +6749,6 @@ const Radio = {
     const key = this.songKey(t);
     if (key && this.usedKeys.has(key)) return no("another version");                  // another version of a song already lined up
     if (UpNext.items.some((u) => u.uri === t.uri || (key && this.songKey(u) === key))) return no("in Up Next");
-    // Nothing you've heard in the last day (from anywhere, not just this autoplay session), unless the
-    // lookup came up short and is looking again (`this.loose`).
     if (!this.loose && Taste.heardWithin(t, 24 * 3600e3)) return no("heard today");
     const artist = (t.artists && t.artists[0] && t.artists[0].name) || "";
     if ((this.taste.get(LFM.norm(artist)) || 0) <= -2.5) return no("artist skipped");      // an artist you've skipped again and again
@@ -7286,8 +6767,6 @@ const Radio = {
     this.refreshT = setTimeout(() => { if (current() && current().name === "queue") views.queue.load(); }, 700);
     if (Lineup.on() && this.active) Lineup.sync();               // autoplay re-sorted or took a song out
   },
-  /** How far you got into the song that just ended or was skipped: 75% or more counts as liking it,
-   *  under half as skipping it. Autoplay leans towards the first and away from the second. */
   judge(pr) {
     if (!pr || !pr.item) return;
     const t = pr.item, artist = LFM.norm((t.artists && t.artists[0] && t.artists[0].name) || (t.raw && t.raw.artists && t.raw.artists[0] && t.raw.artists[0].name) || "");
@@ -7315,7 +6794,6 @@ const Radio = {
     S.userPick = { uri, at: Date.now() };
     await playBody({ uris: [uri] }, this.order[i].name, false, true);
   },
-  /** "Not this one" from the Queue page: take it out, and count it like a skip. */
   remove(uri) {
     const i = this.order.findIndex((t) => t.uri === uri);
     if (i <= this.at || this.qd.includes(uri)) return false;
@@ -7331,26 +6809,21 @@ const Radio = {
     this.active = false; clearInterval(this.timer); this.holdQueue = false; this.prog = null;
     this.dropQueued();
   },
-  /** Songs Cadenza already put in Spotify's queue would otherwise sneak in after what you picked:
-   *  remember them, and skip them if they come up. */
   dropQueued() {
-    if (Lineup.on()) { this.qd = []; return; }                     // (the line-up clears the engine's queue itself)
+    if (Lineup.on()) { this.qd = []; return; }
     if (this.qd.length) this.stray = { uris: new Set(this.qd), until: Date.now() + 30 * 60e3 };
     this.qd = [];
   },
   /** Find ~12 more songs like `seed` and add them to the list. */
   async extend(seed, boost = 1) {
     if (!seed || !seed.uri) return 0;
-    if (this.building) { this.wantMore = { seed, boost }; return 0; }      // one lookup at a time; the newest request waits
+    if (this.building) { this.wantMore = { seed, boost }; return 0; }
     this.building = true;
     let added = 0, fromLfm = 0;
     this.rej = {};
     try {
       await this.similarLastfm(seed, (t, sc) => { if (this.add(t, sc * boost, seed)) { added++; fromLfm++; } });
-      // Last.fm off, or it knew too little: Spotify's own search, as before.
       if (added < 5) (await this.similar(seed)).forEach((t, k) => { if (this.add(t, 0.3 - k * 0.01, seed)) added++; });
-      // Still short (Spotify's search gives little without Last.fm): artists you play a lot, then, if it
-      // is still nearly empty, songs you heard earlier today, so the music never just stops.
       if (this.active && this.upcoming().length < this.LOW) {
         for (const t of await this.fromFavorites(seed)) if (this.add(t, 0.25, seed)) added++;
       }
@@ -7363,24 +6836,18 @@ const Radio = {
     if (this.wantMore) { const w = this.wantMore; this.wantMore = null; if (this.active) this.extend(w.seed, w.boost); }
     return added;
   },
-  /** The last few songs you've heard, newest first. Autoplay looks for songs like all of them. */
   recent: [],
   heard(it) {
     const artists = (it.raw && it.raw.artists) || String(it.artists || "").split(", ").filter(Boolean).map((name) => ({ name }));
     if (!it.uri || !/^spotify:track:/.test(it.uri) || !artists.length) return;
     this.recent = [{ uri: it.uri, name: it.name, artists, at: Date.now() }, ...this.recent.filter((x) => x.uri !== it.uri)].slice(0, 6);
   },
-  /** Songs like the ones you just played, from Last.fm's listening data ("people who play this also play…").
-   *  Each of the last three songs counts, the newest most. Empty when Last.fm isn't set up or knows nothing. */
   async similarLastfm(seed, found) {
     if (!LFM.ready()) return [];
-    // Only songs heard since this autoplay started (when you picked its first song yourself): what you
-    // played before that was another mood and would pull in songs that don't fit.
     const seeds = [seed, ...this.recent.filter((x) => x.uri !== seed.uri && (x.at || 0) >= this.startedAt)].slice(0, 3);
     const score = new Map();
     const title = (x) => LFM.norm(cleanTitle(x));
     const playedTitles = new Set(seeds.map((x) => title(x.name)));
-    // The three lookups go out together (Cadenza still sends them to Last.fm one at a time, politely).
     const answers = await Promise.all(seeds.map((sd) => {
       const artist = (sd.artists && sd.artists[0] && sd.artists[0].name) || "";
       return artist ? LFM.get("track.getSimilar", { artist, track: cleanTitle(sd.name), limit: 40, autocorrect: 1 }, 3600000) : null;
@@ -7395,13 +6862,10 @@ const Radio = {
         score.set(k, cur);
       });
     }
-    // The best matches, at most two per artist, in a lightly shuffled order so radio isn't the same every time.
     const per = {};
     const ranked = [...score.values()].sort((a, b) => b.s - a.s).filter((x) => { per[x.artist] = (per[x.artist] || 0) + 1; return per[x.artist] <= 2; }).slice(0, 24);
     const picks = ranked.map((x, i) => ({ x, r: i + Math.random() * 6 })).sort((a, b) => a.r - b.r).map((y) => y.x);
     const out = [];
-    // Find them on Spotify three at a time, best first, handing each one over the moment it's found:
-    // the first song is lined up within a second or two instead of after the whole batch.
     let next = 0;
     const worker = async () => {
       while (next < picks.length && out.length < 12 && this.active) {
@@ -7411,8 +6875,6 @@ const Radio = {
       }
     };
     await Promise.all([worker(), worker(), worker()]);
-    // Artists like this one, a well-known song each: when song-level data is thin (too new or too obscure),
-    // and also whenever most of what was found is by the same artist, so other artists come in early.
     const artist = (seed.artists && seed.artists[0] && seed.artists[0].name) || "";
     const others = out.filter((t) => LFM.norm(LFM.firstArtist(t)) !== LFM.norm(artist)).length;
     if (out.length < 5 || others < 6) {
@@ -7430,7 +6892,6 @@ const Radio = {
     }
     return out;
   },
-  /** Songs like `seed` from Spotify's search alone: the fallback when Last.fm is off or knows too little. */
   async similar(seed) {
     const ok = (t) => t && t.uri && /^spotify:track:/.test(t.uri) && !t.is_local && !this.used.has(t.uri);
     const artists = (seed.artists || seed.raw && seed.raw.artists || []).filter((a) => a && a.name);
@@ -7440,7 +6901,6 @@ const Radio = {
       const r = await api("GET", `/search?type=track&limit=10&offset=${offset}&q=${enc(q)}`);
       return (r.status === 200 && r.body && r.body.tracks && r.body.tracks.items) || [];
     };
-    // The artist's genres (remembered, so each artist is looked up once).
     const genresOf = async (a) => {
       if (!a.id) return [];
       if (this.genres[a.id]) return this.genres[a.id];
@@ -7454,8 +6914,6 @@ const Radio = {
     ]);
     let wide = [];
     for (const g of shuffle(genres).slice(0, 2)) wide.push(...(await search(`genre:"${g}"`, Math.floor(Math.random() * 4) * 10)));
-    // No genres on file (common for newer artists): a plain search for the artist's name turns up
-    // songs that feature them, remixes and the scene around them.
     if (wide.length < 8) wide.push(...(await search(main.name, 10)));
     const title = cleanTitle(seed.name).toLowerCase();
     const seen = new Set();
@@ -7468,14 +6926,11 @@ const Radio = {
     });
     const mine = shuffle(clean(same)).slice(0, 3);
     const feat = shuffle(clean(collab.flat())).slice(0, 2);
-    // Others: at most two songs per artist, so it doesn't turn into one artist's discography.
     const per = {}, others = shuffle(clean(wide, true)).filter((t) => { const a = t.artists[0].name; per[a] = (per[a] || 0) + 1; return per[a] <= 2; }).slice(0, 9);
-    // Mix: mostly "others", with the artist and their collaborators dropped in every few songs.
     const out = [], pools = [others, others, mine, others, feat, others, mine, others, others, feat, others, mine];
     for (let i = 0; out.length < 14 && i < 40; i++) { const pool = pools[i % pools.length]; if (pool.length) out.push(pool.shift()); else if (![others, mine, feat].some((p) => p.length)) break; }
     return out;
   },
-  /** Songs by artists you play a lot (from your taste profile): the fallback when nothing else found enough. */
   async fromFavorites(seed) {
     const ok = (t) => t && t.uri && /^spotify:track:/.test(t.uri) && !t.is_local && !this.used.has(t.uri);
     const top = Taste.favoriteArtists(14);
@@ -7488,18 +6943,14 @@ const Radio = {
     }
     return out;
   },
-  /** Keep one song waiting in Spotify's queue: the next one on the list. */
   async queueNext() {
-    if (Lineup.on()) {                                             // (the line-up hands autoplay's picks to the engine)
+    if (Lineup.on()) {
       if (this.active && this.upcoming().length < this.LOW && !this.building) { const cur = this.order[this.at]; if (cur) this.extend(cur); }
       return Lineup.sync();
     }
     if (!this.active || this.holdQueue || this.queueing) return;
     if (UpNext.items.length || UpNext.fed) return;               // your Up Next goes first; radio resumes after
-    // Running low: look for more like what's on now (in the background; it doesn't hold anything up).
     if (this.upcoming().length < this.LOW && !this.building) { const cur = this.order[this.at]; if (cur) this.extend(cur); }
-    // Not until Spotify says the song is actually playing here. Queued earlier, Spotify answers "no active
-    // device" but sometimes queues it anyway, and the retry then puts it in twice.
     const p = S.player;
     if (!(p && p.item && p.is_playing) || Date.now() < (this.readyAt || 0)) {
       clearTimeout(this.requeueT);
@@ -7508,14 +6959,10 @@ const Radio = {
     }
     this.queueing = true;
     try {
-      // Top Spotify's queue up to AHEAD songs, in line-up order. (add() calls back here as songs are found.)
       while (this.active && this.qd.length < this.AHEAD) {
         const next = this.order[this.at + 1 + this.qd.length];
         if (!next) break;
-        // Already handed to Spotify earlier this session (and Spotify can't take a song back out of its
-        // queue): it's still there, so count it instead of sending it a second time.
         if (this.sent.has(next.uri)) { this.qd.push(next.uri); continue; }
-        // Sending this one failed before: it may have gone in anyway, so look first.
         if (this.failedSend.has(next.uri)) {
           const q = await api("GET", "/me/player/queue");
           if (q.status === 200 && q.body && (q.body.queue || []).some((t) => t && t.uri === next.uri)) { this.sent.add(next.uri); this.qd.push(next.uri); continue; }
@@ -7523,15 +6970,11 @@ const Radio = {
         const r = await api("POST", `/me/player/queue?uri=${enc(next.uri)}`);
         if (!this.active) break;
         if (r.status >= 300 && r.status !== 429) {
-          // A failed answer doesn't always mean it failed (a slow or broken reply after Spotify took it).
-          // Look before trying again, or the song ends up in the queue twice.
           const q = await api("GET", "/me/player/queue");
           if (q.status === 200 && q.body && (q.body.queue || []).some((t) => t && t.uri === next.uri)) { this.sent.add(next.uri); this.qd.push(next.uri); continue; }
         }
         if (r.status >= 300) {
           this.failedSend.add(next.uri);
-          // Usually "no active device" while Cadenza's speaker is still starting the song: try again shortly,
-          // or the album the song was played from carries on instead of autoplay's picks.
           clearTimeout(this.requeueT);
           if (r.status !== 429) this.requeueT = setTimeout(() => this.queueNext(), 2500);
           break;
@@ -7541,15 +6984,9 @@ const Radio = {
       }
     } finally { this.queueing = false; }
   },
-  /** Next, pressed in Cadenza while autoplay is on. With songs in Spotify's queue, Spotify skips to the
-   *  next one. With none there yet (you're skipping faster than they can be handed over), Cadenza plays
-   *  the next song from its own line-up, so the music never stops. */
   async skip() {
     if (this.qd.length) return api("POST", "/me/player/next");
     if (!this.order[this.at + 1]) {
-      // Autoplay has only just started (you skipped past the end of a playlist) and hasn't found a song yet.
-      // Asking Spotify for its next song now would run off the end and stop everything, so pause and wait
-      // for autoplay's first find. More presses meanwhile do nothing.
       if (this.finding) return { status: 204 };
       toast("AUTOPLAY IS FINDING SONGS LIKE THIS ONE…");
       api("PUT", "/me/player/pause").catch(() => {});
@@ -7561,7 +6998,6 @@ const Radio = {
     const ok = await playBody({ uris: [n.uri] }, null, false, true);
     return { status: ok ? 204 : 500 };
   },
-  /** The next song in the line-up, waiting (up to 15 s) for the lookup if it hasn't found one yet. */
   finding: null,
   nextSong() {
     const now = this.order[this.at + 1];
@@ -7591,24 +7027,19 @@ const Radio = {
     if (this.active && this.prog && this.prog.uri !== uri) { const pr = this.prog; this.prog = null; this.judge(pr); }
     if (fromUpNext && this.active) { this.grace = Date.now() + 6000; this.queueNext(); return; }   // radio waits its turn
     if (!this.active) {
-      // A left-over queued song came up after you'd moved on: skip it.
       if (this.stray && this.stray.uris.has(uri)) { this.stray.uris.delete(uri); cmd("next"); }
       return;
     }
     const i = this.indexOf(uri);
-    // You went back to a song autoplay played earlier: it plays again, and autoplay's place in its line-up stays put.
     if (Date.now() < (this.replayUntil || 0)) { this.prog = i >= 0 ? { uri, max: 0, item: this.order[i] } : null; this.grace = Date.now() + 6000; this.queueNext(); return; }
-    // A song autoplay already played came round again: it was in Spotify's queue when autoplay had to
-    // play it directly (skipping fast, or Spotify losing track). Spotify can't remove queued songs, so skip it.
     if (i >= 0 && this.played.has(this.order[i].uri) && this.order[i].uri !== (this.order[this.at] || {}).uri) { cmd("next"); return; }
     if (i >= 0) {
       this.at = i;
       this.played.add(this.order[i].uri);
       this.prog = { uri, max: 0, item: this.order[i] };
-      // Queued songs up to this one have played (or been skipped past): they're out of Spotify's queue.
       this.qd = this.qd.filter((u) => this.order.findIndex((t) => t.uri === u) > i);
       this.queueNext();
-    } else if (Date.now() > this.grace) this.stop();             // something else is playing now (your phone, say)
+    } else if (Date.now() > this.grace) this.stop();
   },
   /** Safety net, once a second: if a song has ended and nothing came next, move on ourselves. */
   watch() {
@@ -7617,9 +7048,7 @@ const Radio = {
     if (S.holdUntil && Date.now() < S.holdUntil) return;          // the engine is waiting after a refused song
     if (this.ended(p)) {
       if (!this.stall) this.stall = Date.now();
-      // Skipping fast can outrun Spotify's queue; then the music just stops. Move on at once in that case.
       const skipped = this.skipFrom && Date.now() - this.skipFrom.at < 8000;
-      // After a refusal, wait a couple of seconds first: asking Spotify again straight away tends to get refused too.
       const refused = S.lastRefusal && Date.now() - S.lastRefusal < 20000;
       if (Date.now() - this.stall > (refused ? 2500 : skipped ? 600 : 3000)) { this.stall = 0; this.advance(); }
     } else this.stall = 0;
@@ -7628,20 +7057,14 @@ const Radio = {
     const it = p.item, dur = it.duration_ms || 0, pos = progressNow();
     const stopped = !p.is_playing;
     if (!stopped) return false;
-    // You pressed Next and Spotify had nothing after this song, so it just stopped.
     const sk = this.skipFrom;
     if (sk && sk.uri === it.uri && Date.now() - sk.at < 8000) return true;
-    // librespot just gave up on songs Spotify wouldn't unlock and ran out of queue. Spotify then shows
-    // an earlier song paused at the start, and pressing play would only replay that one.
-    // librespot said it had nothing left to play (you skipped past the last song).
     if (S.queueEndAt && Date.now() - S.queueEndAt < 20000 && pos < 4000) return true;
     if (S.lastRefusal && Date.now() - S.lastRefusal < 20000 && pos < 4000 && (refusedLately(it.uri) || (sk && sk.uri === it.uri))) return true;
     if (dur > 1000 && pos >= dur - 1500) return true;
-    // Spotify often ends a list by going back to its first song, paused at the start.
     const n = this.nearEnd;
     return !!(n && Date.now() - n.at < 15000 && pos < 4000 && (it.uri === n.uri || it.uri === n.first));
   },
-  /** Once a second: remember when a song was heard right up to its end. */
   note() {
     const p = S.player, it = p && p.item;
     if (!it || !p.is_playing) return;
@@ -7650,39 +7073,32 @@ const Radio = {
   },
   firstUri: null, nearEnd: null, replayUntil: 0,
   async advance() {
-    // Queued songs that didn't start: nudge Spotify once. If that doesn't help (it lost its queue, say
-    // after the engine restarted), forget them and play the next song directly.
     if (this.qd.length && Date.now() - this.nudgedAt > 10000) { this.nudgedAt = Date.now(); await cmd("next"); return; }
     this.qd = [];
-    // Still looking (autoplay only just began): wait for its first find rather than giving up.
     const n = await this.nextSong();
     if (!n) return this.stop();
     if (this.order[this.at + 1] !== n) return;                    // a skip played it meanwhile
     this.at += 1; this.grace = Date.now() + 6000;
     await playBody({ uris: [n.uri] }, null, false, true);
   },
-  /** An album or playlist ran out and nothing followed: keep going with songs like the last one. */
   checkEnd() {
     clearTimeout(this.endTimer);
     const p = S.player;
     if (this.active || TrueShuffle.active || !this.enabled() || DJ.active || !p) return;
     if (S.holdUntil && Date.now() < S.holdUntil) return;          // the engine is waiting after a refused song
     if (p.repeat_state && p.repeat_state !== "off") return;
-    // When the list runs out, Spotify (or a librespot that lost its playlist after a dropped connection)
-    // can drop the song altogether instead of leaving it paused at the end. Use the song that was ending.
     const n = this.nearEnd, gone = !p.item && !!(n && n.item && Date.now() - n.at < 30000);
     const last = gone ? n.item : p.item;
     if (!last || !/^spotify:track:/.test(last.uri) || !(gone || this.ended(p))) return;
     this.endTimer = setTimeout(() => {
       const q = S.player;
       if (this.active || !q || q.is_playing) return;
-      // Still the same ending: that song stopped at its end, or playback has vanished since it was ending.
       const same = q.item ? q.item.uri === last.uri && this.ended(q) : !!(this.nearEnd && this.nearEnd.uri === last.uri);
       if (!same) return;
       const seed = { uri: last.uri, name: last.name, artists: (last.raw && last.raw.artists) || [] };
       this.fresh(seed, false);
       this.active = true; this.order = [seed]; this.at = 0; this.qd = [];
-      this.holdQueue = true;                                   // nothing goes in Spotify's queue until the first song plays
+      this.holdQueue = true;
       let started = false;
       const go = async () => {
         if (started || !this.active || !this.order[1]) return;
@@ -7695,7 +7111,6 @@ const Radio = {
         this.holdQueue = false;
         this.queueNext();
       };
-      // Start with the first song found, while the rest are still being looked up.
       const wait = setInterval(() => { if (this.order[1] || !this.active) { clearInterval(wait); go(); } }, 150);
       this.extend(seed).then((n) => { if (!n && !started) { clearInterval(wait); this.active = false; this.holdQueue = false; } });
     }, 3500);
@@ -7710,14 +7125,11 @@ const Viz = {
   cv: $("viz-c"), lv: Array(10).fill(0), target: Array(10).fill(0), lastData: 0, raf: 0, t: 0, last: 0, colors: null,
   feed(levels) { if (Array.isArray(levels) && levels.length) { this.target = levels; this.lastData = performance.now(); } },
   users: new Set(), paused: [], quiet: {},
-  // Several places can show it at once (Home and Stage); the meter runs while any of them is open.
   start(who = "home") {
     this.users.add(who);
     Meter.want("viz:" + who, true);
     this.colors = null; this.quiet = {};
     if (this.raf) return;
-    // ~30 drawings a second, timed by a plain timer (waking on every display frame, 120 a second
-    // on ProMotion screens, cost far more than the drawing itself).
     this.raf = setInterval(() => requestAnimationFrame((now) => this.draw(now)), 33);
   },
   stop(who = "home") {
@@ -7725,14 +7137,12 @@ const Viz = {
     Meter.want("viz:" + who, false);
     if (!this.users.size) { clearInterval(this.raf); this.raf = 0; }
   },
-  /** Cadenza has been in the background for a while (or is back): stop measuring and drawing until it's back. */
   rest(on) {
     if (on && this.users.size && !this.resting) { this.resting = [...this.users]; this.resting.forEach((w) => this.stop(w)); }
     else if (!on && this.resting) { const r = this.resting; this.resting = null; if (!document.hidden) r.forEach((w) => this.start(w)); else this.paused.push(...r); }
   },
   resting: null,
   init() {
-    // Hidden window (closed to the menu bar, minimised, covered): stop measuring and drawing entirely.
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) { this.paused = [...this.users]; this.paused.forEach((w) => this.stop(w)); }
       else { this.paused.forEach((w) => this.start(w)); this.paused = []; }
@@ -7740,17 +7150,15 @@ const Viz = {
   },
   levels(now) {
     const playing = !!(S.player && S.player.is_playing);
-    // No live levels (engine off, or the demo): fake a gentle pulse while music plays; flat when paused.
     if (now - this.lastData > 700) {
       const k = now / 1000;
       this.target = this.target.map((_, i) => playing ? 0.32 + 0.22 * Math.sin(k * (1.7 + i * 0.37) + i) * Math.sin(k * 0.9 + i * 1.3) + (i < 3 ? 0.18 : 0) : 0);
     }
     if (this.lv.length !== this.target.length) this.lv = this.target.slice();
-    // ease toward the target: quick to rise, slower to fall, like a real meter
     this.lv = this.lv.map((v, i) => { const t = this.target[i] || 0; return v + (t - v) * (t > v ? 0.45 : 0.12); });
     return this.lv.map((v) => Math.min(1, Math.pow(v, 0.7) * 1.15));   // perceptual lift so quiet parts still move
   },
-  env(lv, x) {   // band level at position x (0 = bass on the left … 1 = treble on the right), smoothly
+  env(lv, x) {
     const p = x * (lv.length - 1), i = Math.floor(p), f = p - i;
     const a = lv[i] || 0, b = lv[Math.min(i + 1, lv.length - 1)] || 0;
     return a + (b - a) * (f * f * (3 - 2 * f));
@@ -7771,14 +7179,13 @@ const Viz = {
       this.colors = { a: cs.getPropertyValue("--cyan").trim(), w: cs.getPropertyValue("--white").trim(), n: cs.getPropertyValue("--navy").trim(),
                       y: cs.getPropertyValue("--yellow").trim(), r: cs.getPropertyValue("--red").trim(), t: cs.getPropertyValue("--teal").trim() };
     }
-    if (quiet && this.quiet[key]) return;                        // nothing moving: don't redraw a flat line 30× a second
+    if (quiet && this.quiet[key]) return;
     this.quiet[key] = quiet;
     const c = cv.getContext("2d"), k = now / 1000, mid = H / 2, C = this.colors;
     c.clearRect(0, 0, W, H);
     const theme = Theme.current ? Theme.current.id : "tide";
     const wave = (x, n, speed) => Math.sin(x * n + k * speed) * 0.62 + Math.sin(x * n * 2.3 - k * speed * 1.6) * 0.38;
     if (theme === "min") {
-      // Studio: thin rounded bars in the accent colour, mirrored, quiet
       const bars = lv.length >= 24 ? lv.length : 40, gap = W / bars, bw = Math.max(1.5 * dpr, gap * 0.34);
       c.fillStyle = C.a;
       for (let i = 0; i < bars; i++) {
@@ -7791,7 +7198,6 @@ const Viz = {
       return;
     }
     if (theme === "rogue") {
-      // R0GUE: a dot-matrix readout; columns of square pixels, lime with pink at the peaks, and a scan bar
       const cols = lv.length >= 24 ? lv.length : 40, cw = W / cols, px = Math.max(2 * dpr, cw * 0.42), rows = Math.floor(H / (px * 1.6));
       for (let i = 0; i < cols; i++) {
         const e = cols === lv.length ? lv[i] : this.env(lv, i / (cols - 1)) * (0.6 + 0.4 * Math.abs(wave(i / cols, 9, 7)));
@@ -7812,7 +7218,6 @@ const Viz = {
       const bars = lv.length >= 24 ? lv.length : 44, gap = W / bars, bw = gap * 0.58, seg = 3 * dpr;
       for (let i = 0; i < bars; i++) {
         const x = i / (bars - 1), e = bars === lv.length ? lv[i] : this.env(lv, x);
-        // with the real spectrum every bar is a measured band; the wobble is only for the fallback
         const h = Math.max(seg, (bars === lv.length ? e : e * (0.75 + 0.25 * Math.abs(wave(x, 9, 6)))) * (H / 2 - 2 * dpr));
         const px = i * gap + (gap - bw) / 2;
         for (let y = 0; y < h; y += seg * 1.7) {
@@ -7824,11 +7229,9 @@ const Viz = {
       }
       c.globalAlpha = 0.6; c.fillStyle = C.t; c.fillRect(0, mid - dpr / 2, W, dpr); c.globalAlpha = 1;
     } else if (theme === "heist") {
-      // jagged comic-book wave: a thick black stroke with a white zig-zag on top, red spikes on peaks
       const real = lv.length >= 24, n = real ? lv.length - 1 : 34, pts = [];
       for (let i = 0; i <= n; i++) {
         const x = i / n, e = (real ? lv[i] : this.env(lv, x)) * (H / 2 - 4 * dpr);
-        // live: each spike is one measured band; fallback: a decorative wobble
         pts.push([x * W, mid + (i % 2 ? -1 : 1) * e * (real ? 1 : 0.55 + 0.45 * Math.abs(wave(x, 7, 5)))]);
       }
       const path = () => { c.beginPath(); pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y))); };
@@ -7838,9 +7241,6 @@ const Viz = {
       c.fillStyle = C.a;
       pts.forEach(([x, y], i) => { if (Math.abs(y - mid) > H * 0.28) { c.beginPath(); c.moveTo(x - 3 * dpr, mid); c.lineTo(x, y); c.lineTo(x + 3 * dpr, mid); c.fill(); } });
     } else {
-      // smooth water-light wave: a bright line with a soft echo and a glow underneath
-      // The glow is two wide, faint strokes of the current path. A canvas blur (shadowBlur) looks the
-      // same but costs far more, 30 times a second.
       const glow = () => {
         c.strokeStyle = C.a;
         c.globalAlpha = 0.12; c.lineWidth = 11 * dpr; c.stroke();
@@ -7848,7 +7248,6 @@ const Viz = {
         c.globalAlpha = 1;
       };
       if (lv.length >= 24) {
-        // live: the spectrum itself, mirrored above and below like a sound wave (bass left, treble right)
         const pts = lv.map((v, i) => [(i / (lv.length - 1)) * W, v * (H / 2 - 3 * dpr) * Math.min(1, 0.25 + Math.sin(Math.PI * i / (lv.length - 1)) * 1.4)]);
         const curve = (sign) => {
           c.moveTo(0, mid);
@@ -7888,7 +7287,6 @@ views.eq = {
     ? [["←→", "FILTER"], ["↑↓", "GAIN"], ["[ ]", "FREQ"], ["Q", "WIDTH"], ["T", "TYPE"], ["H", "HEADPHONES", () => views.eq.headphones()], ["I", "IMPORT", () => views.eq.importFile()], ["G", "GRAPHIC", () => views.eq.setMode("graphic")], ["ESC", "BACK", back]]
     : [["←→", "BAND"], ["↑↓", "±1 dB"], ["[ ]", "PRESET"], ["E", "ON/OFF"], ["0", "RESET BAND"], ["G", "PARAMETRIC", () => views.eq.setMode("parametric")], ["H", "HEADPHONES", () => views.eq.headphones()], ["P", "SIGNAL PATH"], ["ESC", "BACK", back]],
   parametric() { return !!(EQ.state && EQ.state.mode === "parametric"); },
-  /** How far the sliders go: ±12 dB for the graphic EQ, ±15 for parametric filters (headphone profiles). */
   range() { return this.parametric() ? 15 : 12; },
   async show() {
     if (!EQ.state) await EQ.load();
@@ -7964,18 +7362,15 @@ views.eq = {
     else { const g = EQ.state.gains.slice(); g[i - 1] = v; EQ.send({ gains: g, preset: this.match(g, EQ.state.preamp) }); }
     this.render();
   },
-  /** Change one parametric filter (the list keeps its places; unused ones stay off). */
   setFilter(k, patch) {
     const f = this.filters();
     f[k] = { ...f[k], ...patch };
     f[k].f = Math.max(20, Math.min(20000, Math.round(f[k].f)));
     f[k].q = Math.max(0.1, Math.min(10, Math.round(f[k].q * 100) / 100));
-    // Keep everything up to the last filter in use (so places don't shift around).
     let last = -1;
     f.forEach((x, j) => { if (x.t !== "OFF") last = j; });
     EQ.send({ filters: f.slice(0, last + 1), preset: EQ.state.preset && !/^(Flat|Custom)$/.test(EQ.state.preset) && !EQ.state.preset.endsWith("(edited)") ? EQ.state.preset + " (edited)" : EQ.state.preset || "Custom" });
   },
-  /** Graphic ↔ parametric. The first time, parametric starts from the graphic EQ's bands, so nothing jumps. */
   setMode(mode) {
     if (!EQ.state) return;
     if (mode === "parametric" && !(EQ.state.filters || []).length) {
@@ -7987,7 +7382,6 @@ views.eq = {
     toast(mode === "parametric" ? "PARAMETRIC EQ · [ ] FREQUENCY · Q WIDTH · T TYPE" : "GRAPHIC EQ");
   },
   flatFilters() { EQ.send({ filters: [], preamp: 0, preset: "Flat", enabled: true }); this.build(); this.render(); toast("PARAMETRIC EQ: FLAT"); },
-  /** A profile (from AutoEq, or a file): parametric, on, with its name. */
   useProfile(p) {
     EQ.send({ mode: "parametric", filters: p.filters, preamp: p.preamp, preset: p.name || "Headphones", enabled: true });
     if (current() && current().name === "eq") { this.build(); this.render(); }
@@ -8010,7 +7404,6 @@ views.eq = {
       },
     })));
   },
-  /** An EQ file in Equalizer APO's format (AutoEq's ParametricEQ.txt, or one you made). */
   async importFile() {
     const f = await native("file.open", { kind: "txt", title: "Import an EQ file (Equalizer APO format)" }).catch(() => null);
     if (!f || !f.ok) { if (f && f.message) toast(upper(f.message), true); return; }
@@ -8107,7 +7500,6 @@ views.eq = {
       const i = this.sel - 1, x = i >= 0 ? this.filters()[i] : null;
       if (lk === "i" && !e.metaKey) { this.importFile(); return true; }
       if (!x) return false;
-      // Frequency: a sixth of an octave a step (⇧ half an octave). Width: Q up is narrower.
       if (k === "[" || k === "]" || k === "{" || k === "}") {
         const oct = e.shiftKey || k === "{" || k === "}" ? 0.5 : 1 / 6;
         this.setFilter(i, { f: x.f * Math.pow(2, (k === "]" || k === "}") ? oct : -oct), t: x.t === "OFF" ? "PK" : x.t });
@@ -8131,7 +7523,6 @@ views.eq = {
   },
 };
 
-/** System → Sound & EQ → Channels: balance, mono, swap, polarity and test tones; and the output's buffer. */
 const Channels = {
   text() {
     const s = S.settings, b = +s.balance || 0, parts = [];
@@ -8240,8 +7631,6 @@ views.output = {
     this.sig = "";
     this.refresh(true);
     clearInterval(this.timer);
-    // Mac outputs arrive as events from native code; this only catches Spotify Connect devices coming
-    // and going, which is rare, so every 15 s is plenty (and never while Cadenza is hidden).
     this.timer = setInterval(() => { if (!cooling() && !document.hidden) this.refresh(false); }, 15000);
   },
   leave() { clearInterval(this.timer); },
@@ -8438,9 +7827,6 @@ $("ar-share").onclick = () => views.artist.ar && copyLink(views.artist.ar.uri, v
 /* =====================================================================
    LYRICS: synced lines from LRCLIB, the current line glows and stays centred
    ===================================================================== */
-/** Lyrics follow what you *hear*, which lags what Spotify reports: Cadenza's sound engine keeps
- *  about 0.4 s of audio buffered, and Bluetooth adds roughly 0.2 s more. [ and ] nudge it further. */
-/** Milliseconds until the next synced line starts (as heard), clamped to 30 ms … 1 s. */
 function nextLyricIn(lines, cap = 1000) {
   if (!lines || !lines.length || lines[0].t < 0) return cap;
   const pos = LyricSync.pos(), next = lines.find((l) => l.t > pos);
@@ -8471,7 +7857,6 @@ views.lyrics = {
   el: $("v-lyrics"), cache: {}, lines: [], uri: null, timer: null, cur: -1,
   keys: () => [["CLICK", "JUMP TO LINE"], ["[ ]", "EARLIER / LATER"], ["T", Lyrics_tr.on ? "HIDE TRANSLATION" : "TRANSLATE", () => Lyrics_tr.toggle()], ["ESC", "BACK", back]],
   show() { LyricSync.load(); this.load(); this.loop(); },
-  /** Check again right when the next line is due, and at most once a second while waiting. */
   loop() {
     clearTimeout(this.timer);
     this.tick();
@@ -8517,8 +7902,6 @@ views.lyrics = {
     } catch (e) { res = null; }
     return (this.cache[it.uri] = res || { none: true });
   },
-  /** Timed LRC lines. Copes with several stamps on one line ("[00:12.00][01:40.00] chorus"),
-   *  "mm:ss:cc" stamps and word-timing tags ("<00:12.40>"), all of which some uploads use. */
   parse(lrc) {
     const out = [], stamp = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
     for (const raw of String(lrc).split(/\r?\n/)) {
@@ -8584,7 +7967,6 @@ const TrackMenu = {
     Drawer.menu(t, this.items(t));
     this.checkLike(t);
   },
-  /** Everything you can do with a song (also listed in the ⌘K palette). */
   items(t) {
     const a = (t.artists || []).filter((x) => x.id);
     return [
@@ -8634,7 +8016,7 @@ const TrackMenu = {
    ===================================================================== */
 const Tags = {
   cache: {}, queue: [], running: false, pending: new Set(), genres: {}, lfm: {},
-  V: 2,                                                         // tags made the old way (Apple Intelligence) are made again
+  V: 2,
   key(p) { return p.kind === "liked" ? "liked" : p.id; },
   version(p) { return p.kind === "liked" ? "liked:" + S.likedTotal : (p.snapshot_id || "n" + plCount(p)); },
   async init() {
@@ -8667,7 +8049,7 @@ const Tags = {
     if (this.running) return;
     this.running = true;
     while (this.queue.length) {
-      while (!quietTime() || !S.loggedIn) await wait(3000);       // wait for a quiet moment (and for any Spotify cool-down)
+      while (!quietTime() || !S.loggedIn) await wait(3000);
       const p = this.queue.shift();
       this.paint(p);
       try { await this.generate(p); } catch (e) { console.error(e); }
@@ -8677,7 +8059,6 @@ const Tags = {
     }
     this.running = false;
   },
-  // Last.fm tags that say how music feels, and the mood each one counts towards.
   MOODS: {
     Chill: ["chill", "chillout", "chill out", "relaxing", "relax", "mellow", "calm", "lofi", "lo-fi", "downtempo", "easy listening", "laid back", "chillwave", "smooth"],
     Melancholy: ["sad", "melancholy", "melancholic", "depressing", "heartbreak", "emotional", "bittersweet", "sadcore", "lonely"],
@@ -8691,14 +8072,12 @@ const Tags = {
   },
   // Tags that aren't a genre (and aren't a mood either).
   NOT_GENRE: /^(seen live|favou?rites?|favorite songs|my |albums i own|check out|spotify|awesome|amazing|beautiful|cool|good|great|best|love at first listen|under \d|all|male vocalists?|female vocalists?|vocalists?|singer-songwriter|\d{2,4}s?|american|british|english|uk|usa|us|canadian|australian|swedish|german|french|irish|scottish|korean|japanese|chinese|brazilian|spanish|italian|dutch|norwegian|finnish|danish|russian|polish|mexican|argentinian|icelandic|belgian|new zealand|austrian|swiss|ukrainian|czech|turkish|indian|taiwanese|filipino|portuguese|greek|hungarian|israeli|nigerian|south african|colombian|chilean|puerto rican|cuban|jamaican|germany|deutschland|deutsch|france|japan|england|britain|united kingdom|united states|america|sweden|korea|south korea|canada|australia|brazil|russia|italy|spain|netherlands|holland|norway|finland|denmark|poland|mexico|argentina|iceland|belgium|ireland|scotland|wales|china|taiwan|ukraine|turkey|india|austria|switzerland|portugal|greece|nigeria|colombia|chile|jamaica|berlin|london|new york|los angeles|tokyo|paris|seoul|.*\b(albums?|songs?)$)$/,
-  /** "indie rock" → "Indie Rock", with the usual spellings for the few that need them. */
   label(g) {
     const special = { "hip hop": "Hip-Hop", "hip-hop": "Hip-Hop", rnb: "R&B", "r&b": "R&B", "r and b": "R&B", edm: "EDM", "j-pop": "J-Pop", jpop: "J-Pop",
       "k-pop": "K-Pop", kpop: "K-Pop", "j-rock": "J-Rock", "lo-fi": "Lo-Fi", lofi: "Lo-Fi", "uk garage": "UK Garage", idm: "IDM", "drum and bass": "Drum & Bass", dnb: "Drum & Bass" };
     if (special[g]) return special[g];
     return g.replace(/(^|[\s-])(\p{L})/gu, (m, sep, c) => sep + c.toUpperCase());
   },
-  /** One artist's Last.fm tags (remembered for a month, so each artist is asked about rarely). */
   async artistTags(name) {
     const k = LFM.norm(name);
     const hit = this.lfm[k];
@@ -8732,7 +8111,6 @@ const Tags = {
     const addGenre = (g, w) => { g = String(g).toLowerCase().trim(); if (g && !this.NOT_GENRE.test(g)) genre[g] = (genre[g] || 0) + w; };
     let looked = 0, askedLfm = false;
     for (const { a, n } of top) {
-      // Spotify's genres for the artist (remembered, so each artist is looked up once).
       if (a.id && !this.genres[a.id] && looked < 4 && !cooling()) {
         looked++;
         const g = await api("GET", `/artists/${a.id}`);
@@ -8756,12 +8134,10 @@ const Tags = {
       this.lfm = Object.fromEntries(keep);
       native("store.set", { key: "artistTags", value: this.lfm }).catch(() => {});
     }
-    // The playlist's own name and description count too ("sad songs", "gym", "chill vibes"…).
     const words = (p.name + " " + plainText(p.description || "")).toLowerCase();
     for (const [m, list] of Object.entries(this.MOODS)) if (list.some((t) => new RegExp("\\b" + t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(words))) mood[m] = (mood[m] || 0) + 3;
     const best = (o) => Object.entries(o).sort((x, y) => y[1] - x[1])[0];
     const g = best(genre), m = best(mood);
-    // Era: the decade most of the songs came out in, or "Mixed Eras" when they're spread wide.
     const years = tracks.map((t) => parseInt(((t.album && t.album.release_date) || "").slice(0, 4), 10)).filter((y) => y > 1900 && y < 2100).sort((x, y) => x - y);
     let era = null;
     if (years.length >= 3) {
@@ -8862,15 +8238,12 @@ views.dj = {
    SYSTEM: settings rows + engine log
    ===================================================================== */
 const ENGINE_TEXT = { running: "RUNNING", starting: "STARTING…", login: "WAITING FOR SPOTIFY SIGN-IN (CHECK YOUR BROWSER)", stopped: "STOPPED", error: "STOPPED UNEXPECTEDLY · SEE THE LOG (COPY DIAGNOSTICS)" };
-// System is split up: the things you reach for most sit at the top, the rest live in groups.
 const SYS_TOP = ["theme", "account", "devices", "friends", "commands", "stage", "update"];
 const SYS_GROUPS = {
   sound: { label: "Sound & EQ", get keys() {
     return ["eqEngine", "signalPath", "crossfade", "eqPerDevice", "normalize", "normalizeType", "bitrate", ...(ON_MAC ? ["matchRate", "exclusive"] : []), "channels", "buffer", "sfx", "sfxVolume"];
   } },
   autoplay: { label: "Autoplay", keys: ["autoplay", "autoDial", "autoMode", "autoNever", "autoTaste"] },
-  // A copy built with its own Last.fm key or Discord ID moves that row to Engine settings, as a fallback.
-  // Normally Last.fm has none built in, so its key is asked for here.
   connections: { label: "Connections", get keys() {
     return ["discord", ...(S.settings.builtinDiscord ? [] : ["discordAppId"]), "lastfmUser", ...(S.settings.builtinLastfm && !LFM.dead ? [] : ["lastfmKey"]), "geniusToken"];
   } },
@@ -9047,7 +8420,6 @@ views.system = {
   },
   async set(key, value) {
     if (key === "lastfmKey") { LFM.dead = ""; LFM.cache.clear(); LFM.stat = { ok: 0, bad: 0, last: "" }; }   // a new key: try Last.fm again
-    // Last.fm only needs your username: Cadenza checks Last.fm knows it. Clearing it disconnects.
     if (key === "lastfmUser") {
       let r = null;
       try { r = await native("lastfm.setUser", { user: String(value) }); } catch (e) { r = { ok: false, message: "Not available here" }; }
@@ -9058,12 +8430,11 @@ views.system = {
     const oldId = S.settings.clientId;
     try { const s = await native("settings.set", { key, value }); if (s) S.settings = s; } catch (e) { /* ignore */ }
     if (key === "themedCovers") { S.settings.themedCovers = !!value; Covers.refresh(); }
-    if (key === "lastfmKey") {                                     // Last.fm's status (has a key, who you are) changes with it
+    if (key === "lastfmKey") {
       try { await Links.load(); } catch (e) { /* demo */ }
       toast(String(value).trim() ? "LAST.FM KEY SAVED" + (Links.lastfm && Links.lastfm.user ? "" : " · NOW TYPE YOUR LAST.FM USERNAME") : "LAST.FM KEY REMOVED");
     }
     if (key === "clientId" && String(value).trim() && String(value).trim() !== oldId) {
-      // A different Spotify app: the old login belongs to the old Client ID, so sign in again.
       toast("NEW CLIENT ID: LOG IN TO SPOTIFY AGAIN");
       coolUntil = 0;
       PageCache.m.clear();
@@ -9074,7 +8445,7 @@ views.system = {
   act(o) {
     if (!o || busy || this.editing) return;
     if (o.type === "group") return this.openGroup(o.key.slice(4) || null);
-    if (o.key === "crossfade") {                                   // Off, 3, 6, 9, 12 seconds (like Spotify's slider)
+    if (o.key === "crossfade") {
       const steps = [0, 3, 6, 9, 12], v = S.settings.crossfade ?? 6;
       const next = steps[(steps.indexOf(v) + 1) % steps.length] ?? 6;
       return this.set("crossfade", next).then(() => toast(next ? `CROSSFADE: ${next} SECONDS (FROM THE NEXT SONG)` : "CROSSFADE OFF"));
@@ -9164,7 +8535,6 @@ views.setup = {
     this.check();
     setTimeout(() => $("setup-cid").focus(), 80);
   },
-  /** Says straight away whether what's in the box looks like a Client ID. */
   check() {
     const v = $("setup-cid").value.trim();
     $("setup-check").textContent = !v ? "" : /^[0-9a-f]{32}$/i.test(v) ? "✓ LOOKS RIGHT" : "(32 letters and numbers)";
@@ -9208,7 +8578,6 @@ $("setup-copy").onclick = async () => {
 /* =====================================================================
    Add-to-playlist drawer
    ===================================================================== */
-/** Label with an optional leading icon (track menu, DJ actions). */
 function fillLabel(el, o) {
   el.textContent = "";
   if (o.icon) el.append(icon(o.icon));
@@ -9229,7 +8598,6 @@ const Drawer = {
     },
     onActivate: (p) => Drawer.pick(p),
   }),
-  /** A list of actions in the side panel (playlist tools and similar). */
   actions(title, what, items) {
     this.track = { tools: true }; this.isOpen = true; this.creating = false; this.mode = "menu";
     $("drawer-title").innerHTML = title;
@@ -9311,7 +8679,7 @@ const Drawer = {
     if (e.key === "Escape" || e.key === "Backspace" || e.key === "ArrowLeft") { this.hide(); return true; }
     if (this.list.nav(e)) return true;
     if (e.key === "Enter") { pop(this.list.rows[this.list.i]); this.pick(this.list.cur); return true; }
-    return true;   // swallow everything else while the drawer is open
+    return true;
   },
 };
 $("scrim").onclick = () => Drawer.hide();
@@ -9326,7 +8694,7 @@ async function switchTheme() {
   const id = Theme.next(from);
   if (from === "rogue") Breach.farewell();
   try { const s = await native("settings.set", { key: "theme", value: id }); if (s) S.settings = s; } catch (e) { /* demo */ }
-  const behindWhite = !!Breach.whiteBox;                            // Ogmi.os just broke: swap under the white flash
+  const behindWhite = !!Breach.whiteBox;
   await Theme.apply(id, !behindWhite);
   if (behindWhite) Breach.clearWhite(id);
   if (from !== "rogue") toast("THEME: " + Theme.meta(id).name);
@@ -9342,10 +8710,6 @@ function openSearch() {
 /* =====================================================================
    SHORTCUTS YOU CAN CHANGE (on the keyboard page: select one and press E)
    ===================================================================== */
-// The shortcuts that work everywhere. Keys inside a page (P to play a playlist, X to remove…) stay as
-// they are. A shortcut is written like "Meta+Shift+F": Meta is ⌘ on a Mac and Ctrl elsewhere (the app
-// swaps the two keys on Windows and Linux before the page sees them). The Mac menu and the show/hide
-// shortcut, which the native side handles, follow these too (desktop/src/menu.rs keeps the same defaults).
 const volumeBy = (d) => { setVolume(((S.player && S.player.volume) ?? 50) + d); toast("VOLUME " + S.player?.volume + "%"); };
 const Shortcuts = {
   defs: [
@@ -9374,24 +8738,19 @@ const Shortcuts = {
   map: {},
   capturing: null,
   def(id) { return this.defs.find((d) => d.id === id); },
-  /** Your shortcuts: the saved changes over the defaults ("" means none). */
   load() {
     const saved = (S.settings && typeof S.settings.shortcuts === "object" && S.settings.shortcuts) || {};
     for (const d of this.defs) this.map[d.id] = typeof saved[d.id] === "string" ? saved[d.id] : d.def;
   },
-  /** The shortcut a key press makes, in the same form: "Meta+Shift+F". Letters and digits by their place on
-   *  the keyboard, so other layouts and the Alt key don't change them. Null for a lone modifier key. */
   combo(e) {
     if (["Meta", "Control", "Alt", "Shift", "CapsLock", "Fn", "OS"].includes(e.key)) return null;
     let key = e.code && e.code.startsWith("Key") ? e.code.slice(3) : e.code && e.code.startsWith("Digit") ? e.code.slice(5)
       : e.code && e.code.startsWith("Numpad") ? e.code
       : e.key === " " ? "Space" : e.key.length === 1 ? e.key.toUpperCase() : e.key;
-    // With Shift, the punctuation keys report their shifted character (⇧/ is "?"): use the unshifted one.
     const unshift = { Slash: "/", Comma: ",", Period: ".", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Minus: "-", Equal: "=", Backquote: "`", Backslash: "\\" };
     if (unshift[e.code]) key = unshift[e.code];
     return [e.metaKey && "Meta", e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", key].filter(Boolean).join("+");
   },
-  /** How a shortcut is shown: ⌘ ⇧ F (the app turns ⌘ ⌥ ⇧ into Ctrl, Alt and Shift on Windows and Linux). */
   text(combo) {
     if (!combo) return "NONE";
     const names = { Meta: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧", Space: "SPACE", ArrowRight: "→", ArrowLeft: "←", ArrowUp: "↑", ArrowDown: "↓" };
@@ -9403,12 +8762,9 @@ const Shortcuts = {
     if (!c) return null;
     return this.defs.find((d) => !d.native && this.map[d.id] === c) || null;
   },
-  /** A shortcut that's only letters/digits/punctuation with no ⌘ or Ctrl: it only works outside text boxes. */
   single(combo) { return !!combo && !/(^|\+)(Meta|Ctrl)\+/.test(combo); },
-  // Keys that already mean something everywhere, or to the system: they can't be taken.
   taken: ["Escape", "Backspace", "Enter", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Shift+Enter",
           "Meta+C", "Meta+V", "Meta+X", "Meta+A", "Meta+Z", "Meta+Shift+Z", "Meta+Q", "Meta+W", "Meta+H", "Meta+M", "Meta+Alt+H", "Meta+Ctrl+F"],
-  // Keys pages use for their own things: allowed, but there the page's use comes first.
   pageKeys: ["P", "T", "X", "R", "D", "N", "S", "G", "H", "I", "B", "O", "Q", "A", "E", "V", "U", "0", "[", "]", "+"],
   async set(id, combo) {
     const d = this.def(id);
@@ -9430,7 +8786,6 @@ const Shortcuts = {
     try { const st = await native("settings.set", { key: "shortcuts", value: {} }); if (st) S.settings = st; } catch (e) { S.settings.shortcuts = {}; }
     toast("EVERY SHORTCUT IS BACK TO THE ORIGINAL");
   },
-  /** On the keyboard page: the next key press becomes this shortcut. Esc cancels, ⌫ removes it. */
   capture(id, done) { this.capturing = { id, done }; },
   onCapture(e) {
     const { id, done } = this.capturing;
@@ -9445,11 +8800,8 @@ const Shortcuts = {
 
 document.addEventListener("keydown", (e) => {
   const typing = !!(e.target && e.target.matches && e.target.matches("input, textarea"));
-  // Choosing a new shortcut on the keyboard page: this key press is it.
   if (Shortcuts.capturing) { e.preventDefault(); e.stopPropagation(); Shortcuts.onCapture(e); return; }
   const sc = Shortcuts.match(e);
-  // Copy diagnostics works from anywhere (even mid-palette or in stage mode), for a bug report.
-  // (Its default is ⇧⌘D, not ⌥⌘D: macOS uses that to hide the Dock.)
   if (sc && sc.always) { e.preventDefault(); sc.run(e, current()); return; }
   if (Palette.isOpen) { if (Palette.onKey(e)) e.preventDefault(); return; }
   if (Stage.isOpen && !Modal.isOpen) { if (Stage.onKey(e)) e.preventDefault(); return; }
@@ -9467,9 +8819,6 @@ document.addEventListener("keydown", (e) => {
     if (!e.repeat) pendingKey = { key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, at: Date.now() };
     return;
   }
-  // One-key shortcuts (no ⌘ or Ctrl) work outside text boxes. The original ones (Space, /, L, C, M) come
-  // before the page's own keys, as always; one you've changed, or a "late" one like F, comes after them,
-  // so it never takes a key a page uses. Letters don't count on the search page, where you type.
   const oneKey = sc && !typing && c.name !== "setup" && (!/^[A-Z0-9]$/.test(Shortcuts.map[sc.id]) || c.name !== "search");
   if (oneKey && !sc.late && Shortcuts.map[sc.id] === sc.def) { e.preventDefault(); sc.run(e, c); return; }
   if (c.view.onKey && c.view.onKey(e, typing)) { e.preventDefault(); return; }
@@ -9492,9 +8841,6 @@ $("np-like").onclick = (e) => { e.stopPropagation(); toggleLike(); };
   addEventListener("mouseup", () => { dragging = false; });
   bar.addEventListener("wheel", (e) => { e.preventDefault(); setVolume(((S.player && S.player.volume) ?? 50) + (e.deltaY < 0 ? 2 : -2)); }, { passive: false });
 })();
-// Clicking the artist or album under the song opens its page, the same one Search opens.
-// Songs reported by Cadenza's own sound engine only come with names, so the first click looks the song
-// up on Spotify (by its ID) to find the artist and album, and remembers the answer.
 const npIds = {};
 async function nowPlayingIds() {
   const it = S.player && S.player.item;
@@ -9510,8 +8856,6 @@ async function nowPlayingIds() {
   if (S.player && S.player.item && S.player.item.uri === it.uri) S.player.item.raw = t;   // the song menu can use the full details too
   return (npIds[it.uri] = { artist: t.artists && t.artists[0] && t.artists[0].id, album: t.album && t.album.id });
 }
-/** Clicking the artist or album under Now Playing opens Search on the Artists or Albums tab, with the
- *  name filled in and that exact artist or album selected at the top, so ⏎ opens it. */
 async function openFromNowPlaying(kind) {
   const it = S.player && S.player.item;
   if (!it || busy) return;
@@ -9525,13 +8869,12 @@ async function openFromNowPlaying(kind) {
   if (!(current() && current().name === "search")) await go("search");
   v.setType(kind);
   v.input.value = q;
-  v.q = null;                                                // run it even if this name is already in the box
+  v.q = null;
   await v.run(q);
   const id = ((await idsP) || {})[kind];
-  if (!id || v.type !== kind || v.q !== q) return;           // nothing to match, or you've typed something else
+  if (!id || v.type !== kind || v.q !== q) return;
   let i = v.list.items.findIndex((x) => x && x.id === id);
   if (i < 0) {
-    // Spotify's search didn't list it (a common name, say): fetch it and put it first.
     const r = await api("GET", `/${kind}s/${id}`);
     if (r.status !== 200 || !r.body || v.type !== kind || v.q !== q) return;
     v.list.set([r.body, ...v.list.items.filter((x) => x && x.id !== id)]);
@@ -9559,9 +8902,7 @@ document.querySelector("#now .bar").onclick = (e) => {
    write every few seconds) and starts that instead. */
 const LastPlayed = {
   KEY: "cadenzaLastPlayed", saved: null, savedKey: "", savedAt: 0, engine: null,
-  /** Read the copy kept in Cadenza's own store (local storage may not survive every app update). */
   async load() {
-    // Where the engine was when Cadenza last quit (saved by native code at the very end).
     try { const e = await native("store.get", { key: "enginePosition" }); if (e && e.uri) this.engine = e; } catch (e) { /* demo */ }
     try {
       const v = await native("store.get", { key: "lastPlayed" });
@@ -9573,21 +8914,15 @@ const LastPlayed = {
     const it = p.item;
     if (!it || !/^spotify:(track|episode):/.test(it.uri)) return;
     const artists = ((it.raw && it.raw.artists) || []).slice(0, 3).map((a) => ({ id: a.id, name: a.name }));
-    // The last real playlist (or album, or Liked Songs) you played, and where you were in it. Kept even
-    // while song radio or the DJ plays, so Play can put that playlist back behind a lone song.
     const prev = this.saved || this.get();
-    // True shuffle plays its own song list, so Spotify reports no playlist: take it from true shuffle.
     const ts = TrueShuffle.active && TrueShuffle.src;
     const tsCtx = ts ? ts.uri || (ts.kind === "liked" && S.me ? `spotify:user:${S.me.id}:collection` : ts.kind === "album" && ts.id ? "spotify:album:" + ts.id : ts.id ? "spotify:playlist:" + ts.id : null) : null;
     const listCtx = this.isList(p.context) ? p.context : tsCtx;
     const lastContext = listCtx ? { uri: listCtx, track: it.uri } : (prev && prev.lastContext) || null;
     const v = { context: p.context || null, uri: it.uri, name: it.name, artists, position: Math.max(0, Math.round(pos)), duration: it.duration_ms || 0,
       lastContext, shuffle: !!(p.shuffle_state || TrueShuffle.active), at: Date.now(),
-      // Autoplay (or the DJ) was choosing the songs: reopening carries on with autoplay, not an old playlist.
       from: Radio.active ? "autoplay" : DJ.active ? "dj" : null };
     try { localStorage.setItem(this.KEY, JSON.stringify(v)); } catch (e) { /* storage off: the store copy below still works */ }
-    // The store is one file that's rewritten on every save, so only write it when the song, playlist or
-    // play/pause changes, or once a minute.
     const key = v.context + "|" + v.uri + "|" + !!p.is_playing;
     this.saved = v;
     if (key !== this.savedKey || Date.now() - this.savedAt > 60000) {
@@ -9596,7 +8931,6 @@ const LastPlayed = {
     }
   },
   isList(ctx) { return !!ctx && (/^spotify:(playlist|album):/.test(ctx) || /:collection$/.test(ctx)); },
-  /** The songs of a playlist, album or Liked Songs, in order (up to 300). null if Spotify won't share them. */
   async listTracks(ctx) {
     const out = [];
     let path = null;
@@ -9616,14 +8950,10 @@ const LastPlayed = {
     try { v = JSON.parse(localStorage.getItem(this.KEY) || "null"); } catch (e) { v = null; }
     if (!v || (this.saved && this.saved.at > v.at)) v = this.saved;
     if (!v || !v.uri || Date.now() - v.at >= 14 * 86400e3) return null;
-    // The page's note can be a little behind (it's saved every few seconds, and the durable copy less
-    // often). The engine's position from when Cadenza quit is exact: use it for the same song.
     const e = this.engine;
     if (e && e.uri === v.uri && e.at >= v.at - 5000) v = { ...v, position: e.position_ms, duration: e.duration_ms || v.duration };
     return v;
   },
-  /** Start what you were playing on Cadenza's speaker. With no note yet, the last thing Spotify lists
-   *  under recently played (it knows the playlist); Spotify's own resume only as a last resort. */
   async resumeOn(dev, override) {
     let v = this.get();
     if (override) v = { ...(v || {}), ...override, duration: override.uri === (v && v.uri) ? v.duration : 0 };
@@ -9640,8 +8970,6 @@ const LastPlayed = {
     let lone = !v.context;
     let r;
     if (lone && v.lastContext && !v.from) {
-      // A lone song (from search, say), but you were in a playlist before that: play the song,
-      // then the rest of that playlist from where you left it (shuffled if you were shuffling).
       const list = await this.listTracks(v.lastContext.uri);
       if (list && list.length) {
         const ctx = v.lastContext.uri;
@@ -9650,17 +8978,13 @@ const LastPlayed = {
         rest = rest.filter((u) => u !== v.uri);
         if (v.shuffle) rest = TrueShuffle.permute(rest);
         const order = [v.uri, ...rest].slice(0, 200);
-        // The song plays first, then the rest of the playlist from where you were.
         const ok = await playBody({ uris: order, position_ms: pos, device_id: dev }, null, false, false, true);
         r = { status: ok ? 204 : 500 };
         if (ok) {
           lone = false; toast("PICKING UP WHERE YOU LEFT OFF · YOUR PLAYLIST IS NEXT");
-          // A shuffled list is Cadenza's shuffle, so let true shuffle own it. Otherwise turning shuffle off
-          // would only switch off Spotify's (already off) shuffle, and the list would stay shuffled.
           if (v.shuffle) TrueShuffle.adopt(ctx, order, 200);
         }
       } else {
-        // Spotify won't list that playlist's songs (it isn't yours): go back into the playlist itself.
         r = await api("PUT", path, { context_uri: v.lastContext.uri, offset: { uri: v.lastContext.track } });
         if (r.status < 300) lone = false;
       }
@@ -9668,14 +8992,10 @@ const LastPlayed = {
     if (!r || r.status >= 300) {
       r = await api("PUT", path, v.context ? { context_uri: v.context, offset: { uri: v.uri }, position_ms: pos } : plain);
       if (v.context && (r.status === 400 || r.status === 404)) { r = await api("PUT", path, plain); lone = true; }
-      // You were shuffling this playlist with true shuffle: it carries on shuffled from this song.
       else if (r.status < 300 && v.shuffle && this.isList(v.context) && TrueShuffle.enabled()) {
         setTimeout(() => TrueShuffle.attach(v.context, v.uri), 1200);
       }
     }
-    // A song on its own (autoplay or the DJ was playing, or it came from search…): line up similar songs
-    // behind it, so Next and the end of the song have somewhere to go. After autoplay, that's autoplay
-    // carrying on where it was.
     if (lone && r.status < 300 && Radio.enabled() && /^spotify:track:/.test(v.uri)) {
       if (v.from === "autoplay") toast("PICKING UP WHERE YOU LEFT OFF · AUTOPLAY CARRIES ON");
       setTimeout(() => { if (!Radio.active && !DJ.active && !TrueShuffle.active) Radio.begin({ uri: v.uri, name: v.name || "", artists: v.artists || [] }); }, 1500);
@@ -9694,13 +9014,10 @@ const Resume = {
   async run(d) {
     const uri = d.uri || (S.player && S.player.item && S.player.item.uri);
     if (!uri) return;
-    // Right at the end of a song: start it a moment before the end, so it finishes and the list moves on.
     let pos = Math.max(0, d.position_ms || 0);
     if (d.duration_ms && pos > d.duration_ms - 3000) pos = Math.max(0, d.duration_ms - 1500);
     let ok = false;
     try {
-      // Play straight onto the new librespot by its ID. (Moving playback to it first made it start the
-      // old song from Spotify's saved state, and a second later the right one.)
       const id = d.retry ? null : await ourDevice();
       const on = id ? { device_id: id } : {};
       if (DJ.active && DJ.order && DJ.order.length) {
@@ -9714,12 +9031,11 @@ const Resume = {
         ok = await TrueShuffle.play(null, i >= 0 ? pos : 0);
       } else if (Radio.active) {
         ok = await playBody({ uris: [uri], position_ms: pos, ...on }, null, false, true);
-        if (ok) { Radio.qd = []; Radio.queueNext(); }      // the new engine has an empty queue: hand the next songs over again
+        if (ok) { Radio.qd = []; Radio.queueNext(); }
       } else if (S.player && S.player.context) {
         const plain = { uris: [uri], position_ms: pos, ...on };
         ok = await playBody({ context_uri: S.player.context, offset: { uri }, position_ms: pos, fallback: plain, ...on }, null);
       } else if (id) {
-        // A lone song: the same as pressing Play, with your last playlist lined up behind it.
         const r = await LastPlayed.resumeOn(id, { uri, position: pos, context: null });
         ok = r && r.status < 300;
         if (ok) setTimeout(poll, 400);
@@ -9756,35 +9072,26 @@ window.app = {
   onNative(event, data) {
     const c = current();
     if (event === "sleep" || event === "wake") {
-      // The window was closed or minimised (sleep), or came back (wake). Asleep, the page stops
-      // animating, drawing the visualizer and updating the clock, and checks Spotify only every 30 s.
       S.asleep = event === "sleep";
       if (window.__rest) window.__rest(S.asleep);
       if (!S.asleep) { shownImage = undefined; applyNow(); tick(true); poll(); }
     }
     else if (event === "engine.resume" && data) { ourDevice.id = null; Resume.run(data); }   // (a new engine has a new speaker ID)
     else if (event === "translate.progress" && data && data.total) {
-      // A language model is downloading (the first time you translate from or into a language).
       const pct = Math.floor((data.got / data.total) * 100), now = Date.now();
       if (pct >= 100 || now - (this.trT || 0) > 1500) { this.trT = now; toast(`DOWNLOADING THE LANGUAGE (${Math.round(data.total / 1048576)} MB) · ${pct}%`); }
     }
     else if (event === "engine.end") {
       S.queueEndAt = Date.now();
-      // The built-in engine ran out of songs while autoplay was going (skipping faster than songs were
-      // handed over): autoplay plays its next one itself, at once.
       if (S.holdUntil && Date.now() < S.holdUntil) { /* the engine moves on by itself after its wait */ }
-      else if (Lineup.on() && Lineup.upcoming().length) Lineup.ranOut();   // skipping outran the engine's queue: the line-up's next song
+      else if (Lineup.on() && Lineup.upcoming().length) Lineup.ranOut();
       else if (Direct.on() && Radio.active && !Radio.finding) { Radio.qd = []; Radio.nudgedAt = Date.now(); Radio.advance(); }
       else setTimeout(() => { Radio.checkEnd(); Radio.watch(); }, 1200);
     }
     else if (event === "engine.refused" && data && data.uri) {
-      // One song Spotify won't unlock right now. librespot already moves on; autoplay leaves it out for a while.
       (S.refused || (S.refused = new Map())).set(data.uri, Date.now());
       S.lastRefusal = Date.now();
-      // librespot skips it, so it's no longer waiting in Spotify's queue.
       Radio.qd = Radio.qd.filter((u) => u !== data.uri);
-      // It never plays, so nothing would ever take it off the line-up, and the next top-up would hand it
-      // to the engine again (and again). Take it out of autoplay's picks and out of what was sent.
       if (Radio.active) {
         const i = Radio.order.findIndex((t, k) => k > Radio.at && t.uri === data.uri);
         if (i >= 0) { Radio.order.splice(i, 1); if (i <= Radio.pinnedTo) Radio.pinnedTo--; }
@@ -9792,10 +9099,7 @@ window.app = {
       if (Lineup.on()) { Lineup.sent = Lineup.sent.filter((u) => u !== data.uri); setTimeout(() => Lineup.sync(), 1500); }   // (after the engine's wait starts: see sync)
     }
     else if (event === "engine.held" && data) {
-      // The built-in engine paused on a song Spotify wouldn't play and waits a moment before the next.
       const s = Math.round((data.wait_ms || 0) / 1000);
-      // The engine moves on by itself when the wait is over: autoplay mustn't load another song meanwhile
-      // (it would be refused too, and make Spotify refuse for longer).
       S.holdUntil = Date.now() + Math.max(0, (data.wait_ms || 0) - 100);
       if (data.skips > 1) toast(`WAITING FOR SPOTIFY · SKIPPING ${data.skips} AHEAD IN ${Math.max(1, s)} S · PLAY GOES NOW`, true);
       else if (s >= 3) toast(`SPOTIFY IS REFUSING SONGS FOR A MOMENT · NEXT ONE IN ${s} S`, true);
@@ -9869,7 +9173,6 @@ const Stage = {
     const m = motion(), box = this.el.querySelector(".sg-main");
     play(this.el, [{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "linear", fill: "none" });
     play(box, m.intel.frames, { duration: m.intel.ms + 120, easing: m.intel.ease || OUT, fill: "none" });
-    // Once Stage covers the screen, stop drawing what's underneath it (backgrounds, pages, panels).
     setTimeout(() => { if (this.isOpen) document.body.classList.add("staged"); }, 300);
     try { this.wasFull = await native("window.fullscreen", { on: true }); } catch (e) { this.wasFull = null; }
   },
@@ -9892,7 +9195,6 @@ const Stage = {
     if (!this.isOpen) this.el.hidden = true;
     if (this.wasFull === false) native("window.fullscreen", { on: false }).catch(() => {});
   },
-  /** Mouse moved: show the pointer and hints for a moment, then get out of the way. */
   wake() {
     this.el.classList.remove("idle");
     clearTimeout(this.idle);
@@ -9905,7 +9207,6 @@ const Stage = {
     this.uri = uri;
     this.lines = []; this.cur = -2;
     this.setLyric(-1);
-    // Case is left to each theme's CSS (most shout in capitals; Studio doesn't).
     setText("sg-title", it ? cleanTitle(it.name) : "Nothing playing");
     setText("sg-artist", it ? it.artists : "Play something in Cadenza or Spotify");
     setText("sg-album", it ? [it.album, PlayCounts.text(PlayCounts.of(it))].filter(Boolean).join("  ·  ") : "");
@@ -9945,7 +9246,6 @@ const Stage = {
     if (i !== this.cur) { this.cur = i; this.setLyric(i); }
   },
   onKey(e) {
-    // Your shortcuts for leaving, the palette, playback, volume and like; everything else is ignored here.
     const sc = Shortcuts.match(e);
     if (e.key === "Escape" || (sc && (sc.id === "stage" || sc.id === "stageKey"))) { this.close(); return true; }
     if (sc && sc.id === "palette") { this.close().then(() => Palette.open()); return true; }
@@ -9962,7 +9262,6 @@ Stage.el.addEventListener("dblclick", (e) => { if (!e.target.closest("#sg-art"))
 /* =====================================================================
    cadenza:// LINKS: for the Shortcuts app, Siri (via Shortcuts), Raycast, Alfred, or Terminal's `open`
    ===================================================================== */
-// e.g. cadenza://next · cadenza://playlist?name=Gym · cadenza://play?q=midnight%20tide · cadenza://sleep?minutes=30
 const LINKS = [
   ["play / pause / toggle", "cadenza://toggle"], ["next / previous", "cadenza://next"], ["like the song", "cadenza://like"],
   ["volume (0–100, or up / down)", "cadenza://volume?level=40"], ["play a playlist (shuffle=1 to shuffle)", "cadenza://playlist?name=Gym"],
@@ -10009,7 +9308,6 @@ async function handleLink(action, q) {
     case "upnext": return it ? queueTrack(it) : null;
     case "search": return go("search").then(() => { if (q.q) { views.search.input.value = q.q; views.search.run(q.q); } });
     case "go": {
-      // Only real pages (a link like cadenza://go?page=constructor mustn't reach anything else).
       const page = String(q.page || "");
       if (!Object.prototype.hasOwnProperty.call(views, page) || page === "setup") return null;
       return page === "home" ? go("home", {}, { reset: true, dir: -1 }) : go(page);
@@ -10029,7 +9327,6 @@ async function handleLink(action, q) {
 /* =====================================================================
    COMMANDS: every shortcut in one list (System → Commands, ⌘/ or the Controls menu)
    ===================================================================== */
-/** A row for a shortcut you can change: its keys come from Shortcuts, and choosing it runs the action. */
 const scRow = (group, id, run) => {
   const d = Shortcuts.def(id);
   return [group, d.label, "", run || (d.run ? () => d.run({}, current()) : undefined), [id]];
@@ -10103,7 +9400,6 @@ views.commands = {
       const inn = h("div", "in");
       inn.append(h("span", "k", c[1]), h("span", "v", ""), h("span", "go", c[3] ? "RUN" : c[0]));
       const keys = inn.querySelector(".v");
-      // A shortcut you can change shows its current keys, and clicking them changes it.
       const text = c[4] ? c[4].map((id) => Shortcuts.text(Shortcuts.map[id])).join("  ·  ") : c[2];
       if (c[4]) { r.classList.add("remap"); keys.title = "Click to change"; keys.onclick = (ev) => { ev.stopPropagation(); views.commands.change(c); }; }
       (text ? text.split(/\s+·\s+/) : []).forEach((combo) => {
@@ -10133,8 +9429,6 @@ views.commands = {
     this.list.set(COMMANDS);
     this.list.select(Math.min(i, this.list.items.length - 1), false);
   },
-  /** Waits for the new keys for this row's shortcut. While it waits, the Mac menu's shortcuts and the
-   *  show/hide shortcut are set aside, or they'd catch the keys first. */
   change(c) {
     if (!c || !c[4]) return toast("THIS ONE CAN'T BE CHANGED", true);
     const i = this.list.items.indexOf(c);
@@ -10154,7 +9448,6 @@ views.commands = {
 
 /* ---------- Signal path: what happens to the sound between Spotify's file and the output ---------- */
 const SignalPath = {
-  /** The report as plain lines for the dialog: the verdict, each step, then why the steps that change the sound do. */
   text(r) {
     const lines = [r.summary];
     if (r.here === false) lines.push("Another device is playing right now, so this is what Cadenza would do.");
@@ -10242,8 +9535,6 @@ function clock() {
   setText("c-dow", d.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase());
   setText("c-time", d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
 }
-/** Reduce motion: on, off, or (the default) following the system's own setting. While it's on, slides,
- *  fades and moving backgrounds are instant or still; the visualizer and progress bars still show the music. */
 const motionQuery = matchMedia("(prefers-reduced-motion: reduce)");
 function motionSetting() {
   const v = S.settings.reduceMotion;
@@ -10257,7 +9548,6 @@ function applyMotion() {
 motionQuery.addEventListener("change", applyMotion);
 
 async function boot() {
-  // Testing hook: the browser demo, and development builds of the app started with a probe script.
   if (!bridge || window.cadenzaProbe) window.__dbg = { native, Played, UpNext, Lineup, Direct, playBody, S, Taste, Tags, Translator, Stage, Viz, views, Sfx, DJ, Radio, UpNext, Sleep, TrueShuffle, Palette, PlayCounts, LFM, LastPlayed, Covers, Theme, Breach, go };   // demo-mode testing hook
   setInterval(clock, 10000);
   setInterval(() => { tick(false); Radio.note(); Taste.tick(); UpNext.tick(); Sleep.tick(); TrueShuffle.tick(); }, 1000);
@@ -10270,7 +9560,6 @@ async function boot() {
   Taste.load();
   EQ.load().then(() => views.home.update());
   Viz.init();
-  // The login check (which can refresh the token over the network) runs while the theme loads.
   const authP = native("auth.status").catch(() => null);
   const askedP = native("store.get", { key: "scopesAskedFor" }).catch(() => "");
   const urlTheme = new URLSearchParams(location.search).get("theme");
@@ -10280,8 +9569,6 @@ async function boot() {
   S.loggedIn = !!(st && st.loggedIn);
   if (document.fonts && document.fonts.ready) await document.fonts.ready;
   renderNow();
-  // Ask to log in again for new permissions only once. If Spotify still doesn't grant one (some
-  // aren't available to every app), carry on without asking at every launch.
   const missing = (st && st.missingScopes || []).slice().sort().join(" ");
   const asked = (await askedP) || "";
   if (S.loggedIn && missing && missing !== asked) {
@@ -10296,8 +9583,6 @@ async function boot() {
     await go("setup", {}, { reset: true, dir: -1, force: true });
   }
   setInterval(() => { if (Date.now() >= nextPoll && !cooling()) poll(); }, 1000);
-  // Background loops (water, rain, the eye…) pause while Cadenza is hidden, or after it has been in the
-  // background for a while; they pick up again the moment you come back. Nothing else changes.
   let idleTimer = 0;
   const rest = (on) => {
     on = on || S.asleep;                                          // a closed window stays at rest
@@ -10312,14 +9597,11 @@ async function boot() {
     if (S.asleep && !document.hidden) S.asleep = false;           // in front of you, so certainly not asleep
     rest(document.hidden);
   });
-  // Any key or click means you're here: wake up, even if the window never got a "wake" from macOS
-  // (otherwise the page could stay at rest, with every animation frozen on its first frame).
   const here = () => { if (document.hidden) return; clearTimeout(idleTimer); if (S.asleep || document.body.classList.contains("paused")) { S.asleep = false; rest(false); } };
   addEventListener("keydown", here, true);
   addEventListener("mousedown", here, true);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
-    // Back in view: drop any half-played song-change animation and redraw from the latest state.
     [$("np-artwrap"), $("np-text")].forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
     shownImage = undefined; applyNow(); tick(true);
     poll();
@@ -10363,7 +9645,6 @@ const Demo = (() => {
   ];
   const settings = { theme: "tide", clientId: "0123456789abcdef0123456789abcdef", manageLibrespot: true, deviceName: "Cadenza", bitrate: 320, mediaKeys: true, mediaKeysTrusted: true, globalHotkey: true, openAtLogin: false, reduceMotion: false, builtinLastfm: false, builtinDiscord: true, lastfmKey: "demo" };
   const ok = (body, status = 200) => Promise.resolve({ status, body });
-  // Made-up Last.fm data: years of plays for "you", and a few friends with their own taste.
   const lfmArtists = ["Kairo Blue", "Neon Ferry", "Saya Mori", "The Static Hearts", "Lumen Drive", "Velvet Arcade", "Hana Kite", "Polar Motel", "Glass Tigers", "Midnight Office", "Coral Static", "June Satellites"];
   const lfmFriends = [["mika_wav", "Mika", 3], ["dustyroads", "", 7], ["neonharbor", "Jules", 1], ["ttraintracks", "Tomo", 5], ["quietloud", "", 9]];
   function demoLastfm(method, q) {
@@ -10397,7 +9678,6 @@ const Demo = (() => {
       const list = Array.from({ length: 200 }, () => { const t = songs[Math.floor(rnd() * songs.length)], hr = rnd() < 0.55 ? 19 + Math.floor(rnd() * 5) : rnd() < 0.5 ? 9 + Math.floor(rnd() * 5) : Math.floor(rnd() * 24); const d = new Date(); d.setHours(hr % 24, Math.floor(rnd() * 60)); return { name: t.name, artist: { "#text": t.artists[0].name }, date: { uts: String(Math.floor(d.getTime() / 1000) - Math.floor(rnd() * 20) * 86400) } }; });
       return { recenttracks: { track: list } };
     }
-    // The playlist builder's moods: made-up tags (the same for a song every time) and songs for a tag.
     if (method === "track.getTopTags" || method === "artist.getTopTags") {
       const pool = ["chill", "mellow", "happy", "energetic", "sad", "dark", "party", "dance", "love", "instrumental", "indie", "electronic"];
       let hsh = 0; for (const ch of String(q.track || q.artist)) hsh = (hsh * 31 + ch.charCodeAt(0)) % 9973;
@@ -10427,7 +9707,6 @@ const Demo = (() => {
       const hits = tracks.filter((t) => (t.name + t.artists[0].name + t.album.name).toLowerCase().includes(term.slice(0, 3)));
       const list = (hits.length ? hits : tracks).concat(tracks).slice(off, off + 10);
       const type = q.get("type");
-      // Several types at once (as the playlist builder asks): songs and artists together.
       if (type === "track,artist") return ok({ tracks: { items: list, total: 24 }, artists: { items: [...new Map(tracks.filter((t) => t.artists[0].name.toLowerCase().includes(term.slice(0, 3))).map((t) => [t.artists[0].id, { ...t.artists[0], uri: "spotify:artist:" + t.artists[0].id, genres: ["dream pop"], images: t.album.images }])).values()], total: 1 } });
       if (type === "album") return ok({ albums: { items: [...new Map(tracks.map((t) => [t.album.id, { ...t.album, uri: "spotify:album:" + t.album.id, artists: t.artists, release_date: "2024-05-01", album_type: "album" }])).values()].slice(off, off + 10), total: 5 } });
       if (type === "artist") return ok({ artists: { items: [...new Map(tracks.map((t) => [t.artists[0].id, { ...t.artists[0], uri: "spotify:artist:" + t.artists[0].id, genres: ["dream pop", "city pop"], images: t.album.images }])).values()].slice(off, off + 10), total: 5 } });
@@ -10480,12 +9759,10 @@ const Demo = (() => {
         case "api": (window.__calls = window.__calls || []).push(args.method + " " + args.path);
           if (args.method === "PUT" && args.body) (window.__bodies = window.__bodies || []).push(args.body);   // (for tests)
           if (window.__force429 && args.path.startsWith("/me/player?")) return Promise.resolve({ status: 429, body: { retryAfter: 20 } });
-          // Testing: refuse plain song lists the way Spotify does since November 2026.
           if (window.__refuseLists && args.method === "PUT" && args.path.startsWith("/me/player/play") && args.body && args.body.uris) {
             return Promise.resolve({ status: 403, body: { error: { status: 403, message: "Player command failed: Restriction violated", reason: "UNKNOWN" } } });
           }
           return new Promise((res) => setTimeout(() => apiRoute(args.method, args.path, args.body).then(res), +(new URLSearchParams(location.search).get("lat") || 60)));
-        // The built-in engine, played directly (tests turn it on with window.__directOn): done on the made-up player.
         case "player.direct": {
           (window.__directCalls = window.__directCalls || []).push(args);
           if (!window.__directOn) return Promise.resolve({ ok: false });
@@ -10518,7 +9795,6 @@ const Demo = (() => {
           }
           return Promise.resolve(out.sort((a, b) => a.at - b.at));
         }
-        // Importing Spotify's history: two years of made-up plays, with the same songs counted once.
         case "spotifyHistory.get": return Promise.resolve(window.__demoSpot || { tracks: [], plays: [] });
         case "spotifyHistory.clear": window.__demoSpot = null; return Promise.resolve(true);
         case "spotifyHistory.import": {
@@ -10529,7 +9805,6 @@ const Demo = (() => {
             const end = Math.floor((Date.now() - 20 * 86400e3) / 1000);
             for (let d = 730; d >= 0; d--) for (let k = 0, n = Math.floor(rnd() * 12); k < n; k++) {
               const i = Math.floor(Math.pow(rnd(), 1.5) * ts.length);
-              // Some skipped in the first seconds, some played to the end (the flags Spotify's files carry).
               const r = rnd(), ms = r < 0.15 ? 2000 + Math.floor(rnd() * 25000) : 60000 + Math.floor(rnd() * 150000);
               plays.push([end - d * 86400 - Math.floor(rnd() * 86400), i, ms, r < 0.15 ? 1 : r > 0.5 ? 2 | (rnd() < 0.3 ? 4 : 0) : 0]);
             }

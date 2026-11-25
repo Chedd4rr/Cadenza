@@ -1,5 +1,3 @@
-//! Cadenza for macOS, Windows and Linux. The page in Resources/web is the whole interface; this is
-//! the native side it talks to (see bridge.rs).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -53,8 +51,6 @@ pub struct Core {
     pub updater: Arc<updater::Updater>,
 }
 
-/// Runs before the page's own scripts. app.js looks for `window.cadenzaNative` and sends every
-/// `native(cmd, args)` through it.
 const SHIM: &str = r#"
 (() => {
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -109,18 +105,13 @@ fn emit_to(app: &tauri::AppHandle, event: &str, data: &Value) {
     }
 }
 
-/// The address the page uses for `cadenza-files://`: the translator's code and language models.
-/// Windows's web view can't use a custom scheme directly and reaches it through http://<scheme>.localhost.
 pub fn files_base() -> &'static str {
     if cfg!(windows) { "http://cadenza-files.localhost/" } else { "cadenza-files://" }
 }
 
 fn main() {
-    // librespot starts Cadenza.exe to pass on each player event (Windows); that copy only writes it down.
     env_logger_lite();
     tauri::Builder::default()
-        // Only one Cadenza at a time: opening it again (or a cadenza:// link) goes to the one running.
-        // (A link it was opened with reaches the running one through the links plugin below.)
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let link = argv.iter().any(|a| a.starts_with("cadenza:"));
             if let Some(sys) = app.try_state::<Arc<system::System>>() { if !link { sys.show_main(); } }
@@ -129,7 +120,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
-        // The main window opens where you left it, at the size you left it. (The mini player keeps its own spot.)
         .plugin(tauri_plugin_window_state::Builder::default()
             .with_state_flags(tauri_plugin_window_state::StateFlags::SIZE | tauri_plugin_window_state::StateFlags::POSITION
                 | tauri_plugin_window_state::StateFlags::MAXIMIZED)
@@ -180,10 +170,7 @@ fn main() {
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)
                 .center()
-                // Cadenza's navy behind the page while it loads, instead of a white flash.
                 .background_color(tauri::window::Color(3, 12, 46, 255));
-            // On a Mac, the page reaches the top of the window with the traffic lights over it and no title.
-            // (The strip at the top still drags the window.)
             #[cfg(target_os = "macos")]
             let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
             builder
@@ -203,7 +190,6 @@ fn main() {
             apply_hotkey(&handle);
             loginitem::tidy(&handle);
 
-            // cadenza:// links. Registered with the system here too, so they also work in a development build.
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 #[cfg(any(target_os = "linux", windows))]
@@ -214,7 +200,6 @@ fn main() {
             }
 
             if settings.bool("manageLibrespot") { librespot.start(); }
-            // For testing the bridge in development builds: CADENZA_PROBE holds a script to run in the page.
             #[cfg(debug_assertions)]
             if let Ok(script) = std::env::var("CADENZA_PROBE") {
                 let h = handle.clone();
@@ -230,7 +215,6 @@ fn main() {
             let Some(sys) = window.app_handle().try_state::<Arc<system::System>>() else { return };
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    // The music keeps going with the window closed, while the tray (or the Dock) can bring it back.
                     if sys.keeps_running_when_closed() {
                         api.prevent_close();
                         let _ = window.hide();
@@ -255,15 +239,13 @@ fn main() {
                     if let Some(spot) = core.librespot.snapshot() { core.store.set("enginePosition", spot); }
                     core.store.flush();
                     core.librespot.shutdown();
-                    core.sound.shutdown();                    // the Mac's output back to its own rate, and to other apps
+                    core.sound.shutdown();
                 }
             }
             _ => {}
         });
 }
 
-/// The global shortcut that shows or hides Cadenza from any app: Option-⌘-P on a Mac and Ctrl+Alt+P
-/// elsewhere, unless you changed it on the keyboard page; off if you turned it off in System.
 pub fn apply_hotkey(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
     let gs = app.global_shortcut();
@@ -276,7 +258,6 @@ pub fn apply_hotkey(app: &tauri::AppHandle) {
     if let Err(e) = gs.register(key.as_str()) { log::warn!("couldn't set the global shortcut {key}: {e}"); }
 }
 
-/// The Mac menu again, with your current shortcuts (or none, while you choose a new one).
 pub fn rebuild_menu(app: &tauri::AppHandle, plain: bool) {
     #[cfg(target_os = "macos")]
     match menu::build(app, plain) { Ok(m) => { let _ = app.set_menu(m); } Err(e) => log::warn!("couldn't rebuild the menu: {e}") }
@@ -284,13 +265,10 @@ pub fn rebuild_menu(app: &tauri::AppHandle, plain: bool) {
     { let _ = (app, plain); }
 }
 
-/// Serves `cadenza-files://app/vendor/…` (the translator's code, from the page's own folder) and
-/// `cadenza-files://models/<hash>.bin|spm` (downloaded language models). Nothing else.
 fn files_scheme(app: &tauri::AppHandle, request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     use tauri::http::Response;
     let not_found = || Response::builder().status(404).body(Vec::new()).unwrap();
     let uri = request.uri();
-    // cadenza-files://app/vendor/x on macOS and Linux; http://cadenza-files.localhost/app/vendor/x on Windows.
     let mut parts: Vec<String> = uri.path().split('/').filter(|p| !p.is_empty()).map(String::from).collect();
     let host = uri.host().unwrap_or("");
     if host != "app" && host != "models" { if parts.is_empty() { return not_found(); } } else { parts.insert(0, host.to_string()); }
@@ -328,8 +306,6 @@ fn reply(bytes: Vec<u8>, name: &str) -> tauri::http::Response<Vec<u8>> {
         .unwrap()
 }
 
-/// Log messages go to standard error when CADENZA_LOG is set (no logging crate needed for that). The
-/// built-in engine's own messages (librespot's) always go to it too, as the program's used to.
 fn env_logger_lite() {
     struct L { print: bool }
     impl log::Log for L {

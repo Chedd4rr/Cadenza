@@ -1,14 +1,3 @@
-//! Cadenza's own sound engine. librespot (built in, see embedded.rs) hands over its decoded sound (16-bit
-//! stereo at 44.1 kHz, through memory: MemPipe), and Cadenza plays it through a 10-band EQ, a preamp and a peak
-//! limiter, with:
-//! - a crossfade between songs, by reading the end of a song ahead of time and playing the next song's
-//!   start over it on a second voice (equal-power curves, so the loudness stays even);
-//! - pause, play, skip and seek that respond at once, before Spotify confirms (a short fade, no click);
-//! - the sleep timer's fade and smooth song transitions;
-//! - live levels for the visualizer and the EQ meters.
-//!
-//! Every fade is worked out sample by sample, not by timers changing volumes. The output is opened with cpal (CoreAudio, WASAPI, PipeWire/ALSA),
-//! reopened if it stops working, and given a bigger buffer if it can't keep up.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde_json::{json, Value};
@@ -23,15 +12,9 @@ use crate::librespot::Emit;
 use crate::settings::Settings;
 
 pub const RATE: u32 = 44_100;
-/// The output's own buffer, in frames: about 45 ms to start with. If the output keeps falling behind (a
-/// slow computer or a virtual machine), it's doubled, up to about 190 ms.
 const BUFFER_FRAMES: u32 = 2048;
 const BUFFER_FRAMES_MAX: u32 = 8192;
-/// How much of librespot's sound waits in the engine, in frames (about 93 ms): short,
-/// so pause and skip feel instant, and because librespot only writes as fast as this is used, it keeps
-/// librespot playing in real time.
 const QUEUE_FRAMES: usize = 4096;
-/// After this long with no music, the output rests (see output_thread). CADENZA_REST_SECS changes it, for testing.
 const REST_AFTER_MS: u64 = 3 * 60 * 1000;
 fn rest_after_ms() -> u64 {
     static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
@@ -43,17 +26,11 @@ fn now_ms() -> u64 {
 }
 fn secs(frames: i64) -> String { format!("{:.1} s", frames as f64 / RATE as f64) }
 
-// MARK: the engine's state (shared by the reader, the output and the controls; held only briefly)
-
 struct State {
-    /// Two voices, so the end of one song can overlap the start of the next. `cur` plays the current song.
     voices: [VecDeque<(f32, f32)>; 2],
     cur: usize,
-    /// A crossfade in progress: 0 → 1 over its length. The new song (`cur`) comes in on a sine curve while
-    /// the old one goes out on a cosine.
     blend: Option<Ramp>,
 
-    // Where songs begin and end in librespot's stream, to know when to start the crossfade.
     stream_frames: i64,
     track_start: i64,
     track_length: i64,
@@ -65,10 +42,8 @@ struct State {
     tail_started_at: Instant,
     next_length: i64,
     last_plan_line: String,
-    /// Sound still in the pipe from before a skip or seek: dropped as it arrives.
     discard_frames: i64,
 
-    // Pause, skip, seek and transitions: separate volume stages so they never fight.
     fader: Ramp,
     pause_pending: bool,
     holding: bool,
@@ -81,13 +56,9 @@ struct State {
 
     eq: Eq,
     limiter: Limiter,
-    /// Balance, mono, swap and polarity (System → Sound & EQ → Channels).
     chan: Channels,
-    /// A test tone playing instead of the music (the music carries on underneath, unheard).
     tone: Option<Tone>,
-    /// The last frame played, so running dry eases out over a couple of milliseconds instead of clicking.
     last: (f32, f32),
-    /// The sound's energy just before and just after the EQ, for the sound report (how much the EQ changes it).
     energy_in: f64,
     energy_out: f64,
     logs: Vec<String>,
@@ -109,9 +80,6 @@ impl State {
     fn xlog(&mut self, line: String) { self.logs.push(format!("Crossfade: {line}")); }
     fn other(&self) -> usize { 1 - self.cur }
 
-    /// How much to read next, and whether it's part of an old song's tail (read at once, without waiting).
-    /// Reads never run past the start of a crossfade or the end of a song, so a song's end always falls
-    /// exactly between two reads.
     fn plan(&mut self) -> (i64, bool) {
         let xf = self.xf_frames;
         if self.in_tail {
@@ -121,7 +89,6 @@ impl State {
         if self.track_start < 0 || self.track_length <= 0 { return (1024, false); }
         let end = self.track_start + self.track_length;
         if self.stream_frames >= end {
-            // This song ended without a crossfade (off, or too short): the next one starts here.
             let line = if xf == 0 { "off: next song follows straight on.".to_string() }
                        else { format!("song too short to blend (under {}): next song follows straight on.", secs(xf * 3)) };
             self.xlog(line);
@@ -147,7 +114,6 @@ impl State {
         ((end - self.stream_frames).min(1024), false)
     }
 
-    /// Stop a crossfade halfway (a skip, a seek, a new output): only the current song carries on.
     fn abort_blend(&mut self) {
         self.blend = None;
         self.in_tail = false;
@@ -156,8 +122,6 @@ impl State {
         self.voices[o].clear();
     }
 
-    /// Throw away the sound already on its way (what's in the pipe and queued here), so a skip or a seek
-    /// is heard at once instead of after it.
     fn drop_queued(&mut self, waiting_frames: i64) {
         self.discard_frames = waiting_frames;
         self.abort_blend();
@@ -168,11 +132,9 @@ impl State {
         self.voices[c].clear();
     }
 
-    /// One frame of finished sound, and whether it came from librespot (rather than running dry).
     #[inline]
     fn next_frame(&mut self) -> ((f32, f32), bool) {
         if let Some(t) = self.tone.as_mut() {
-            // The tone goes straight to the speakers it names (no balance or swap), so it tells you which is which.
             let v = t.next();
             if t.done() { self.tone = None; }
             let has = if self.holding { false } else { self.music_frame().1 };
@@ -187,7 +149,6 @@ impl State {
         if self.holding { return ((0.0, 0.0), false); }            // paused here: nothing is used up
         let (c, o) = (self.cur, self.other());
         let a = self.voices[c].pop_front();
-        // Ran dry (a network hiccup, or the music simply stopped): fade what was playing out over ~2 ms.
         let mut out = a.unwrap_or((self.last.0 * 0.99, self.last.1 * 0.99));
         let mut has = a.is_some();
         if let Some(blend) = &mut self.blend {
@@ -214,7 +175,6 @@ impl State {
         ((l * g, r * g), has)
     }
 
-    /// Timers that end a skip or a seek's silence (checked once per output callback).
     fn tick(&mut self) {
         let now = Instant::now();
         if self.skip_until.map_or(false, |t| now >= t) { self.skip_until = None; self.mute.go(1.0, 0.01, Curve::Smooth); }
@@ -230,8 +190,7 @@ struct Shared {
     emit: Emit,
     /// When sound last arrived from librespot (ms since 1970).
     last_audio: AtomicU64,
-    resting: AtomicBool,                // the output is paused because nothing has played for a while
-    /// The output stopped working (unplugged, the sound server restarted): open it again.
+    resting: AtomicBool,
     broken: AtomicBool,
     output: Mutex<String>,
     log: Mutex<Vec<String>>,
@@ -242,31 +201,24 @@ struct Shared {
     peak: AtomicU64,
     last_callback: AtomicU64,
     buffer_frames: AtomicU32,
-    /// The buffer was set by hand for this output (System → Sound & EQ), so it isn't the automatic one.
     buffer_fixed: AtomicBool,
     rate: AtomicU32,
-    /// macOS: an output whose rate Cadenza changed (and the rate it had), and one Cadenza has to itself.
     mac_rate: Mutex<Option<(u32, f64)>>,
     /// (device id, its unique id)
     mac_hog: Mutex<Option<(u32, String)>>,
-    /// When exclusive mode was taken, and times the output failed while it was on (see output_thread).
     hog_breaks: Mutex<Vec<Instant>>,
-    /// How the output was opened, for the signal path: sample format and number of channels.
     out_format: Mutex<(String, u16)>,
     too_slow: AtomicBool,
-    /// Bumped for each librespot process, so an old reader knows to stop.
     generation: AtomicU64,
-    /// The engine's sound on its way here (see MemPipe), for asking how much is still waiting.
     mem: Mutex<Option<Arc<MemPipe>>>,
     // The visualizer.
     meter_on: AtomicBool,
     tap: Mutex<VecDeque<f32>>,
     // Output devices.
     chosen: Mutex<Option<String>>,
-    device: Mutex<(String, String)>,       // what's playing the sound now: (id, name), for the EQ per device
+    device: Mutex<(String, String)>,
 }
 
-/// What the signal path needs to know about the output side (see signalpath.rs).
 pub struct PathInfo {
     pub device: String,
     pub rate: u32,
@@ -279,7 +231,6 @@ pub struct PathInfo {
     pub eq_parametric: bool,
     pub crossfade_secs: i64,
     pub chan: Channels,
-    /// macOS: Cadenza has the output to itself, and it set the output to 44.1 kHz.
     pub exclusive: bool,
     pub rate_matched: bool,
 }
@@ -319,8 +270,6 @@ impl Sound {
     }
     pub fn output_name(&self) -> String { self.s.output.lock().unwrap().clone() }
 
-    /// For the signal path: the output's name, the rate and format Cadenza opened it at, and whether the EQ
-    /// really changes anything (on, with a band or the boost away from zero).
     pub fn path_info(&self) -> PathInfo {
         let c = self.eq_values();
         let (format, channels) = self.s.out_format.lock().unwrap().clone();
@@ -349,13 +298,10 @@ impl Sound {
         out
     }
 
-    /// Frames librespot has written that haven't been read yet (still in the pipe).
     fn waiting_frames(&self) -> i64 { self.s.mem.lock().unwrap().as_ref().map_or(0, |m| m.waiting() as i64 / 4) }
 
     // MARK: reading librespot's sound
 
-    /// Reads a new librespot process's sound until it closes its output (it quit or was restarted).
-    /// Reads the engine's sound (it writes into `pipe`) until the engine closes it.
     pub fn attach_memory(&self, pipe: Arc<MemPipe>) {
         *self.s.mem.lock().unwrap() = Some(pipe.clone());
         self.read_from(MemReader(pipe));
@@ -371,8 +317,6 @@ impl Sound {
                 if s.generation.load(Ordering::SeqCst) != gen { break; }
                 let ((want, tail), logs) = { let mut st = s.st.lock().unwrap(); let p = st.plan(); (p, std::mem::take(&mut st.logs)) };
                 for l in logs { note(&s, l); }
-                // Normally wait for room; an old song's tail is read straight away instead, so the next song
-                // can start playing alongside it.
                 if !tail {
                     loop {
                         if s.generation.load(Ordering::SeqCst) != gen { return; }
@@ -395,15 +339,13 @@ impl Sound {
                     let at = st.stream_frames;
                     st.stream_frames += n as i64;
                     if st.discard_frames > 0 {
-                        st.discard_frames -= n as i64;                    // the end of the previous song (or spot): drop it
+                        st.discard_frames -= n as i64;
                     } else {
                         let frames = bytes[..n * 4].chunks_exact(4).map(|b| (
                             i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
                             i16::from_le_bytes([b[2], b[3]]) as f32 / 32768.0,
                         ));
                         if st.in_tail && at >= st.xf_boundary {
-                            // The next song begins: it goes to the other voice, which fades in while the old
-                            // song's tail (already queued) fades out.
                             st.last_boundary = st.xf_boundary;
                             st.last_boundary_at = Some(Instant::now());
                             st.track_start = st.xf_boundary;
@@ -415,8 +357,6 @@ impl Sound {
                             st.voices[c].clear();
                             st.voices[c].extend(frames);
                             let xf_secs = st.xf_frames as f64 / RATE as f64;
-                            // Only blend if the old song is still playing out. If the next song came much later
-                            // (the queue ran out and something new was started), it just begins.
                             let took = st.tail_started_at.elapsed().as_secs_f64();
                             if took < xf_secs + 2.0 {
                                 let mut r = Ramp::at(0.0);
@@ -442,8 +382,6 @@ impl Sound {
 
     // MARK: what librespot reports
 
-    /// librespot said where it is in the song (`ms`), how long the song is, or that a new song began.
-    /// From that, Cadenza works out where in the stream the song will end, to start the crossfade on time.
     pub fn song_position(&self, ms: Option<f64>, duration: Option<i64>, new_song: bool) {
         let waiting = self.waiting_frames();
         let xf = self.s.settings.int("crossfade").clamp(0, 12);
@@ -463,15 +401,12 @@ impl Sound {
             if st.in_tail { return; }
             if length > 0 { st.track_length = length; }
             let Some(ms) = ms else { return };
-            // Right after a crossfade the reader has just raced ahead, so a position from then would be off;
-            // the start found from the song boundary is more exact.
             if st.track_start == st.last_boundary && st.last_boundary_at.map_or(false, |t| t.elapsed() < Duration::from_secs(15)) { return; }
             st.track_start = written - (ms * 44.1) as i64;
             report_plan(st, written);
         });
     }
 
-    /// librespot started a different song: if a skip was waiting for it, throw away the old song's leftovers.
     pub fn track_changed(&self) {
         let waiting = self.waiting_frames();
         self.with(|st| {
@@ -482,7 +417,6 @@ impl Sound {
         });
     }
 
-    /// librespot jumped to a new spot: drop the old spot's sound still on its way, behind a tiny fade.
     pub fn seeked(&self) {
         let waiting = self.waiting_frames();
         self.with(|st| {
@@ -495,7 +429,6 @@ impl Sound {
 
     // MARK: instant controls
 
-    /// `audio.local` from the page: pause, play, toggle, skip, sleepfade.
     pub fn local(&self, action: &str, playing_here: bool) {
         match action {
             "pause" => self.local_pause(),
@@ -507,8 +440,6 @@ impl Sound {
         }
     }
 
-    /// Stops the sound right away with a very short fade. What's queued stays queued, so playing again
-    /// continues exactly where it stopped.
     pub fn local_pause(&self) {
         self.with(|st| {
             if st.holding || st.pause_pending { return; }
@@ -528,17 +459,14 @@ impl Sound {
         });
     }
 
-    /// True while Cadenza is holding the sound (paused here), whatever Spotify thinks.
     pub fn holding(&self) -> bool { self.with(|st| st.holding || st.pause_pending) }
     pub fn locally_paused_at(&self) -> Option<Instant> { self.with(|st| st.locally_paused_at) }
     pub fn sleep_fading(&self) -> bool { self.with(|st| st.sleep_fading) }
     pub fn transition_volume(&self) -> f32 { self.with(|st| st.xfade.value()) }
 
-    /// Ease the transition volume to `target` (the start of a new song after a sleep fade was cut short).
     pub fn ramp_transition(&self, target: f32, seconds: f64) {
         self.with(|st| if seconds <= 0.0 || (st.xfade.value() - target).abs() < 0.001 { st.xfade.set(target) } else { st.xfade.go(target, seconds, Curve::Smooth) });
     }
-    /// Back to full volume at once (anything that isn't the song running out).
     pub fn reset_transition(&self) { self.with(|st| st.xfade.set(1.0)); }
 
     /// Safety net when playback (re)starts: nothing left turned down by an interrupted fade or skip.
@@ -617,8 +545,6 @@ impl Sound {
         self.eq_state()
     }
 
-    /// The sound now plays through a different device: load its EQ (the first time, it starts from the
-    /// current one). True when a different EQ was loaded.
     fn use_device(&self, id: &str, name: &str) -> bool {
         *self.s.device.lock().unwrap() = (id.to_string(), name.to_string());
         if !self.per_device() || id.is_empty() { return false; }
@@ -661,10 +587,8 @@ impl Sound {
         self.s.last_audio.store(now_ms(), Ordering::Relaxed);
     }
 
-    /// Open the output again (a setting about how it's opened changed).
     pub fn reopen(&self) { self.s.broken.store(true, Ordering::SeqCst); }
 
-    /// The buffer for the output in use: set it (frames; 0 for automatic) and reopen. Returns what it is now.
     pub fn buffer(&self, frames: Option<u64>) -> Value {
         let id = self.s.device.lock().unwrap().0.clone();
         if let Some(f) = frames {
@@ -690,10 +614,6 @@ impl Sound {
 
     // MARK: output devices
 
-    /// The outputs to pick from: [{uid, name, transport, isDefault}].
-    /// - macOS: Core Audio's outputs; picking one makes it the Mac's output.
-    /// - Linux: the sound server's outputs (PipeWire or PulseAudio, through `pactl`); the same.
-    /// - Windows: the system's outputs; picking one plays Cadenza through it.
     pub fn outputs(&self) -> Value { Value::Array(list_outputs(&self.s)) }
 
     pub fn set_output(&self, uid: &str) -> bool {
@@ -704,7 +624,6 @@ impl Sound {
         }
         #[cfg(target_os = "macos")]
         {
-            // You picked another output: give back the one held in exclusive mode first, so the move is yours.
             if self.s.mac_hog.lock().unwrap().as_ref().map_or(false, |(_, u)| u != uid) { mac_release(&self.s); self.s.broken.store(true, Ordering::SeqCst); }
             let ok = crate::macaudio::set_default(uid);
             if ok { self.check_device(); }
@@ -719,8 +638,6 @@ impl Sound {
         true
     }
 
-    /// Every 3 s: has the output (or the list of outputs) changed? Tell the page, load that device's EQ,
-    /// and on Windows and macOS follow a new system output unless you picked one yourself.
     fn watch_devices(self: Arc<Self>) {
         let mut last_list = String::new();
         loop {
@@ -730,8 +647,6 @@ impl Sound {
                 if !last_list.is_empty() { (self.s.emit)("outputs", Value::Null); }
                 last_list = sig;
             }
-            // The output in use is the one the list marks, so the system isn't asked a second time (on
-            // Linux each question starts a `pactl`).
             let current = list.iter().find(|o| o["isDefault"] == true)
                 .map(|o| (o["uid"].as_str().unwrap_or("").to_string(), o["name"].as_str().unwrap_or("").to_string()));
             self.check_device_now(current);
@@ -744,8 +659,6 @@ impl Sound {
     /// `known`: the output in use, if the caller already knows it.
     fn check_device_now(&self, known: Option<(String, String)>) {
         let (id, name) = known.unwrap_or_else(|| current_device(&self.s));
-        // While Cadenza has an output to itself, macOS may report another one as the system's (other apps
-        // can't use this one): keep playing where it is.
         if let Some((_, uid)) = self.s.mac_hog.lock().unwrap().as_ref() { if !uid.is_empty() && *uid != id && self.s.settings.bool("exclusive") { return; } }
         let changed = self.s.device.lock().unwrap().0 != id;
         if !changed { return; }
@@ -763,7 +676,6 @@ impl Sound {
 
 struct EqConf { on: bool, preamp: f64, gains: Vec<f64>, preset: String, parametric: bool, filters: Vec<Filter> }
 
-/// The parametric filters from the settings: [{t: "PK" | "LSC" | "HSC" | "OFF", f, g, q}], at most 10.
 fn filters_from(v: &Value) -> Vec<Filter> {
     v.as_array().map(|a| a.iter().take(dsp::MAX_FILTERS).filter_map(|x| {
         let kind = Filter::kind_from(x.get("t").and_then(Value::as_str).unwrap_or(""))?;
@@ -776,14 +688,10 @@ pub fn filters_json(f: &[Filter]) -> Value {
     Value::Array(f.iter().map(|x| json!({"t": x.code(), "f": (x.freq * 10.0).round() / 10.0, "g": (x.gain * 100.0).round() / 100.0, "q": (x.q * 100.0).round() / 100.0})).collect())
 }
 
-/// macOS, when the output is opened: set it to 44.1 kHz (so macOS doesn't convert Spotify's sound) and/or
-/// keep it to Cadenza alone, as the settings say. Whatever was changed for a previous output is undone first.
 #[cfg(target_os = "macos")]
 fn mac_apply(s: &Shared) {
-    // The output Cadenza holds stays the target: once it's taken, macOS makes another output the system's.
     let held = s.mac_hog.lock().unwrap().as_ref().map(|(d, _)| *d);
     let dev = match held { Some(d) if s.settings.bool("exclusive") => d, _ => crate::macaudio::default_output() };
-    // Exclusive mode stays taken while it's the same output: taking it again makes macOS reset the device.
     let keep_hog = s.settings.bool("exclusive") && s.mac_hog.lock().unwrap().as_ref().map_or(false, |(d, _)| *d == dev);
     if keep_hog { if let Some((dev, r)) = s.mac_rate.lock().unwrap().take() { crate::macaudio::set_rate(dev, r); } }
     else { mac_release(s); }
@@ -806,7 +714,6 @@ fn mac_apply(s: &Shared) {
             let uid = crate::macaudio::outputs().into_iter().find(|o| o.id == dev).map(|o| o.uid).unwrap_or_default();
             *s.mac_hog.lock().unwrap() = Some((dev, uid));
             note(s, "Exclusive mode: the output plays only Cadenza.".into());
-            // macOS resets a device when an app takes it: give it a moment before opening the sound.
             std::thread::sleep(Duration::from_millis(400));
         } else {
             note(s, "Exclusive mode: the output wouldn't let Cadenza have it to itself (another app may have it).".into());
@@ -829,8 +736,6 @@ fn mac_release(s: &Shared) {
     { let _ = (rate, hog); }
 }
 
-/// The output failed (stopped, or reported an error). If that keeps happening while exclusive mode is on,
-/// the output doesn't work with it: give the output back and turn exclusive mode off, and say so.
 fn exclusive_failed(s: &Shared) {
     if s.mac_hog.lock().unwrap().is_none() { return; }
     let mut b = s.hog_breaks.lock().unwrap();
@@ -853,18 +758,14 @@ fn report_plan(st: &mut State, written: i64) {
     if st.track_length <= st.xf_frames * 3 { return st.xlog("song too short to blend.".into()); }
     let left = st.track_start + st.track_length - written;
     let line = format!("this song ends in {}; the {} blend starts {} from now.", secs(left), secs(st.xf_frames), secs((left - st.xf_frames).max(0)));
-    if line == st.last_plan_line { return; }                      // the same plan, worked out again a moment later
+    if line == st.last_plan_line { return; }
     st.last_plan_line = line.clone();
     st.xlog(line);
 }
 
-/// The built-in engine's sound on its way to the output: librespot writes 16-bit stereo samples in, the
-/// reader takes them out. It works like the pipe from the separate librespot program, including making
-/// librespot wait while it's full, so the crossfade and skipping work the same way.
 pub struct MemPipe { buf: Mutex<VecDeque<u8>>, cv: Condvar, closed: AtomicBool }
 
 impl MemPipe {
-    /// About the size of a pipe's buffer (macOS and Linux both use 64 KB): 0.37 s of sound.
     const CAP: usize = 64 * 1024;
     pub fn new() -> Arc<Self> { Arc::new(MemPipe { buf: Mutex::new(VecDeque::with_capacity(Self::CAP)), cv: Condvar::new(), closed: AtomicBool::new(false) }) }
     pub fn waiting(&self) -> usize { self.buf.lock().unwrap().len() }
@@ -883,7 +784,6 @@ impl MemPipe {
         }
         true
     }
-    /// The engine stopped: the reader finishes, and a writer still waiting gives up.
     pub fn close(&self) { self.closed.store(true, Ordering::Relaxed); self.cv.notify_all(); }
 }
 
@@ -921,7 +821,6 @@ fn transport_from_name(name: &str) -> &'static str {
     else { "other" }
 }
 
-/// Linux: the sound server's outputs through `pactl` (PipeWire and PulseAudio both answer it).
 fn pactl_sinks() -> Option<(String, Vec<(String, String)>)> {
     let default = std::process::Command::new("pactl").arg("get-default-sink").output().ok()
         .filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
@@ -946,7 +845,7 @@ fn list_outputs(s: &Shared) -> Vec<Value> {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = s;                                            // (the Mac follows the system output, never a chosen one)
+        let _ = s;
         let current = crate::macaudio::default_output();
         return crate::macaudio::outputs().into_iter().map(|o| json!({
             "uid": o.uid, "name": o.name, "transport": o.transport, "isDefault": o.id == current,
@@ -983,7 +882,6 @@ fn current_device(s: &Shared) -> (String, String) {
 
 fn find_device(s: &Shared) -> Option<cpal::Device> {
     let host = cpal::default_host();
-    // Exclusive mode: the output Cadenza holds (macOS no longer calls it the default once it's taken).
     #[cfg(target_os = "macos")]
     if let Some((dev, _)) = s.mac_hog.lock().unwrap().clone() {
         if let Some(name) = crate::macaudio::outputs().into_iter().find(|o| o.id == dev).map(|o| o.name) {
@@ -998,16 +896,12 @@ fn find_device(s: &Shared) -> Option<cpal::Device> {
 
 // MARK: the output
 
-/// Keeps an output open. With no output at all, the sound is taken at real-time speed anyway, so
-/// librespot keeps playing and the position keeps moving.
 fn output_thread(s: Arc<Shared>) {
     let mut reopens: Vec<Instant> = vec![];
     loop {
         s.broken.store(false, Ordering::SeqCst);
         match open_output(&s) {
             Ok(stream) => {
-                // Watchdog: an output that stops asking for sound without an error (after waking up, or a
-                // sound server hiccup) is opened again, so the music doesn't just stop.
                 let opened = Instant::now();
                 s.last_callback.store(now_ms(), Ordering::Relaxed);
                 let (mut stalled, mut resize) = (false, false);
@@ -1016,9 +910,6 @@ fn output_thread(s: Arc<Shared>) {
                 while !s.broken.load(Ordering::SeqCst) {
                     if s.too_slow.swap(false, Ordering::SeqCst) { resize = true; break; }
                     std::thread::sleep(Duration::from_millis(if resting { 100 } else { 250 }));
-                    // Resting: after a few minutes with no music, the output is paused (it otherwise keeps the
-                    // sound hardware, or your Bluetooth headphones, busy playing silence), and it comes back
-                    // as soon as music does. While paused locally, what's queued waits for the resume.
                     let idle = now_ms().saturating_sub(s.last_audio.load(Ordering::Relaxed)) > rest_after_ms();
                     let (holding, queued) = { let st = s.st.lock().unwrap(); (st.holding, st.voices.iter().any(|v| !v.is_empty())) };
                     if !resting && idle && (holding || !queued) {
@@ -1032,8 +923,6 @@ fn output_thread(s: Arc<Shared>) {
                     }
                     if resting {
                         if !idle || (!holding && queued) {
-                            // The Mac's output was given back while resting: open it afresh, so it's taken again
-                            // (and set to 44.1 kHz) before any sound plays. (Changing it under an open stream stops it.)
                             if cfg!(target_os = "macos") && (s.settings.bool("exclusive") || s.settings.bool("matchRate")) {
                                 s.resting.store(false, Ordering::Relaxed);
                                 note(&s, "Music again: opening the sound output afresh.".into());
@@ -1084,7 +973,6 @@ fn output_thread(s: Arc<Shared>) {
 
 fn open_output(s: &Arc<Shared>) -> Result<cpal::Stream, String> {
     mac_apply(s);
-    // A buffer you set for this output, or the automatic one (which grows if the output can't keep up).
     let id = current_device(s).0;
     match s.settings.get("bufferProfiles").get(&id).and_then(Value::as_u64) {
         Some(f) if f > 0 => { s.buffer_frames.store((f as u32).clamp(256, BUFFER_FRAMES_MAX), Ordering::Relaxed); s.buffer_fixed.store(true, Ordering::Relaxed); }
@@ -1092,7 +980,6 @@ fn open_output(s: &Arc<Shared>) -> Result<cpal::Stream, String> {
     }
     let device = find_device(s).ok_or("no output device")?;
     let name = device.name().unwrap_or_else(|_| "unknown".into());
-    // 44.1 kHz if the output can do it, so nothing needs converting; otherwise its own rate.
     let default = device.default_output_config().map_err(|e| e.to_string())?;
     let config = device.supported_output_configs().ok()
         .and_then(|mut list| list.find(|c| c.channels() >= 2 && c.sample_format() == cpal::SampleFormat::F32
@@ -1100,8 +987,6 @@ fn open_output(s: &Arc<Shared>) -> Result<cpal::Stream, String> {
         .map(|c| c.with_sample_rate(cpal::SampleRate(RATE)))
         .unwrap_or(default);
     let format = config.sample_format();
-    // A fixed buffer. Left to choose, ALSA can pick one so small that a busy computer (or a virtual
-    // machine) doesn't refill it in time, which is heard as crackles and gaps.
     let frames = match config.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => Some(s.buffer_frames.load(Ordering::Relaxed).clamp(*min, *max)),
         cpal::SupportedBufferSize::Unknown => None,
@@ -1139,7 +1024,6 @@ fn build_any(device: &cpal::Device, config: &cpal::StreamConfig, format: cpal::S
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, s: Arc<Shared>) -> Result<cpal::Stream, String>
 where T: cpal::SizedSample + cpal::FromSample<f32> {
     let channels = config.channels as usize;
-    // How far through librespot's sound one output frame moves (1.0 when the rates match).
     let step = RATE as f64 / config.sample_rate.0 as f64;
     let mut frac = 1.0f64;
     let (mut prev, mut cur) = ((0f32, 0f32), (0f32, 0f32));
@@ -1194,14 +1078,11 @@ where T: cpal::SizedSample + cpal::FromSample<f32> {
     ).map_err(|e| e.to_string())
 }
 
-/// Levels for the visualizer and the EQ meters, about 30 times a second while a page shows them. When
-/// it's quiet, one all-zero frame is sent so the meters settle, then nothing until sound comes back.
 fn levels_thread(s: Arc<Shared>) {
     let mut spectrum = dsp::Spectrum::default();
     let mut was_silent = false;
     let mut samples = vec![0f32; dsp::FFT_SIZE];
     loop {
-        // About 30 times a second while a page shows meters; otherwise just a look a few times a second.
         if !s.meter_on.load(Ordering::Relaxed) { std::thread::sleep(Duration::from_millis(250)); continue; }
         std::thread::sleep(Duration::from_millis(33));
         {
@@ -1217,17 +1098,14 @@ fn levels_thread(s: Arc<Shared>) {
         let silent = spec.iter().all(|&v| v == 0.0);
         if silent && was_silent { continue; }
         was_silent = silent;
-        // Three decimals is far finer than any meter can show, and a third of the text to send 30 times a second.
         let short = |v: Vec<f64>| v.into_iter().map(|x| (x * 1000.0).round() / 1000.0).collect::<Vec<_>>();
         (s.emit)("eq.levels", json!({"spec": short(spec), "eq": short(eq)}));
     }
 }
 
-/// Every 5 s while anything is happening, a line in the log: how much sound came from librespot, how
-/// much the output played and how loud. If the output can't keep up, its buffer is made bigger.
 fn report(s: Arc<Shared>) {
     let mut quiet_reported = false;
-    let mut slow: i32 = -1;          // the first window after start-up is a partial one
+    let mut slow: i32 = -1;
     loop {
         std::thread::sleep(Duration::from_secs(5));
         let received = s.received.swap(0, Ordering::Relaxed);
@@ -1267,7 +1145,6 @@ mod mem_pipe_tests {
     fn carries_sound_and_waits_when_full() {
         let p = MemPipe::new();
         let w = p.clone();
-        // More than fits at once: the writer has to wait for the reader.
         let writer = std::thread::spawn(move || w.write(&vec![7u8; MemPipe::CAP * 3]));
         std::thread::sleep(Duration::from_millis(50));
         assert!(p.waiting() <= MemPipe::CAP);

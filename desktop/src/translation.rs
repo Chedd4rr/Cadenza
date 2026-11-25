@@ -1,8 +1,3 @@
-//! Lyrics translation runs Firefox's offline translator (Bergamot) inside the page, so nothing you
-//! translate leaves your computer. It needs a language model for each direction (about 15 to 60 MB). This
-//! finds the right ones in Mozilla's public list (the same one Firefox uses), downloads them the first
-//! time, checks each file against the hash Mozilla publishes, and keeps them in translation-models/.
-//! The page reads the files through cadenza-files:// (main.rs).
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -24,17 +19,14 @@ pub fn dir() -> PathBuf { files::path("translation-models") }
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 
-/// "2.1" → 2.001 (for sorting); None for anything else, like "2.0a1".
 fn number(v: &str) -> Option<f64> {
     let bits: Vec<&str> = v.split('.').collect();
     if bits.is_empty() || bits.len() > 3 || !bits.iter().all(|b| !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())) { return None; }
     Some(bits.iter().enumerate().map(|(i, b)| b.parse::<f64>().unwrap_or(0.0) / 1000f64.powi(i as i32)).sum())
 }
 
-/// Files are named by their hash, so a changed model never mixes with an old one.
 fn path_for(p: &Part) -> PathBuf { dir().join(format!("{}.{}", p.hash, p.ext)) }
 
-/// Mozilla's list, kept for a week (or used as it is when there's no connection).
 async fn records(http: &reqwest::Client) -> Option<Vec<Value>> {
     let _ = std::fs::create_dir_all(dir());
     let list = dir().join("records.json");
@@ -55,8 +47,6 @@ async fn records(http: &reqwest::Client) -> Option<Vec<Value>> {
     v.get("data")?.as_array().cloned()
 }
 
-/// The newest complete model for a direction (below `below`, if given). Records meant only for Firefox on
-/// Android or for test builds are left out, and so are alpha versions.
 fn choose(records: &[Value], from: &str, to: &str, below: Option<&str>) -> Option<(String, Vec<Part>)> {
     let mut by_version: HashMap<String, Vec<Part>> = HashMap::new();
     for r in records {
@@ -92,7 +82,6 @@ fn choose(records: &[Value], from: &str, to: &str, below: Option<&str>) -> Optio
     None
 }
 
-/// Downloads one file, checks its size and hash, and only then keeps it. Err(reason) otherwise.
 async fn download(http: &reqwest::Client, p: &Part, mut on_bytes: impl FnMut(u64)) -> Result<(), String> {
     let url = format!("{ATTACHMENTS}{}", p.location);
     let parsed = url::Url::parse(&url).map_err(|_| "bad-url")?;
@@ -110,8 +99,6 @@ async fn download(http: &reqwest::Client, p: &Part, mut on_bytes: impl FnMut(u64
     if files::write_privately(&data, &path_for(p)) { Ok(()) } else { Err("write-failed".into()) }
 }
 
-/// Finds (and if needed downloads) the models to translate `from` → `to`: the direct pair, or through
-/// English when there isn't one. Replies {models: [{from, to, version, files, int8}], error}.
 pub async fn prepare(http: &reqwest::Client, from: &str, to: &str, below: Option<&str>, files_base: &str,
                      progress: impl Fn(u64, u64)) -> Value {
     let ok = |c: &str| (2..=8).contains(&c.len()) && c.chars().all(|ch| ch.is_alphabetic() || ch == '-');
@@ -140,7 +127,6 @@ async fn prepare_inner(http: &reqwest::Client, from: &str, to: &str, below: Opti
         let (version, parts) = choose(&records, f, t, below).ok_or("unsupported")?;
         chosen.push((f, t, version, parts));
     }
-    // Download what isn't here yet, reporting progress across all the files.
     let missing: Vec<Part> = chosen.iter().flat_map(|c| c.3.iter().cloned()).filter(|p| !path_for(p).exists()).collect();
     let total: u64 = missing.iter().map(|p| p.size).sum();
     if total > 0 { progress(0, total); }
@@ -153,7 +139,6 @@ async fn prepare_inner(http: &reqwest::Client, from: &str, to: &str, below: Opti
     Ok(Value::Array(chosen.into_iter().map(|(f, t, version, parts)| {
         let files: serde_json::Map<String, Value> = parts.iter()
             .map(|p| (p.kind.clone(), json!(format!("{files_base}models/{}.{}", p.hash, p.ext)))).collect();
-        // A few models (Ukrainian, for one) need a different number format; Firefox tells them apart by name.
         let int8 = parts.iter().any(|p| p.kind == "model" && p.name.ends_with("intgemm8.bin"));
         json!({"from": f, "to": t, "version": version, "files": files, "int8": int8})
     }).collect()))
@@ -164,7 +149,6 @@ pub fn disk_usage() -> u64 {
     std::fs::read_dir(dir()).map(|list| list.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum()).unwrap_or(0)
 }
 
-/// Deletes every downloaded language (they're downloaded again when needed).
 pub fn clear() { let _ = std::fs::remove_dir_all(dir()); }
 
 #[cfg(test)]

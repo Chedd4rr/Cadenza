@@ -1,10 +1,6 @@
-// The menu-bar mini player. Cadenza calls mini.apply(info) with what's playing; buttons go back to
-// Cadenza through window.webkit.messageHandlers.mini. This page can only ask for the few things the
-// mini player does (play/pause, skip, like, volume, open Cadenza, its own size), nothing else.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-// (window.cadenzaMini in the Windows and Linux app, which works the same way.)
 const native = window.cadenzaMini || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.mini);
 const send = (cmd, value) => { if (native) native.postMessage(value === undefined ? { cmd } : { cmd, value }); };
 
@@ -18,9 +14,9 @@ const S = {
   playing: false,
   stamp: Date.now(),
   volume: 70,
-  volLock: 0,         // ignore Cadenza's volume for a moment after you change it here
-  visible: !native,    // Cadenza says when the panel opens; until then, nothing needs to move
-  art: null,          // the cover's data URL (null until the first update)
+  volLock: 0,
+  visible: !native,
+  art: null,
   lastSize: "",
 };
 
@@ -35,12 +31,10 @@ const now = () => Math.min(S.duration || Infinity, S.position + (S.playing ? Dat
 function apply(info) {
   info = info || {};
   S.info = info;
-  // Themes the menu-bar player has its own look for; any other (like CHROMA) uses the blue one.
   const theme = ["tide", "heist", "neon", "min", "rogue"].includes(info.theme) ? info.theme : "tide", style = info.style === "mp3" ? "mp3" : "theme";
   const themeChanged = document.body.dataset.theme !== theme || document.body.dataset.style !== style;
   document.body.dataset.theme = theme;
   document.body.dataset.style = style;
-  // Reduce motion, as set in Cadenza (null: follow the system's setting).
   document.body.classList.toggle("reduce", info.reduce === true || (info.reduce == null && matchMedia("(prefers-reduced-motion: reduce)").matches));
 
   const title = info.title || "", artist = info.artist || "", album = info.album || "";
@@ -85,7 +79,6 @@ function setArt(src) {
 /* ---------- theme details ---------- */
 
 function restyle(theme) {
-  // HEIST cuts "NOW PLAYING" out of magazines: each letter gets its own font, colours and tilt.
   const np = $("np");
   np.textContent = "";
   if (theme === "heist") {
@@ -113,7 +106,6 @@ function tick() {
   $("t0").textContent = $("lcdT0").textContent = clock(pos);
   $("t1").textContent = $("lcdT1").textContent = clock(dur);
   $("fill").style.width = (f * 100).toFixed(2) + "%";
-  // The LCD bar moves in whole "pixels" (3 px steps), like a real one.
   const pix = $("lcdFill").parentElement.clientWidth;
   $("lcdFill").style.width = Math.round((f * pix) / 3) * 3 + "px";
 }
@@ -144,8 +136,6 @@ function setVolume(v) {
 
 /* ---------- MP3 mode: the LCD ---------- */
 
-// The cover on the little colour screen: shrunk to 28 × 28 and shown at double size, with fewer colours,
-// like the low-resolution displays those players had.
 function dither(img) {
   const c = $("dither"), ctx = c.getContext("2d", { willReadFrequently: true });
   const w = c.width, h = c.height;
@@ -182,7 +172,6 @@ function marquee() {
   });
 }
 
-// The little spectrum on the LCD: blocky bars that jump while music plays.
 const eqBars = [...document.querySelectorAll("#eq i")];
 let eqLevels = eqBars.map(() => 1);
 function eqStep() {
@@ -218,7 +207,6 @@ document.addEventListener("dragstart", (e) => e.preventDefault());
 
 /* ---------- size and visibility ---------- */
 
-// Tells Cadenza how big the panel should be: the player plus the room its shadow needs.
 function reportSize() {
   requestAnimationFrame(() => {
     const el = document.body.dataset.style === "mp3" ? $("stick") : $("dev");
@@ -232,7 +220,6 @@ function reportSize() {
   });
 }
 
-/** Cadenza calls this when the panel opens or closes, so nothing animates while you can't see it. */
 function setVisible(on) {
   S.visible = !!on;
   if (on) { tick(); marquee(); }

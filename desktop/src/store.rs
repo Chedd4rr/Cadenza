@@ -1,5 +1,3 @@
-//! A small key-value store for the page (cached playlist tags, Up Next, true-shuffle lists…), saved as
-//! store.json. Changes are written a second later, all at once, on a background thread.
 
 use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
@@ -15,7 +13,6 @@ pub struct Store {
 impl Store {
     pub fn load() -> Arc<Self> {
         let mut data = match files::read_json("store.json") { Some(Value::Object(m)) => m, _ => Map::new() };
-        // Older builds kept a copy of every playlist version ("trueShuffle:<id>:<version>" as a plain list).
         data.retain(|k, v| !(k.starts_with("trueShuffle:") && v.is_array()));
         Arc::new(Store { data: Mutex::new(data), scheduled: Mutex::new(false) })
     }
@@ -39,7 +36,6 @@ impl Store {
         });
     }
 
-    /// Write anything pending right away (also used when Cadenza quits).
     pub fn flush(&self) {
         *self.scheduled.lock().unwrap() = false;
         let snapshot = Value::Object(self.data.lock().unwrap().clone());

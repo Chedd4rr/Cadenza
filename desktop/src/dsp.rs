@@ -1,6 +1,3 @@
-//! The sound processing, sample by sample: the 10-band EQ, the peak limiter, volume ramps and the
-//! spectrum analysis for the visualizer. Everything runs at librespot's 44.1 kHz, before the sound is
-//! converted to the output's own rate.
 
 use std::f64::consts::PI;
 
@@ -16,15 +13,12 @@ struct Biquad { b0: f64, b1: f64, b2: f64, a1: f64, a2: f64 }
 struct BiquadState { x1: f64, x2: f64, y1: f64, y2: f64 }
 
 impl Biquad {
-    /// The standard "Audio EQ Cookbook" filters (Robert Bristow-Johnson), which is also what Apple's
-    /// AVAudioUnitEQ uses: a peak with a bandwidth in octaves, and shelves with a slope of 1.
     fn peaking(f: f64, gain_db: f64, octaves: f64) -> Self {
         let a = 10f64.powf(gain_db / 40.0);
         let w = 2.0 * PI * f / RATE;
         let alpha = w.sin() * ((2f64.ln() / 2.0) * octaves * w / w.sin()).sinh();
         Self::norm(1.0 + alpha * a, -2.0 * w.cos(), 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * w.cos(), 1.0 - alpha / a)
     }
-    /// A peak with its width given as Q (what headphone EQ profiles use).
     fn peaking_q(f: f64, gain_db: f64, q: f64) -> Self {
         let a = 10f64.powf(gain_db / 40.0);
         let w = 2.0 * PI * f / RATE;
@@ -32,7 +26,6 @@ impl Biquad {
         Self::norm(1.0 + alpha * a, -2.0 * w.cos(), 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * w.cos(), 1.0 - alpha / a)
     }
     fn shelf(f: f64, gain_db: f64, high: bool) -> Self { Self::shelf_q(f, gain_db, std::f64::consts::FRAC_1_SQRT_2, high) }
-    /// A shelf with its slope given as Q (0.707 is the usual "slope of 1").
     fn shelf_q(f: f64, gain_db: f64, q: f64, high: bool) -> Self {
         let a = 10f64.powf(gain_db / 40.0);
         let w = 2.0 * PI * f / RATE;
@@ -56,7 +49,6 @@ impl Biquad {
         s.x2 = s.x1; s.x1 = x; s.y2 = s.y1; s.y1 = y;
         y
     }
-    /// The filter's gain at a frequency, in dB (for tests and checking against Apple's curves).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn response_db(&self, f: f64) -> f64 {
         let w = 2.0 * PI * f / RATE;
@@ -67,18 +59,15 @@ impl Biquad {
     }
 }
 
-/// One filter of the parametric EQ: a peak or a shelf at any frequency, with any gain and width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind { Peak, LowShelf, HighShelf, Off }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter { pub kind: Kind, pub freq: f64, pub gain: f64, pub q: f64 }
 
-/// Up to this many filters (what headphone profiles from AutoEq use).
 pub const MAX_FILTERS: usize = 10;
 
 impl Filter {
-    /// Kept to what the filters can do well: 20 Hz–20 kHz, ±15 dB, Q 0.1–10.
     pub fn clamped(self) -> Self {
         Filter { kind: self.kind, freq: self.freq.clamp(20.0, 20000.0), gain: self.gain.clamp(-15.0, 15.0), q: self.q.clamp(0.1, 10.0) }
     }
@@ -103,11 +92,6 @@ impl Filter {
     }
 }
 
-/// A headphone EQ file in Equalizer APO's format, which AutoEq makes ("…ParametricEQ.txt"):
-///   Preamp: -6.1 dB
-///   Filter 1: ON PK Fc 105 Hz Gain 6.4 dB Q 0.70
-/// Returns the preamp, the filters (at most MAX_FILTERS) and how many lines were left out (other kinds of
-/// filter, ones switched off, or too many).
 pub fn parse_apo(text: &str) -> (f64, Vec<Filter>, usize) {
     let (mut pre, mut list, mut skipped) = (0.0, vec![], 0usize);
     let num = |w: Option<&&str>| w.and_then(|v| v.replace(',', ".").parse::<f64>().ok());
@@ -132,8 +116,6 @@ pub fn parse_apo(text: &str) -> (f64, Vec<Filter>, usize) {
     (pre, list, skipped)
 }
 
-/// The EQ: either the 10-band graphic one (a low shelf at 32 Hz, peaks one octave wide from 64 Hz to 8 kHz,
-/// a high shelf at 16 kHz) or up to 10 parametric filters; and a preamp.
 pub struct Eq {
     bands: [Biquad; 10],
     state: [[BiquadState; 10]; 2],
@@ -146,7 +128,6 @@ impl Default for Eq {
 }
 
 impl Eq {
-    /// The parametric EQ: these filters (unused places pass the sound through).
     pub fn set_filters(&mut self, on: bool, preamp_db: f64, filters: &[Filter]) {
         self.on = on;
         self.preamp = if on { 10f64.powf(preamp_db / 20.0) } else { 1.0 };
@@ -186,8 +167,6 @@ impl Eq {
 
 // MARK: limiter
 
-/// A look-ahead peak limiter, so boosting never clips: the sound is delayed 5 ms, and the volume comes
-/// down just before a peak arrives, then recovers over about 50 ms. Nothing changes while the sound stays under the ceiling.
 pub struct Limiter {
     delay: Vec<(f32, f32)>,
     pos: usize,
@@ -219,18 +198,14 @@ impl Limiter {
         self.delay[self.pos] = (l, r);
         self.need[self.pos] = need;
         self.pos = (self.pos + 1) % LOOKAHEAD;
-        // The lowest gain anything in the next 5 ms will need. (Only scanned while a peak is near: most of
-        // the time everything needs 1.0 and this costs nothing.)
         let target = if need < 1.0 || self.gain < 0.9999 { self.need.iter().copied().fold(1.0f32, f32::min) } else { 1.0 };
         self.gain += (target - self.gain) * if target < self.gain { self.attack } else { self.release };
-        // A last safety net for the sample right at the front of a sudden peak.
         ((dl * self.gain).clamp(-CEILING, CEILING), (dr * self.gain).clamp(-CEILING, CEILING))
     }
 }
 
 // MARK: channels
 
-/// Balance, mono, swapping left and right, and flipping polarity, applied last.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Channels { pub balance: f32, pub mono: bool, pub swap: bool, pub invert: bool }
 
@@ -238,8 +213,6 @@ impl Default for Channels { fn default() -> Self { Channels { balance: 0.0, mono
 
 impl Channels {
     pub fn neutral(&self) -> bool { *self == Channels::default() }
-    /// `balance`: −1 (left only) … 0 (centre) … 1 (right only). The other side is turned down; the louder
-    /// side stays as it was, so moving the balance never makes anything louder.
     #[inline]
     pub fn run(&self, l: f32, r: f32) -> (f32, f32) {
         let (mut l, mut r) = if self.mono { let m = (l + r) * 0.5; (m, m) } else { (l, r) };
@@ -249,7 +222,6 @@ impl Channels {
     }
 }
 
-/// A test tone to check which speaker is which: 1 kHz, about −18 dB, 1.5 s, eased in and out (no clicks).
 pub struct Tone { left: bool, right: bool, n: u32 }
 
 pub const TONE_FRAMES: u32 = (RATE * 1.5) as u32;
@@ -273,7 +245,6 @@ impl Tone {
 #[derive(Clone, Copy, PartialEq)]
 pub enum Curve { Smooth, Linear }
 
-/// A volume that moves from one value to another over a number of samples.
 #[derive(Clone, Copy)]
 pub struct Ramp { from: f32, to: f32, t: u32, len: u32, curve: Curve }
 
@@ -303,9 +274,6 @@ impl Ramp {
 pub const FFT_SIZE: usize = 4096;
 pub const SPEC_BANDS: usize = 48;
 
-/// The visualizer's levels from the latest 4096 samples (mono, after the EQ): 48 bands spaced evenly in
-/// pitch from 35 Hz to 16 kHz, and the 10 EQ bands, each 0–1. Treble is lifted 3 dB per octave so it shows
-/// up as clearly as bass.
 pub struct Spectrum {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     window: Vec<f32>,
@@ -361,14 +329,11 @@ mod tests {
     #[test]
     fn eq_matches_the_cookbook_curves() {
         let mut eq = Eq::default();
-        // A +6 dB peak at 1 kHz gives +6 dB at 1 kHz and next to nothing two octaves away.
         let mut g = [0.0; 10]; g[5] = 6.0;
         eq.set(true, 0.0, &g);
         assert!((eq.response_db(1000.0) - 6.0).abs() < 0.05, "{}", eq.response_db(1000.0));
         assert!(eq.response_db(250.0).abs() < 0.6 && eq.response_db(4000.0).abs() < 0.6);
-        // One octave wide: about half the boost (in dB) at the band edges, 707 Hz and 1414 Hz.
         assert!((eq.response_db(1414.0) - 3.0).abs() < 0.6, "{}", eq.response_db(1414.0));
-        // The shelves: full gain well beyond their corner, half at the corner, nothing far away.
         let mut g = [0.0; 10]; g[0] = 6.0; g[9] = -6.0;
         eq.set(true, 0.0, &g);
         assert!((eq.response_db(10.0) - 6.0).abs() < 0.3, "{}", eq.response_db(10.0));

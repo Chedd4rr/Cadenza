@@ -1,8 +1,3 @@
-//! A thin Spotify Web API client with a rate-limit guard.
-//!
-//! Spotify blocks an app that sends too many requests (HTTP 429 with a Retry-After wait). While an
-//! endpoint is blocked, requests to it are answered here instead of being sent, because hitting Spotify
-//! during a block can make it longer. Background traffic is smoothed to at most 40 requests per 30 s.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -49,7 +44,6 @@ impl Api {
         g.log.iter().rev().take(n).rev().cloned().collect()
     }
 
-    /// A new login or Client ID starts fresh: forget any wait Spotify gave the previous one.
     pub fn reset_block(&self) {
         let mut g = self.guard.lock().unwrap();
         g.blocks.clear();
@@ -72,7 +66,6 @@ impl Api {
         })
     }
 
-    /// Uploads a raw body (a playlist cover: base64 JPEG sent as image/jpeg). Returns the status.
     pub async fn upload(&self, method: &str, path: &str, body: Vec<u8>, content_type: &str) -> u16 {
         let Some(token) = self.auth.token().await else { return 401 };
         let Ok(url) = url::Url::parse(&format!("{BASE}{path}")) else { return 400 };
@@ -86,8 +79,6 @@ impl Api {
         status
     }
 
-    /// `path` is relative to https://api.spotify.com/v1 ("/me/player") or a full api.spotify.com URL.
-    /// Returns (status, body). Status 0 means Spotify couldn't be reached.
     pub async fn request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
         let mut retries = 1;
         loop {
@@ -97,8 +88,6 @@ impl Api {
                 retries -= 1;
                 continue;
             }
-            // Short waits are retried here; longer ones go back to the page, which pauses its background
-            // checks until Spotify's cool-down is over.
             if status == 429 && retries > 0 && retry_after <= 5.0 {
                 tokio::time::sleep(Duration::from_secs_f64(retry_after.max(0.5))).await;
                 retries -= 1;
@@ -110,16 +99,12 @@ impl Api {
 
     async fn once(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value, f64) {
         let Some(token) = self.auth.token().await else {
-            // Still signed in but couldn't refresh (no network yet): a network error, not "logged out",
-            // so the page doesn't ask you to sign in again.
             if self.auth.is_logged_in() {
                 return (0, json!({"error": {"status": 0, "message": "Couldn't reach Spotify"}}), 0.0);
             }
             return (401, json!({"error": {"status": 401, "message": "Not logged in"}}), 0.0);
         };
         let full = if path.starts_with("http") { path.to_string() } else { format!("{BASE}{path}") };
-        // Full URLs (Spotify's "next page" links) must point at Spotify's API: the login token is attached
-        // to every request, so it must never be sent anywhere else.
         let Ok(url) = url::Url::parse(&full) else { return (400, json!({"error": {"status": 400, "message": "Bad URL"}}), 0.0) };
         if url.scheme() != "https" || url.host_str().map(|h| h.to_ascii_lowercase()) != Some("api.spotify.com".into()) {
             return (400, json!({"error": {"status": 400, "message": "Bad URL"}}), 0.0);
@@ -127,7 +112,6 @@ impl Api {
         let short = full.replacen(BASE, "", 1);
         let endpoint = format!("{method} {}", short.split('?').next().unwrap_or(&short));
 
-        // Waits are per endpoint; controls you press go straight out; background traffic is smoothed.
         enum Next { Go, Wait, Blocked(f64) }
         loop {
             let next = {
@@ -153,8 +137,6 @@ impl Api {
         let mut req = self.http.request(m, url).timeout(Duration::from_secs(15)).bearer_auth(token);
         if method != "GET" {
             req = req.header("Content-Type", "application/json");
-            // Spotify refuses a PUT or POST that doesn't say how long it is (411 Length Required), and an
-            // empty body goes out without saying so unless it's set here. (macOS adds it by itself.)
             req = match body {
                 Some(b) if !b.is_null() => req.body(b.to_string()),
                 _ => req.header("Content-Length", "0").body(""),
@@ -172,7 +154,6 @@ impl Api {
         };
 
         let mut g = self.guard.lock().unwrap();
-        // For a refusal, add Spotify's own reason ("Restriction violated", "PREMIUM_REQUIRED"…).
         let mut why = String::new();
         if status >= 400 && status != 429 {
             if let Some(err) = json.get("error") {
@@ -190,7 +171,6 @@ impl Api {
                 g.blocks.insert(endpoint, until);
                 g.blocked_until = Some(g.blocked_until.map_or(until, |b| b.max(until)));
             }
-            // Saved for "Spotify activity" after a block, without what you searched for.
             let hide = regex::Regex::new(r"([?&]q=)[^&\s]*").unwrap();
             let text = hide.replace_all(&g.log.join("\n"), "${1}(hidden)").into_owned();
             files::write_privately(text.as_bytes(), &files::path("spotify-requests.log"));

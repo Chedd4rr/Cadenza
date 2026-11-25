@@ -1,5 +1,3 @@
-//! The page's one way into the app: `native(cmd, args)` in app.js arrives here as the `native` command,
-//! and answers with the data the page expects, the same as demo mode's made-up answers.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -15,7 +13,6 @@ fn b(args: &Value, key: &str, default: bool) -> bool { args.get(key).and_then(Va
 
 #[tauri::command]
 pub async fn native(window: WebviewWindow, core: tauri::State<'_, Arc<Core>>, cmd: String, args: Option<Value>) -> Result<Value, String> {
-    // Only Cadenza's own page may talk to the app: the main window, showing the app's own files.
     let url = window.url().map_err(|e| e.to_string())?;
     let own = url.scheme() == "tauri" || (matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost"));
     if window.label() != "main" || !own { return Err("Not allowed".into()); }
@@ -37,7 +34,6 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         "api.activity" => core.api.activity(),
 
         "auth.status" => {
-            // Refresh first, so we know which permissions the current login has.
             let _ = core.auth.token().await;
             json!({"loggedIn": core.auth.is_logged_in(), "clientId": core.settings.client_id(),
                    "redirectURI": crate::auth::REDIRECT_URI, "missingScopes": core.auth.missing_scopes()})
@@ -87,11 +83,9 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         "store.get" => core.store.get(&s(args, "key")),
         "store.set" => { core.store.set(&s(args, "key"), args.get("value").cloned().unwrap_or(Value::Null)); json!(true) }
 
-        // The taste profile, or (with a "mode") that mode's own profile, kept in its own file.
         "taste.get" => taste_file(args).and_then(|f| files::read_json(&f)).filter(Value::is_object).unwrap_or(Value::Null),
         "taste.set" => json!(taste_file(args).map(|f| save_capped(&f, args.get("value"), 8 << 20, true)).unwrap_or(false)),
         "taste.remove" => {
-            // Deleting a mode's profile (the main one is only ever cleared with "taste.clear").
             let gone = args.get("mode").and_then(Value::as_str).filter(|m| !m.is_empty()).and_then(|_| taste_file(args))
                 .map(|f| std::fs::remove_file(files::path(&f)).is_ok()).unwrap_or(false);
             json!(gone)
@@ -105,7 +99,6 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         }
         "lastfmPlays.get" => files::read_json("lastfm-plays.json").unwrap_or(Value::Null),
         "lastfmPlays.set" => {
-            // Only the expected shape: {user, upTo, plays: [[time, song, artist, album]]}.
             let v = args.get("value");
             let shaped = v.map_or(false, |v| v.get("user").map_or(false, Value::is_string)
                 && v.get("upTo").map_or(false, Value::is_number) && v.get("plays").map_or(false, Value::is_array));
@@ -120,7 +113,6 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
             tauri::async_runtime::spawn_blocking(move || h.snapshot()).await.unwrap_or(json!({"tracks": [], "plays": []}))
         }
         "spotifyHistory.import" => {
-            // You pick the files in a dialog, so the page never chooses what gets read.
             let picked = pick_history_files(window).await;
             if picked.is_empty() { return Ok(Value::Null); }
             let h = Arc::clone(&core.spotify_history);
@@ -134,15 +126,12 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
             json!(yes)
         }
 
-        // MARK: saving and opening your own files (Wrapped pictures, playlist backups). You choose the place
-        // in a dialog, so the page never decides where anything is written or read.
         "file.save" => save_file(window, args).await,
         "file.open" => open_file(window, args).await,
 
         // MARK: the window and the system
         "clipboard" => { let _ = window.app_handle().clipboard().write_text(s(args, "text")); json!(true) }
         "openURL" => {
-            // Only Spotify links and web pages. Anything else (file paths, other apps' links) could start programs.
             let link = s(args, "url");
             if let Ok(u) = url::Url::parse(&link) {
                 if matches!(u.scheme().to_ascii_lowercase().as_str(), "spotify" | "https") { let _ = open::that(link); }
@@ -172,8 +161,6 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
                 Err(m) => json!({"ok": false, "message": m}),
             }
         }
-        // Choosing a new shortcut: the Mac menu's shortcuts and the show/hide shortcut step aside meanwhile,
-        // or they'd catch the keys before the page.
         "shortcuts.capture" => {
             let on = b(args, "on", false);
             crate::rebuild_menu(window.app_handle(), on);
@@ -229,9 +216,8 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         // MARK: the sound engine
         "eq.get" => core.sound.eq_state(),
         "eq.set" => core.sound.eq_update(args),
-        "eq.engine" => json!(true),                        // always on here: Cadenza's engine is the only way sound plays
+        "eq.engine" => json!(true),
         "eq.meter" => { core.sound.set_meter(b(args, "on", false)); json!(true) }
-        // Headphone EQ: search AutoEq's list, download one profile, or read an Equalizer APO file's text.
         "eq.autoeqSearch" => crate::autoeq::find(&core.http, &s(args, "q")).await,
         "eq.autoeqLoad" => crate::autoeq::load(&core.http, &s(args, "path")).await,
         "eq.parse" => {
@@ -241,7 +227,6 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
         "sound.tone" => { core.sound.test_tone(&s(args, "which")); json!(true) }
         "sound.buffer" => core.sound.buffer(args.get("frames").and_then(Value::as_u64)),
         "audio.local" => {
-            // Instant pause, play and skip when this computer's engine is the one playing.
             if core.librespot.is_active_here() {
                 let action = s(args, "action");
                 core.sound.local(&action, core.librespot.is_playing_here());
@@ -286,10 +271,8 @@ async fn handle(core: &Arc<Core>, window: &WebviewWindow, cmd: &str, args: &Valu
 fn settings_for_page(core: &Core) -> Value {
     let mut v = core.settings.all();
     v["mediaKeysTrusted"] = json!(true);
-    // Whether this copy has Cadenza's own Last.fm key and Discord ID built in (the page then needs neither).
     v["builtinLastfm"] = json!(!crate::builtin::LASTFM_KEY.is_empty());
     v["builtinDiscord"] = json!(!crate::builtin::DISCORD_APP_ID.is_empty());
-    // Whether Cadenza really starts at login, as the system has it.
     v["openAtLogin"] = json!(crate::loginitem::enabled(core.system.app()));
     v
 }
@@ -304,7 +287,6 @@ fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
         "matchRate" | "exclusive" => core.sound.reopen(),
         "balance" | "mono" | "swapChannels" | "invertPolarity" => core.sound.apply_channels(),
         "globalHotkey" => crate::apply_hotkey(window.app_handle()),
-        // Your shortcuts changed on the keyboard page: the Mac menu and the show/hide shortcut follow.
         "shortcuts" => { crate::rebuild_menu(window.app_handle(), false); crate::apply_hotkey(window.app_handle()); }
         "menuBar" => core.system.set_tray(core.settings.bool("menuBar")),
         "miniStyle" | "reduceMotion" => core.system.push_mini(),
@@ -318,9 +300,6 @@ fn apply_setting(core: &Arc<Core>, window: &WebviewWindow, key: &str) {
     }
 }
 
-/// Saves a JSON object the page hands over, refusing anything odd or too big.
-/// The file for a taste profile: taste.json, or taste-<mode>.json for a mode (a short name of letters and
-/// digits, so it can't point anywhere else). None if the mode name isn't one.
 fn taste_file(args: &Value) -> Option<String> {
     match args.get("mode").and_then(Value::as_str).filter(|m| !m.is_empty()) {
         None => Some("taste.json".into()),
@@ -336,8 +315,6 @@ fn save_capped(name: &str, value: Option<&Value>, max: usize, needs_version: boo
     data.len() <= max && files::write_privately(&data, &files::path(name))
 }
 
-/// Cadenza's own listening log, one JSON play per line.
-/// The Spotify history files to import: the .zip Spotify sends, or the .json files from it.
 async fn pick_history_files(window: &WebviewWindow) -> Vec<std::path::PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     window.dialog().file().set_parent(window).set_title("Import your Spotify listening history")
@@ -346,8 +323,6 @@ async fn pick_history_files(window: &WebviewWindow) -> Vec<std::path::PathBuf> {
     rx.await.ok().flatten().unwrap_or_default().into_iter().filter_map(|p| p.into_path().ok()).collect()
 }
 
-/// Saves a file the page made (a picture, or text such as a backup) where you choose: {name, kind: "png" |
-/// "json", base64 or text}. Answers {ok, name} or {ok: false} if you cancel.
 async fn save_file(window: &WebviewWindow, args: &Value) -> Value {
     let kind = match args.get("kind").and_then(Value::as_str) { Some("png") => "png", Some("json") => "json", _ => return json!({"ok": false, "message": "Unknown file type"}) };
     let data: Vec<u8> = if let Some(b) = args.get("base64").and_then(Value::as_str) {
@@ -369,11 +344,9 @@ async fn save_file(window: &WebviewWindow, args: &Value) -> Value {
     }
 }
 
-/// Reads a .json file you choose (a backup): {ok, name, text}, or {ok: false} if you cancel. At most 16 MB.
 async fn open_file(window: &WebviewWindow, args: &Value) -> Value {
     let title = args.get("title").and_then(Value::as_str).unwrap_or("Open").chars().take(80).collect::<String>();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    // "json" (a Cadenza backup) or "txt" (an EQ file in Equalizer APO's format).
     let (label, ext): (&str, &[&str]) = if args.get("kind").and_then(Value::as_str) == Some("txt") { ("EQ file (.txt)", &["txt"]) } else { ("Cadenza file (.json)", &["json"]) };
     window.dialog().file().set_parent(window).set_title(&title).add_filter(label, ext)
         .pick_file(move |p| { let _ = tx.send(p); });
@@ -397,7 +370,6 @@ async fn pick_image(window: &WebviewWindow) -> Option<std::path::PathBuf> {
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
-/// A dialog on the main window. With `ok` None it's just a notice (answers false).
 async fn ask(window: &WebviewWindow, title: &str, text: &str, ok: Option<&str>) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut d = window.dialog().message(text).title(title).parent(window);
@@ -410,8 +382,6 @@ async fn ask(window: &WebviewWindow, title: &str, text: &str, ok: Option<&str>) 
     ok.is_some() && yes
 }
 
-/// One setting decides what code Cadenza runs: the GitHub repository it installs updates from. The page
-/// can't change it on its own: a dialog asks you first.
 async fn confirm_setting(core: &Core, window: &WebviewWindow, key: &str, value: &Value) -> bool {
     let new = value.as_str().unwrap_or("").trim().to_string();
     match key {
@@ -432,9 +402,6 @@ async fn confirm_setting(core: &Core, window: &WebviewWindow, key: &str, value: 
     }
 }
 
-/// The cover as a data: URL, for themes that read its colours (the page can't read the pixels of a
-/// picture from another site). Only from Spotify's and Last.fm's picture servers, and only JPEG or PNG,
-/// so this can't become a way for the page to read anything else.
 async fn cover_data_url(core: &Core, link: &str) -> Option<String> {
     let u = url::Url::parse(link).ok()?;
     let host = u.host_str()?.to_ascii_lowercase();
@@ -461,11 +428,9 @@ fn diagnostics(core: &Core) -> String {
     out.push(core.sound.output_name());
     out.extend(core.sound.log().into_iter().rev().take(30).rev());
     let text = out.join("\n");
-    // Redacted: your home folder, your Spotify username, search words.
     let mut text = match dirs::home_dir() { Some(h) => text.replace(&h.display().to_string(), "~"), None => text };
     let user = regex::Regex::new(r#"Authenticated as ['"][^'"]*['"]"#).unwrap();
     text = user.replace_all(&text, "Authenticated as '(hidden)'").to_string();
-    // Your login name, as a whole word (it can turn up in paths that aren't under your home folder).
     for var in ["USER", "USERNAME", "LOGNAME"] {
         if let Ok(name) = std::env::var(var) {
             if name.len() >= 2 {

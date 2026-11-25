@@ -1,17 +1,3 @@
-//! Your Spotify listening history from the files Spotify sends when you ask for your data
-//! (spotify.com/account/privacy). The saved file is plain JSON, so an import made earlier is picked up as it is.
-//!
-//! - Extended streaming history (Streaming_History_Audio_*.json): every play, with skip details.
-//! - Account data (StreamingHistory_music_*.json): the last year, without song links or skip details.
-//!
-//! Only what Stats and the taste profile need is kept: when, how long, the song's name, artist, album and
-//! link, and these flags: 1 skipped, 2 finished, 4 picked by you, 8 ended because you started something
-//! else, 16 ended for a reason that says nothing about the song. IP addresses, countries and devices are
-//! never saved. A play is matched by the minute it ended plus the song's name and artist, so nothing is
-//! counted twice.
-//!
-//! Saved as spotify-history.json: {version, tracks: [[link, name, artist, album]],
-//! plays: [[end time in seconds, song number, ms played, flags]]}.
 
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -58,7 +44,6 @@ impl SpotifyHistory {
         if d.loaded { return; }
         d.loaded = true;
         let Some(obj) = files::read_json("spotify-history.json") else { return };
-        // (Padded to four fields rather than dropped, so the song numbers in plays stay right.)
         d.tracks = obj.get("tracks").and_then(Value::as_array).map(|rows| rows.iter().map(|r| {
             let f = |i: usize| r.get(i).and_then(Value::as_str).unwrap_or("").to_string();
             [f(0), f(1), f(2), f(3)]
@@ -78,26 +63,22 @@ impl SpotifyHistory {
         files::write_json("spotify-history.json", &obj);
     }
 
-    /// Everything imported, for the Stats page. Empty lists if nothing was imported.
     pub fn snapshot(&self) -> Value {
         let mut d = self.data.lock().unwrap();
         Self::load(&mut d);
         json!({"tracks": d.tracks, "plays": d.plays})
     }
 
-    /// Forget the imported history (Cadenza's own history and Last.fm are untouched).
     pub fn clear(&self) {
         let mut d = self.data.lock().unwrap();
         *d = Data { loaded: true, ..Default::default() };
         let _ = std::fs::remove_file(files::path("spotify-history.json"));
     }
 
-    /// Reads the picked files: .json files, folders holding them, or the .zip Spotify sends.
     pub fn import(&self, picked: &[PathBuf]) -> Value {
         let mut d = self.data.lock().unwrap();
         Self::load(&mut d);
 
-        // Every history file's contents: picked directly, inside a picked folder, or inside a picked .zip.
         let mut sources: Vec<Vec<u8>> = vec![];
         for p in picked {
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -129,7 +110,6 @@ impl SpotifyHistory {
                 }
             }
         }
-        // Plays already here from an older import (without flags, or with fewer): bring their flags up to date.
         let mut fixed = 0;
         if !fixes.is_empty() {
             for i in 0..d.plays.len() {
@@ -160,7 +140,6 @@ fn add(d: &mut Data, row: &Map<String, Value>, fixes: &mut HashMap<String, i64>)
     let mut flags = 0i64;
     let (name, artist, album, uri, ms, end);
     if let Some(ts) = row.get("ts").and_then(Value::as_str) {
-        // Extended history. Podcasts and audiobooks have no song name: Stats is about music.
         name = s("master_metadata_track_name");
         artist = s("master_metadata_album_artist_name");
         album = s("master_metadata_album_album_name");
@@ -181,9 +160,8 @@ fn add(d: &mut Data, row: &Map<String, Value>, fixes: &mut HashMap<String, i64>)
         uri = String::new();
         ms = int(row.get("msPlayed"));
         end = chrono::NaiveDateTime::parse_from_str(&s("endTime"), "%Y-%m-%d %H:%M").ok().map(|t| t.and_utc().timestamp());
-        if ms < MINIMUM_MS { flags |= 1; }                          // no reasons in these files: short means skipped
+        if ms < MINIMUM_MS { flags |= 1; }
     }
-    // Under a second counts only when you pressed next: otherwise it's a flicker, not a choice either way.
     let Some(end) = end else { return Outcome::Skipped };
     if name.is_empty() || artist.is_empty() || ms <= 0 || (ms < 1000 && flags & 1 == 0) { return Outcome::Skipped; }
 
@@ -194,7 +172,6 @@ fn add(d: &mut Data, row: &Map<String, Value>, fixes: &mut HashMap<String, i64>)
 
     let index = match d.index.get(&id) {
         Some(&i) => {
-            // A song first seen in the "account data" files has no link or album yet: fill them in.
             if d.tracks[i][0].is_empty() && !uri.is_empty() { d.tracks[i][0] = uri; }
             if d.tracks[i][3].is_empty() && !album.is_empty() { d.tracks[i][3] = album; }
             i
@@ -238,9 +215,6 @@ fn json_files_in(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The .json files inside a .zip, read in memory: nothing is unpacked to disk, so a file name in the zip
-/// can't land anywhere. Zips with more than 5,000 entries or more than 2 GB inside are refused, and each
-/// file must stay under the size limit as it's actually read.
 fn read_zip(p: &Path) -> Vec<Vec<u8>> {
     let Ok(f) = std::fs::File::open(p) else { return vec![] };
     let Ok(mut zip) = zip::ZipArchive::new(f) else { return vec![] };
@@ -256,7 +230,6 @@ fn read_zip(p: &Path) -> Vec<Vec<u8>> {
         if !e.is_file() || !e.name().to_ascii_lowercase().ends_with(".json") { continue; }
         let base = e.name().rsplit('/').next().unwrap_or("");
         if base.starts_with('.') || e.name().contains("__MACOSX") { continue; }
-        // The size a zip claims can be wrong: stop reading at the limit whatever it says.
         let mut buf = vec![];
         if e.take(MAX_FILE_BYTES + 1).read_to_end(&mut buf).is_err() || buf.len() as u64 > MAX_FILE_BYTES { continue; }
         out.push(buf);
@@ -318,14 +291,13 @@ mod tests {
         assert_eq!(r["added"], 0, "{r}");
         assert_eq!(r["duplicates"], 2, "{r}");
 
-        // The shorter "account data" download overlapping Song A (same minute it ended), plus one new play.
         let account = json!([
             {"endTime": "2024-03-01 10:00", "artistName": "Artist", "trackName": "Song A", "msPlayed": 200000},
             {"endTime": "2024-03-02 09:00", "artistName": "Other", "trackName": "Song D", "msPlayed": 120000}
         ]);
         let b = dir.join("StreamingHistory_music_0.json");
         std::fs::write(&b, account.to_string()).unwrap();
-        let r = h.import(&[dir.clone()]);   // the whole folder: picks up all three .json files
+        let r = h.import(&[dir.clone()]);
         assert_eq!(r["added"], 1, "{r}");
         assert_eq!(r["total"], 3, "{r}");
 

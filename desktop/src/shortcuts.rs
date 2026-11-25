@@ -1,9 +1,3 @@
-//! The shortcuts you can change on the keyboard page, for the parts the native side handles: the Mac
-//! menu's shortcuts and the show/hide shortcut that works from any app. The page keeps the full list
-//! (Shortcuts in app.js); these defaults must match it.
-//!
-//! A shortcut is written like "Meta+Shift+F". Meta is ⌘ on a Mac and Ctrl elsewhere: on Windows and Linux
-//! the app swaps the two keys before the page sees them, so the page's "Meta" is the Ctrl key there.
 
 use serde_json::Value;
 
@@ -23,20 +17,16 @@ pub fn get(settings: &Settings, id: &str) -> String {
     DEFAULTS.iter().find(|(k, _)| *k == id).map(|(_, v)| v.to_string()).unwrap_or_default()
 }
 
-/// True when it has ⌘ (Ctrl elsewhere) or Ctrl: only those can be menu or system-wide shortcuts without
-/// taking a plain key away from typing.
 pub fn has_command_key(combo: &str) -> bool {
     combo.split('+').rev().skip(1).any(|m| m == "Meta" || m == "Ctrl")
 }
 
-/// The same shortcut in the form Tauri's menus and global shortcuts read: "CmdOrCtrl+Shift+F".
 pub fn accelerator(combo: &str) -> Option<String> {
     let parts: Vec<&str> = combo.split('+').collect();
     let (key, mods) = parts.split_last()?;
     if key.is_empty() { return None; }
     let mut out: Vec<String> = mods.iter().map(|m| match *m {
         "Meta" => "CmdOrCtrl",
-        // The page's Ctrl is the real Control key on a Mac, and the Windows/Super key elsewhere (swapped).
         "Ctrl" => if cfg!(target_os = "macos") { "Ctrl" } else { "Super" },
         "Alt" => "Alt",
         "Shift" => "Shift",
@@ -46,7 +36,6 @@ pub fn accelerator(combo: &str) -> Option<String> {
     Some(out.join("+"))
 }
 
-/// How it's shown in a menu title: ⌘→, ⇧⌘F, Space. (Only the Mac has a menu bar.)
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn label(combo: &str) -> String {
     if combo.is_empty() { return String::new(); }

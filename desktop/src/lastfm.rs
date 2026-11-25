@@ -1,6 +1,3 @@
-//! Last.fm, for reading your listening history: Stats, play counts, the DJ, Friends and autoplay's similar
-//! songs. Cadenza doesn't scrobble itself (link Spotify to Last.fm and Spotify scrobbles everything). You
-//! add your own API key and shared secret, then log in once in the browser so Cadenza knows your username.
 
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
@@ -12,7 +9,6 @@ use crate::settings::Settings;
 
 const ENDPOINT: &str = "https://ws.audioscrobbler.com/2.0/";
 
-/// Read-only methods the page may ask for. They need only the API key, never the secret or your session.
 const READ_METHODS: &[&str] = &[
     "user.getInfo", "user.getTopArtists", "user.getTopTracks", "user.getTopAlbums", "user.getRecentTracks",
     "user.getFriends", "user.getWeeklyTrackChart", "track.getInfo", "artist.getInfo",
@@ -25,9 +21,7 @@ pub struct LastFm {
     settings: Arc<Settings>,
     http: reqwest::Client,
     last_error: Mutex<String>,
-    /// The sign-in waiting for the browser; a new one (or logging out) replaces it.
     login_token: Mutex<String>,
-    /// Reads go out one at a time, at most about four a second, which is what Last.fm asks of apps.
     reading: tokio::sync::Mutex<Instant>,
 }
 
@@ -37,7 +31,6 @@ impl LastFm {
                  reading: tokio::sync::Mutex::new(Instant::now() - Duration::from_secs(1)) }
     }
 
-    /// Your own key if you set one, otherwise Cadenza's built-in one.
     fn api_key(&self) -> String {
         let own = self.settings.string("lastfmKey");
         if own.is_empty() { crate::builtin::LASTFM_KEY.to_string() } else { own }
@@ -46,16 +39,12 @@ impl LastFm {
     pub fn user(&self) -> String { self.settings.string("lastfmUser") }
 
     pub fn status(&self) -> Value {
-        // Everything Cadenza reads from Last.fm needs only an API key and your username. (Signing in, which
-        // also needs the secret, only ever told Cadenza your username; it's still there for an own key.)
         json!({"user": self.user(), "hasKeys": !self.api_key().is_empty(), "loggedIn": !self.user().is_empty(),
                "builtinKey": self.settings.string("lastfmKey").is_empty() && !crate::builtin::LASTFM_KEY.is_empty(),
                "canSignIn": !self.api_key().is_empty() && !self.secret().is_empty(),
                "error": *self.last_error.lock().unwrap()})
     }
 
-    /// Opens Last.fm's "allow access" page and waits (up to 3 minutes) for you to say yes.
-    /// Ok(username) or Err(message for the page).
     pub async fn login(&self) -> Result<String, String> {
         if self.api_key().is_empty() || self.secret().is_empty() { return Err("Add your Last.fm API key and secret first".into()); }
         let Some(json) = self.call("auth.getToken", BTreeMap::new(), false).await else {
@@ -83,8 +72,6 @@ impl LastFm {
         Err("Timed out waiting for the browser".into())
     }
 
-    /// Connects a Last.fm account by its username: checks Last.fm knows it and saves the name as Last.fm
-    /// spells it. Ok(name) or Err(message for the page). An empty name disconnects.
     pub async fn set_user(&self, name: &str) -> Result<String, String> {
         let name = name.trim().trim_start_matches("https://www.last.fm/user/").trim_end_matches('/');
         if name.is_empty() { self.logout(); return Ok(String::new()); }
@@ -112,7 +99,6 @@ impl LastFm {
         self.settings.put("lastfmUser", json!(""));
     }
 
-    /// A read-only call. `user` (or `username` for track and artist info) defaults to you.
     pub async fn read(&self, method: &str, params: &serde_json::Map<String, Value>) -> (u16, Value) {
         if !READ_METHODS.contains(&method) { return (400, json!({"message": "Not allowed"})); }
         let key = self.api_key();
@@ -145,7 +131,6 @@ impl LastFm {
         }
     }
 
-    /// Signed POST: api_sig is the MD5 of every parameter name and value in order, then the secret.
     async fn call(&self, method: &str, mut p: BTreeMap<String, String>, quiet: bool) -> Option<Value> {
         p.insert("method".into(), method.into());
         p.insert("api_key".into(), self.api_key());
@@ -169,7 +154,6 @@ impl LastFm {
     }
 }
 
-/// Synced lyrics from LRCLIB (lrclib.net, free and open). Spotify doesn't share lyrics with apps.
 pub async fn lyrics(http: &reqwest::Client, track: &str, artist: &str, album: &str, seconds: i64) -> Value {
     let get = |url: &str, q: Vec<(&str, String)>| {
         let req = http.get(url).query(&q).timeout(Duration::from_secs(12));
@@ -187,8 +171,6 @@ pub async fn lyrics(http: &reqwest::Client, track: &str, artist: &str, album: &s
         "plain": o.get("plainLyrics").and_then(Value::as_str).unwrap_or(""),
         "instrumental": o.get("instrumental").and_then(Value::as_bool).unwrap_or(false),
     });
-    // The timed upload whose length is closest to the song's (within 8 s, so a radio edit or live version
-    // doesn't drift out of sync).
     let pick = |hits: &[Value]| -> Option<Value> {
         let off = |o: &Value| (o.get("duration").and_then(Value::as_f64).unwrap_or(seconds as f64) - seconds as f64).abs();
         hits.iter().filter(|o| synced(o) && off(o) <= 8.0).min_by(|a, b| off(a).total_cmp(&off(b))).cloned()
@@ -196,13 +178,10 @@ pub async fn lyrics(http: &reqwest::Client, track: &str, artist: &str, album: &s
 
     let exact = get("https://lrclib.net/api/get", vec![("track_name", track.into()), ("artist_name", artist.into()),
         ("album_name", album.into()), ("duration", seconds.to_string())]).await.filter(Value::is_object);
-    // An exact match with timed lyrics is the best answer. One with only plain text isn't: another upload
-    // of the same song often has the timings, so look for one first.
     if let Some(e) = &exact { if synced(e) { return result(e); } }
     let hits: Vec<Value> = get("https://lrclib.net/api/search", vec![("track_name", track.into()), ("artist_name", artist.into())])
         .await.and_then(|v| v.as_array().cloned()).unwrap_or_default();
     if let Some(best) = pick(&hits) { return result(&best); }
-    // Last try: a free-text search ("artist title") catches differently spelt titles.
     let a = artist.to_lowercase();
     let more: Vec<Value> = get("https://lrclib.net/api/search", vec![("q", format!("{artist} {track}"))])
         .await.and_then(|v| v.as_array().cloned()).unwrap_or_default().into_iter()
@@ -213,7 +192,6 @@ pub async fn lyrics(http: &reqwest::Client, track: &str, artist: &str, album: &s
     hits.iter().chain(more.iter()).find(|o| has(o)).map(result).unwrap_or(Value::Null)
 }
 
-/// Finding a song from a line of its lyrics, with Genius's search. Needs your own free Genius token.
 pub async fn genius_search(http: &reqwest::Client, token: &str, q: &str) -> Value {
     if token.is_empty() { return json!({"hits": null, "error": "no-token"}); }
     let res = http.get("https://api.genius.com/search").query(&[("q", q)]).bearer_auth(token)
@@ -243,7 +221,6 @@ mod tests {
     use md5::{Digest, Md5};
     #[test]
     fn signature_matches_lastfms_rule() {
-        // api_sig = md5 of every parameter name+value in name order, then the secret.
         let mut p = std::collections::BTreeMap::new();
         p.insert("method", "auth.getSession");
         p.insert("api_key", "KEY");

@@ -1,18 +1,3 @@
-//! The built-in engine: librespot running inside Cadenza instead of as a separate program.
-//!
-//! It's the same librespot (same version, same patches, built from librespot-src/ by librespot.sh), set up
-//! the way Cadenza used to start the program: the same device name and ID, so Spotify sees the same
-//! "Cadenza" speaker; the same login (credentials.json in the same folder); the same volume curve and
-//! loudness settings. Spotify Connect stays on, so your phone still sees Cadenza and can control it.
-//!
-//! What's different is how the sound and the news get out. The sound goes straight into Cadenza's engine
-//! through memory (MemPipe) instead of an operating-system pipe, and librespot's events and messages are
-//! handed over directly instead of through a script and a file. librespot.rs reads them exactly as it read
-//! the program's, so everything built on them (recovery, crossfade timing, history) works the same.
-//!
-//! Cadenza also plays, pauses, skips, seeks and queues through it directly (`Direct`), instead of asking
-//! Spotify's web interface to tell the engine. That takes effect at once, and Spotify's rules for its web
-//! interface (like refusing plain lists of songs) don't apply.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -34,8 +19,6 @@ use crate::sound::MemPipe;
 /// How much space downloaded songs may take (librespot/files).
 const AUDIO_CACHE_LIMIT: u64 = 1024 * 1024 * 1024;
 
-/// The scopes the librespot program asks for when you sign in (its OAUTH_SCOPES), so a login made by
-/// either works for both.
 const SCOPES: &[&str] = &[
     "app-remote-control", "playlist-modify", "playlist-modify-private", "playlist-modify-public", "playlist-read",
     "playlist-read-collaborative", "playlist-read-private", "streaming", "ugc-image-upload", "user-follow-modify",
@@ -45,7 +28,6 @@ const SCOPES: &[&str] = &[
     "user-read-private", "user-read-recently-played", "user-top-read",
 ];
 
-/// How Cadenza wants the engine set up (the same things it used to pass the program on its command line).
 pub struct Config {
     pub name: String,
     pub cache: PathBuf,
@@ -56,8 +38,6 @@ pub struct Config {
     pub autoplay: bool,
 }
 
-/// What the engine tells librespot.rs: its messages (the lines the program printed), its player events
-/// (the same tab-separated lines the event script wrote), and that it stopped.
 pub struct Hooks {
     pub message: Box<dyn Fn(String) + Send + Sync>,
     pub event: Box<dyn Fn(String) + Send + Sync>,
@@ -67,9 +47,6 @@ pub struct Hooks {
 /// Something to do with the music, straight in the engine.
 #[derive(Debug)]
 pub enum Direct {
-    /// Play a list of songs, or a playlist or album (`context`), from one of its songs (`from`: a URI, or
-    /// a place in the list) and a spot in it (`position` ms). Takes playback over from another device.
-    /// `take_over`: another device is playing, so become the one playing first.
     Load { tracks: Vec<String>, context: Option<String>, from_uri: Option<String>, from_index: Option<u32>, position: u32, play: bool, shuffle: bool, repeat: String, take_over: bool },
     Play,
     Pause,
@@ -83,15 +60,12 @@ pub enum Direct {
     /// "off", "context" or "track".
     Repeat(String),
     Queue(String),
-    /// Take every song Cadenza queued back out (a new list starts; or the line-up changed).
     ClearQueue,
 }
 
 pub struct Engine {
     spirc: Mutex<Option<Spirc>>,
-    /// The player, to tell it whether to level loudness per album (see `loudness`).
     player: Mutex<Option<Arc<Player>>>,
-    /// What's playing: an album, in order (not shuffled). Album loudness on "auto" follows it.
     album_in_order: Mutex<bool>,
     stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pipe: Arc<MemPipe>,
@@ -99,18 +73,14 @@ pub struct Engine {
 
 // MARK: librespot's messages
 
-/// librespot writes its messages through the `log` crate; Cadenza's logger (main.rs) hands the ones from
-/// librespot here, and this passes them on to whichever engine is running.
 static MESSAGES: OnceLock<Mutex<Option<mpsc::Sender<String>>>> = OnceLock::new();
 
-/// The loudness setting ("auto", "track" or "album"), set by librespot.rs from Cadenza's settings.
 static NORMALIZE_TYPE: Mutex<String> = Mutex::new(String::new());
 pub fn set_normalize_type(t: &str) { *NORMALIZE_TYPE.lock().unwrap() = t.to_string(); }
 fn normalize_type() -> String { NORMALIZE_TYPE.lock().unwrap().clone() }
 
 pub fn is_librespot(target: &str) -> bool { target.starts_with("librespot") }
 
-/// Called by the logger for each of librespot's messages. Formatted like the program printed them.
 pub fn message(r: &log::Record) {
     let Some(m) = MESSAGES.get() else { return };
     let Some(tx) = m.lock().unwrap().clone() else { return };
@@ -121,17 +91,12 @@ pub fn message(r: &log::Record) {
 // MARK: starting and stopping
 
 impl Engine {
-    /// Starts the engine on its own thread. The sound comes out of `pipe`.
     pub fn start(cfg: Config, pipe: Arc<MemPipe>, hooks: Hooks) -> Arc<Engine> {
         let hooks = Arc::new(hooks);
-        // A song Spotify won't play pauses the music instead of librespot skipping on (and on): Cadenza
-        // waits a moment and moves on itself (see librespot.rs). Cadenza's patch to librespot.
         librespot_connect::HOLD_ON_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let me = Arc::new(Engine { spirc: Mutex::new(None), player: Mutex::new(None), album_in_order: Mutex::new(false), stop: Mutex::new(Some(stop_tx)), pipe: pipe.clone() });
 
-        // Messages and events are passed on from threads of their own, so whatever librespot.rs does
-        // with them (even restarting this engine) never runs inside librespot.
         let (msg_tx, msg_rx) = mpsc::channel::<String>();
         *MESSAGES.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(msg_tx);
         let h = hooks.clone();
@@ -148,21 +113,17 @@ impl Engine {
             let why = rt.block_on(me2.run(cfg, hooks.clone(), stop_rx));
             *me2.spirc.lock().unwrap() = None;
             me2.pipe.close();
-            // Give librespot's own tasks a moment to finish, then let them go.
             rt.shutdown_timeout(Duration::from_secs(2));
             (hooks.ended)(why);
         }).ok();
         me
     }
 
-    /// Stops the engine. Returns straight away; `ended` is called once it has stopped.
     pub fn stop(&self) {
         if let Some(tx) = self.stop.lock().unwrap().take() { let _ = tx.send(()); }
         self.pipe.close();
     }
 
-    /// Does `d` in the engine. Err when the engine isn't connected yet or librespot turns it down. (Most
-    /// things only work while Cadenza is the device playing; librespot.rs checks that first.)
     pub fn direct(&self, d: Direct) -> Result<(), String> {
         let guard = self.spirc.lock().unwrap();
         let Some(spirc) = guard.as_ref() else { return Err("the engine isn't connected yet".into()) };
@@ -177,7 +138,6 @@ impl Engine {
                 *self.album_in_order.lock().unwrap() = !shuffle && context.as_deref().map_or(false, |c| c.starts_with("spotify:album:"));
                 self.loudness();
                 let req = match context { Some(c) => LoadRequest::from_context_uri(c, options), None => LoadRequest::from_tracks(tracks, options) };
-                // Taking over from another device first (librespot ignores a load while it isn't the one playing).
                 if take_over { let _ = spirc.activate(); }
                 spirc.load(req)
             }
@@ -201,8 +161,6 @@ impl Engine {
         r.map_err(|e| e.to_string())
     }
 
-    /// Loudness levelling per song or per album (an album's own quiet and loud songs stay as mastered):
-    /// "track", "album", or "auto" (per album while an album plays in order). Takes effect from the next song.
     pub fn loudness(&self) {
         let album = match normalize_type().as_str() { "album" => true, "track" => false, _ => *self.album_in_order.lock().unwrap() };
         if let Some(p) = self.player.lock().unwrap().as_ref() { p.set_auto_normalise_as_album(album); }
@@ -211,19 +169,13 @@ impl Engine {
     async fn run(self: &Arc<Self>, cfg: Config, hooks: Arc<Hooks>, stop: tokio::sync::oneshot::Receiver<()>) -> String {
         let say = |s: String| (hooks.message)(s);
         let _ = std::fs::create_dir_all(&cfg.cache);
-        // Songs librespot has downloaded are kept in files/ so replays don't download again. Without a limit
-        // that folder only grows; 1 GB holds a hundred or so songs, and the oldest-used go first (also when
-        // it starts, so a folder that grew before this limit shrinks once).
         let cache = match Cache::new(Some(cfg.cache.clone()), Some(cfg.cache.clone()), Some(cfg.cache.join("files")), Some(AUDIO_CACHE_LIMIT)) {
             Ok(c) => c,
             Err(e) => return format!("couldn't open its folder: {e}"),
         };
-        // Spotify's own autoplay stays off: Cadenza's autoplay takes over when anything runs out (Radio in
-        // app.js), and librespot's attempts at it after a list of songs only got "400 Bad Request" back.
         let _ = cfg.autoplay;
         let session_config = SessionConfig { device_id: device_id(&cfg.name), autoplay: Some(false), ..SessionConfig::default() };
 
-        // Your login from before (made by either engine), or sign in now in the browser.
         let credentials = match cache.credentials() {
             Some(c) => c,
             None => {
@@ -292,8 +244,6 @@ impl Engine {
     }
 }
 
-/// Spotify knows a speaker by this ID. The librespot program makes it from the name the same way, so the
-/// built-in engine is the same "Cadenza" to Spotify (and to your phone).
 pub fn device_id(name: &str) -> String {
     use sha1::Digest;
     sha1::Sha1::digest(name.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
@@ -301,7 +251,6 @@ pub fn device_id(name: &str) -> String {
 
 // MARK: the sound
 
-/// librespot's sound goes into the MemPipe as 16-bit stereo, exactly what the program wrote to its pipe.
 struct PipeSink { pipe: Arc<MemPipe> }
 
 impl Sink for PipeSink {
@@ -316,8 +265,6 @@ impl Sink for PipeSink {
 
 // MARK: events
 
-/// One player event as the line the old event script wrote: event, uri, track id, name, artists, album,
-/// covers, duration, position, volume, shuffle/repeat, time.
 fn event_line(e: PlayerEvent) -> Option<String> {
     let clean = |s: &str| s.replace(['\t', '\n'], " ");
     let mut f: [String; 12] = Default::default();

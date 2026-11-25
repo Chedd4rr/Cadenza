@@ -1,18 +1,9 @@
-//! The Mac's menu bar: Cadenza, Edit (so ⌘C, ⌘V and ⌘A work in text
-//! boxes), Controls (the main commands with their shortcuts; each one runs in the page, as if you had
-//! pressed its keys) and Window. Windows and Linux have no menu bar: everything is on the page.
-//!
-//! The Controls shortcuts are yours (the keyboard page changes them), so the menu is built again when they
-//! change. Only ones with ⌘ (or Ctrl) become menu shortcuts: a plain key like Space or L would be taken away
-//! from text boxes, so those are shown in the item's title instead.
 
 use serde_json::json;
 use std::sync::Arc;
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Manager, Wry};
 
-/// (title, command, shortcut name on the keyboard page). "-" is a separator. ⌘←/→ stay out of the menu
-/// so they keep moving the cursor in text boxes; their titles show them.
 const CONTROLS: &[(&str, &str, &str)] = &[
     ("Play / Pause", "toggle", "toggle"),
     ("Next Song", "next", "next"),
@@ -41,8 +32,6 @@ const CONTROLS: &[(&str, &str, &str)] = &[
     ("Check for Updates…", "update", ""),
 ];
 
-/// `plain`: no menu shortcuts at all (while you choose a new one on the keyboard page, so the menu doesn't
-/// catch the keys first).
 pub fn build(app: &AppHandle, plain: bool) -> tauri::Result<Menu<Wry>> {
     let settings = app.try_state::<Arc<crate::Core>>().map(|c| c.settings.clone());
     let about = AboutMetadata { name: Some("Cadenza".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
@@ -81,8 +70,6 @@ pub fn build(app: &AppHandle, plain: bool) -> tauri::Result<Menu<Wry>> {
     Menu::with_items(app, &[&cadenza, &edit, &controls, &window])
 }
 
-/// A Controls item was picked: the mini player opens here; everything else runs in the page, which
-/// comes back first if it was closed.
 pub fn picked(app: &AppHandle, id: &str) {
     let Some(cmd) = id.strip_prefix("cmd:") else { return };
     let Some(sys) = app.try_state::<Arc<crate::system::System>>() else { return };

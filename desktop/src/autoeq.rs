@@ -1,6 +1,3 @@
-//! Headphone EQ profiles from AutoEq (github.com/jaakkopasanen/AutoEq): measured corrections for thousands
-//! of headphones, as parametric EQ. Cadenza downloads AutoEq's list of headphones once a week (and keeps
-//! it), searches it, and downloads the one profile you pick. Only AutoEq's own files on GitHub are read.
 
 use serde_json::{json, Value};
 use std::time::{Duration, SystemTime};
@@ -11,12 +8,9 @@ const BASE: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/maste
 const INDEX_FILE: &str = "autoeq-index.md";
 const WEEK: Duration = Duration::from_secs(7 * 86400);
 
-/// One headphone in AutoEq's list: its name, where its files are (as AutoEq writes it, already
-/// URL-encoded, like "oratory1990/over-ear/Sennheiser%20HD%20650") and who measured it.
 #[derive(Debug, PartialEq)]
 pub struct Entry { pub name: String, pub path: String, pub by: String }
 
-/// AutoEq's INDEX.md: lines like "- [Sennheiser HD 650](./oratory1990/over-ear/Sennheiser%20HD%20650) by oratory1990".
 pub fn parse_index(text: &str) -> Vec<Entry> {
     text.lines().filter_map(|l| {
         let l = l.trim().strip_prefix("- [")?;
@@ -28,14 +22,11 @@ pub fn parse_index(text: &str) -> Vec<Entry> {
     }).collect()
 }
 
-/// Only plain paths inside AutoEq's results: no "..", no other sites.
 fn safe_path(p: &str) -> bool {
     !p.is_empty() && p.len() < 300 && !p.contains("..") && !p.contains("//") && !p.starts_with('/')
         && p.chars().all(|c| c.is_ascii_alphanumeric() || " %()_-.,+&'/!".contains(c))
 }
 
-/// The best matches for a search: every word has to appear in the name; names starting with the search
-/// come first. At most 40.
 pub fn search<'a>(list: &'a [Entry], q: &str) -> Vec<&'a Entry> {
     let q = q.trim().to_lowercase();
     let words: Vec<&str> = q.split_whitespace().collect();
@@ -79,7 +70,6 @@ pub async fn find(http: &reqwest::Client, q: &str) -> Value {
     }
 }
 
-/// Downloads one headphone's parametric EQ: {ok, name, preamp, filters}.
 pub async fn load(http: &reqwest::Client, path: &str) -> Value {
     if !safe_path(path) { return json!({"ok": false, "message": "Not an AutoEq profile"}); }
     let file = path.rsplit('/').next().unwrap_or("");

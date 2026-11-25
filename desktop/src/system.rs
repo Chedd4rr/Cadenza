@@ -1,10 +1,3 @@
-//! The parts of Cadenza that live outside its window:
-//! - media keys and the system's Now Playing (MPRIS on Linux, the media overlay on Windows, Control
-//!   Center on macOS), through souvlaki;
-//! - the tray icon with the album cover and a menu;
-//! - the mini player (Resources/web/mini) in a small window that stays on top;
-//! - a notification when the song changes while Cadenza isn't in front;
-//! - cadenza:// links, and the page resting while the window is hidden.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -19,9 +12,6 @@ use crate::Core;
 
 const TRAY_ID: &str = "cadenza";
 
-/// The mini page talks to the app through `window.cadenzaMini`, the same way it uses WebKit's message
-/// handler in the Mac app. It can only ask for the mini player's own actions and its size. Dragging it
-/// anywhere that isn't a button moves the window, and Esc hides it.
 const MINI_SHIM: &str = r#"
 (() => {
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -36,7 +26,6 @@ const MINI_SHIM: &str = r#"
 })();
 "#;
 
-/// souvlaki's controls, only ever touched on the main thread (some systems insist on it).
 struct Controls(souvlaki::MediaControls);
 // SAFETY: every use goes through `on_main`, so the controls never actually move between threads.
 unsafe impl Send for Controls {}
@@ -46,9 +35,9 @@ struct State {
     info: Value,
     info_at: Option<Instant>,
     art_url: String,
-    art_data: String,               // the cover as a 480 px JPEG data: URL, for the mini player
-    art_sent: bool,                 // the mini player already has it (it's ~50 KB, so it's sent once)
-    last_song: Option<String>,       // for notifications: only when the song itself changes
+    art_data: String,
+    art_sent: bool,
+    last_song: Option<String>,
     page_ready: bool,
     pending_links: Vec<String>,
     asleep: bool,
@@ -83,7 +72,6 @@ impl System {
 
     // MARK: playback actions (media keys, tray, mini player)
 
-    /// Play or pause. If this computer is playing, Cadenza already knows which, and responds at once.
     pub fn play_pause(self: &Arc<Self>) {
         let core = self.core();
         let me = self.clone();
@@ -99,8 +87,6 @@ impl System {
 
     pub fn act(self: &Arc<Self>, what: &str) {
         let core = self.core();
-        // Next and Previous go through the page, which knows about Up Next, autoplay and the songs you just
-        // heard (the engine alone only knows the song it is playing, so Previous would just restart it).
         if matches!(what, "next" | "previous") {
             (core.emit)("command", json!({ "cmd": what }));
             return;
@@ -125,10 +111,8 @@ impl System {
         tauri::async_runtime::spawn(async move { me.send("PUT", &format!("/me/player/seek?position_ms={ms}")).await; });
     }
 
-    /// Ask Spotify, then tell the page to look again a moment later.
     async fn send(&self, method: &str, path: &str) {
         let core = self.core();
-        // Straight in the built-in engine when it's the one playing; otherwise through Spotify.
         if !core.librespot.direct_request(method, path) { core.api.request(method, path, None).await; }
         tokio::time::sleep(Duration::from_millis(250)).await;
         (core.emit)("refresh", Value::Null);
@@ -137,7 +121,6 @@ impl System {
     // MARK: media keys and Now Playing
 
     fn start_media_controls(self: &Arc<Self>) {
-        // MPRIS needs the desktop session's message bus; without one the library panics.
         if cfg!(target_os = "linux") && std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
             log::info!("media keys: no desktop session bus, so no MPRIS");
             return;
@@ -223,7 +206,6 @@ impl System {
         if let Some(art) = new_art { self.load_cover(art); }
     }
 
-    /// The album cover, for the tray icon and the mini player (which never loads anything from the web).
     fn load_cover(self: &Arc<Self>, url: String) {
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -294,7 +276,6 @@ impl System {
             let me = self.clone();
             let me2 = self.clone();
             let mut b = TrayIconBuilder::with_id(TRAY_ID).menu(&menu).tooltip("Cadenza")
-                // Left click opens the mini player (on Linux, trays only show the menu).
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |_app, e| match e.id().as_ref() {
                     "toggle" => me.play_pause(),
@@ -359,7 +340,6 @@ impl System {
                     .skip_taskbar(true)
                     .visible_on_all_workspaces(true)
                     .initialization_script(MINI_SHIM)
-                    // Once its page has loaded, tell it what's playing (anything sent before is lost).
                     .on_page_load(|w, payload| {
                         if payload.event() == tauri::webview::PageLoadEvent::Finished {
                             if let Some(sys) = w.app_handle().try_state::<Arc<System>>() {
@@ -412,10 +392,8 @@ impl System {
         if let Some(core) = self.core.lock().unwrap().clone() { core.settings.put("floatingPlayer", json!(false)); }
     }
 
-    /// What's playing, for the mini page: the same fields as the Mac app sends it.
     pub fn push_mini(&self) {
         let Some(w) = self.app.get_webview_window("mini") else { return };
-        // While it's hidden nothing is sent: showing it sends everything.
         if !w.is_visible().unwrap_or(true) { return; }
         let (info, at, art) = {
             let mut st = self.st.lock().unwrap();
@@ -426,7 +404,6 @@ impl System {
         for key in ["title", "artist", "album", "playing", "liked", "volume", "duration", "position", "theme"] {
             if let Some(v) = info.get(key).filter(|v| !v.is_null()) { payload.insert(key.into(), v.clone()); }
         }
-        // It may get this again much later (the cover arriving, the window opening): move the position on.
         if let Some(pos) = info.get("position").and_then(Value::as_f64) {
             let playing = info.get("playing").and_then(Value::as_bool).unwrap_or(false);
             let mut now = pos + if playing { at.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0) } else { 0.0 };
@@ -436,7 +413,6 @@ impl System {
         if let Some(art) = art { payload.insert("art".into(), json!(art)); }      // left out: keep the one it has
         let style = if self.core.lock().unwrap().as_ref().map_or(false, |c| c.settings.string("miniStyle") == "mp3") { "mp3" } else { "theme" };
         payload.insert("style".into(), json!(style));
-        // Reduce motion: "on" or "off" as set on the System page, or null to follow the system's setting.
         let reduce = self.core.lock().unwrap().as_ref().map(|c| c.settings.get("reduceMotion")).unwrap_or(Value::Null);
         payload.insert("reduce".into(), match reduce.as_str() { Some("on") => json!(true), Some("off") => json!(false), _ => if reduce == json!(true) { json!(true) } else { Value::Null } });
         let _ = w.eval(format!("window.mini && mini.apply({})", Value::Object(payload)));
@@ -482,9 +458,6 @@ impl System {
         } else { self.show_main(); }
     }
 
-    /// Closing the window doesn't quit Cadenza while there's a tray icon (or on a Mac, where the Dock icon
-    /// brings it back): the music, tray and media keys keep going. Hidden or minimised, the page stops its
-    /// animations, visualizer and clock, and checks Spotify less often.
     pub fn set_asleep(&self, on: bool) {
         {
             let mut st = self.st.lock().unwrap();
@@ -498,10 +471,7 @@ impl System {
         cfg!(target_os = "macos") || self.app.tray_by_id(TRAY_ID).is_some()
     }
 
-    // MARK: cadenza:// links (for launchers, shortcuts, scripts: `xdg-open cadenza://next`)
-
     pub fn page_loaded(self: &Arc<Self>) {
-        // A moment for the page to sign in and load before running links that opened Cadenza.
         let me = self.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(2500));
@@ -528,7 +498,6 @@ impl System {
     }
 }
 
-/// The mini page's messages. Only the mini window may send them, showing the app's own page.
 #[tauri::command]
 pub async fn mini(window: tauri::WebviewWindow, sys: tauri::State<'_, Arc<System>>, cmd: String, value: Option<Value>) -> Result<(), String> {
     let url = window.url().map_err(|e| e.to_string())?;

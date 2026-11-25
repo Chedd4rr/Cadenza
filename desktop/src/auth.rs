@@ -1,5 +1,3 @@
-//! Spotify sign-in with Authorization Code + PKCE (no client secret needed). The browser comes back to
-//! http://127.0.0.1:8888, where a tiny one-shot server catches the code.
 
 use base64::Engine;
 use rand::Rng;
@@ -23,10 +21,7 @@ user-read-private ugc-image-upload";
 pub struct Auth {
     settings: Arc<Settings>,
     http: reqwest::Client,
-    /// The current access token and when it runs out. Holding the lock while refreshing means several
-    /// requests that need a token at once share one refresh.
     access: tokio::sync::Mutex<Option<(String, Instant)>>,
-    /// Set to stop a sign-in that's waiting for the browser (a new one started).
     waiting: Mutex<Option<Arc<AtomicBool>>>,
 }
 
@@ -56,14 +51,12 @@ impl Auth {
         self.refresh_token().is_some() && !self.settings.client_id().is_empty()
     }
 
-    /// Permissions this version needs that the current login didn't grant (an older login).
     pub fn missing_scopes(&self) -> Vec<String> {
         let Ok(granted) = std::fs::read_to_string(files::path("spotify-scopes")) else { return vec![] };
         let have: Vec<&str> = granted.split_whitespace().collect();
         SCOPES.split_whitespace().filter(|s| !have.contains(s)).map(String::from).collect()
     }
 
-    /// A valid access token, or None if not signed in (or Spotify can't be reached right now).
     pub async fn token(&self) -> Option<String> {
         let mut access = self.access.lock().await;
         if let Some((t, until)) = access.as_ref() {
@@ -108,8 +101,6 @@ impl Auth {
         Some((at.to_string(), Instant::now() + Duration::from_secs_f64((ttl - 60.0).max(30.0))))
     }
 
-    /// Opens Spotify's sign-in page in your browser and waits for it to come back. Ok(()) when signed in,
-    /// Err(message for the page) otherwise.
     pub async fn login(&self) -> Result<(), String> {
         let client_id = self.settings.client_id();
         if client_id.is_empty() { return Err("Enter your Client ID first.".into()); }
@@ -122,7 +113,6 @@ impl Auth {
         let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let state = random(16);
 
-        // Only on the loopback address, so nothing else on the network can reach it.
         let listener = bind_with_retry().map_err(|e| format!("Couldn't listen on port 8888 ({e}). Close anything else using it and try again."))?;
 
         let mut url = url::Url::parse("https://accounts.spotify.com/authorize").unwrap();
@@ -142,12 +132,11 @@ impl Auth {
             ("client_id", &client_id), ("code_verifier", &verifier),
         ]).await.map(|_| ())
           .ok_or_else(|| format!("Spotify rejected the login. Check the Client ID, and that {REDIRECT_URI} is listed under Redirect URIs in your Spotify app."))?;
-        *self.access.lock().await = None;     // the new login's token is fetched fresh on the next request
+        *self.access.lock().await = None;
         Ok(())
     }
 }
 
-/// Port 8888 can stay busy for a moment after a cancelled sign-in.
 fn bind_with_retry() -> std::io::Result<TcpListener> {
     let mut last = None;
     for _ in 0..10 {
@@ -159,8 +148,6 @@ fn bind_with_retry() -> std::io::Result<TcpListener> {
     Err(last.unwrap())
 }
 
-/// Answers requests on the sign-in port until Spotify's redirect arrives (up to 10 minutes). Returns the
-/// code, or the message to show.
 fn wait_for_callback(listener: TcpListener, state: &str, cancel: &AtomicBool) -> Result<String, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let started = Instant::now();

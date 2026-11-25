@@ -1,6 +1,3 @@
-//! The Mac's sound outputs, straight from Core Audio: each one's unique id
-//! (which the per-device EQ is saved under), its name and kind, and
-//! switching the system's output. Cadenza's sound then follows the system output, as on Linux.
 
 use std::ffi::{c_char, c_void, CStr};
 
@@ -20,7 +17,6 @@ extern "C" {
     fn CFRelease(p: *const c_void);
 }
 
-/// Core Audio names its properties with four letters packed into a number.
 const fn code(s: &[u8; 4]) -> u32 { u32::from_be_bytes(*s) }
 
 const SYSTEM: u32 = 1;                                    // kAudioObjectSystemObject
@@ -35,7 +31,7 @@ const TRANSPORT: u32 = code(b"tran");
 const STREAMS: u32 = code(b"stm#");
 const NOMINAL_RATE: u32 = code(b"nsrt");
 const AVAILABLE_RATES: u32 = code(b"nsr#");             // AudioValueRange[]
-const HOG_MODE: u32 = code(b"oink");                    // pid_t: who has the device to itself (-1: nobody)
+const HOG_MODE: u32 = code(b"oink");
 const UTF8: u32 = 0x0800_0100;
 
 pub struct Output { pub id: u32, pub uid: String, pub name: String, pub transport: &'static str }
@@ -88,8 +84,6 @@ fn transport(id: u32) -> &'static str {
 
 pub fn default_output() -> u32 { u32_property(SYSTEM, DEFAULT_OUTPUT) }
 
-/// The rate the default output runs at (what macOS converts everything to), in Hz. A Mac's speakers
-/// usually run at 48000 whatever the music is; Audio MIDI Setup changes it.
 pub fn default_output_rate() -> Option<f64> { device_rate(default_output()) }
 
 /// The rate an output runs at, in Hz.
@@ -119,14 +113,12 @@ pub fn supports_rate(dev: u32, hz: f64) -> bool {
     list.iter().any(|r| hz >= r.min - 1.0 && hz <= r.max + 1.0)
 }
 
-/// Sets the rate an output runs at. (Like changing it in Audio MIDI Setup; other apps' sound follows.)
 pub fn set_rate(dev: u32, hz: f64) -> bool {
     let a = addr(NOMINAL_RATE, GLOBAL);
     // SAFETY: the property is a single Float64.
     unsafe { AudioObjectSetPropertyData(dev, &a, 0, std::ptr::null(), 8, &hz as *const f64 as *const c_void) == 0 }
 }
 
-/// Takes an output for Cadenza alone ("hog mode": other apps go silent on it), or gives it back.
 pub fn hog(dev: u32, on: bool) -> bool {
     let a = addr(HOG_MODE, GLOBAL);
     let me = std::process::id() as i32;
@@ -142,7 +134,6 @@ pub fn hog(dev: u32, on: bool) -> bool {
     unsafe { AudioObjectSetPropertyData(dev, &a, 0, std::ptr::null(), 4, &want as *const i32 as *const c_void) == 0 }
 }
 
-/// The outputs, in this order: Bluetooth, built-in, USB, AirPlay, displays, others.
 pub fn outputs() -> Vec<Output> {
     let a = addr(DEVICES, GLOBAL);
     let mut size = 0u32;
@@ -154,14 +145,12 @@ pub fn outputs() -> Vec<Output> {
     let order = |t: &str| ["bluetooth", "builtin", "usb", "airplay", "display", "other", "virtual"].iter().position(|x| *x == t).unwrap_or(9);
     let mut list: Vec<Output> = ids.into_iter().filter(|&id| has_output(id))
         .map(|id| Output { id, uid: string_property(id, UID), name: string_property(id, NAME), transport: transport(id) })
-        // Core Audio makes hidden "CADefaultDeviceAggregate-…" devices for apps' own sound; they aren't speakers.
         .filter(|o| !o.uid.is_empty() && !o.uid.starts_with("CADefaultDeviceAggregate") && !o.name.starts_with("CADefaultDeviceAggregate"))
         .collect();
     list.sort_by(|a, b| (order(a.transport), &a.name).cmp(&(order(b.transport), &b.name)));
     list
 }
 
-/// Makes this output the Mac's sound output (and for alerts too, so they follow your headphones).
 pub fn set_default(uid: &str) -> bool {
     let Some(o) = outputs().into_iter().find(|o| o.uid == uid) else { return false };
     let id = o.id;

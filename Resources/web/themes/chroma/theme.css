@@ -1,10 +1,3 @@
-/* CHROMA · COVER. A psychedelic comic-book page, coloured by the album cover that's playing.
-   Newsprint paper and black ink, flat fills in the cover's four colours (--c1 … --c4, strongest first),
-   coloured smoke drifting across the page, echo outlines stacked behind anything selected, caption boxes
-   in a typewriter face, and a solid dot inside a ring of colour as the recurring mark.
-   theme.js reads the cover and sets the colours (fading from the old ones). This is a light theme, so
-   the shared variables are turned around: --navy is the paper, --white is the ink. */
-
 @font-face { font-family: "Archivo Black"; src: url(../heist/fonts/archivo-black.woff2) format("woff2"); }
 @font-face { font-family: "Share Tech Mono"; src: url(../neon/fonts/share-tech-mono-latin-400-normal.woff2) format("woff2"); }
 @font-face { font-family: "Inter"; src: url(../min/fonts/inter-latin-500-normal.woff2) format("woff2"); font-weight: 400 500; }
@@ -34,7 +27,6 @@
   --text: "Inter", -apple-system, "Helvetica Neue", sans-serif;
   --mono: "Share Tech Mono", ui-monospace, Menlo, monospace;
   --line: .35vh solid var(--ink);
-  /* echo outlines: the same shape repeated behind, in each of the cover's colours */
   --echo: .7vh .7vh 0 var(--c2), 1.4vh 1.4vh 0 var(--c3), 2.1vh 2.1vh 0 var(--c4);
   --echo-sm: .45vh .45vh 0 var(--c2), .9vh .9vh 0 var(--c3);
   --snap: cubic-bezier(.3,1.5,.4,1);
@@ -42,19 +34,11 @@
 html, body { background: var(--paper); color: var(--ink); font-style: normal; font-weight: 500; }
 
 /* ============ The page: a riso-printed abstract poster ============ */
-/* Everything on the page is printed in the cover's four inks. Ink layers multiply where they overlap,
-   like a risograph, so overlaps make new colours; each shape has a second, slightly misregistered pass in
-   another ink; and the whole sheet has paper grain. The composition is rearranged for every song (theme.js),
-   with the shapes gliding to their new places. */
 #bg .cc-paper { position: absolute; inset: 0; background: var(--paper); }
 #bg .cc-tint { position: absolute; inset: 0; background: radial-gradient(120% 90% at 100% 0%, rgb(var(--c3-rgb) / .28), transparent 60%), radial-gradient(90% 80% at 0% 100%, rgb(var(--c4-rgb) / .22), transparent 65%); }
-/* The poster holds still between songs. Blended (multiplied) layers are costly to redraw, so nothing here
-   moves on its own: drifting shapes kept the whole page repainting every frame and the CPU busy. The
-   shapes only move when the song changes, gliding into the new arrangement. */
 #bg .rs { position: absolute; left: 0; top: 0; mix-blend-mode: multiply;
   transition: transform 1.6s cubic-bezier(.6,0,.2,1), opacity .8s; }
 #bg .rs::after { content: ""; position: absolute; inset: 0; border-radius: inherit; mix-blend-mode: multiply; translate: .9vh -.6vh; }
-/* the shapes: each gets an ink (--k, the misregistered pass --k2) from theme.js */
 #bg .rs.disc { width: 46vh; height: 46vh; border-radius: 50%; background: var(--k); }
 #bg .rs.disc::after { border: .6vh solid var(--k2); }
 #bg .rs.half { width: 56vh; height: 28vh; border-radius: 28vh 28vh 0 0; background: var(--k); }
@@ -70,18 +54,14 @@ html, body { background: var(--paper); color: var(--ink); font-style: normal; fo
 #bg .rs.screen::after { display: none; }
 #bg .rs.ring { width: 30vh; height: 30vh; border-radius: 50%; border: 2.2vh solid var(--k); }
 #bg .rs.ring::after { inset: 3vh; border: 2.2vh solid var(--k2); translate: 0 0; }
-/* the coloured smoke: four bands, one per ink, overprinting each other */
 #bg .cc-smoke { position: absolute; left: -10vw; width: 130vw; overflow: visible; mix-blend-mode: multiply; }
 #bg .cc-smoke path { fill: none; stroke-linecap: round; stroke-linejoin: round; mix-blend-mode: multiply; }
 #bg .cc-smoke.s1 { bottom: -16vh; height: 70vh; opacity: .9; }
-/* a huge word from the song title, printed in solid ink and cut off by the page edge */
 #bg .cc-word { position: absolute; left: -2vw; bottom: -6vh; font: 400 38vh/.8 var(--display); text-transform: uppercase; color: rgb(var(--c4-rgb) / .55);
   mix-blend-mode: multiply; white-space: nowrap; letter-spacing: -.03em; transition: opacity .6s; }
 #bg .cc-word::after { content: attr(data-w); position: absolute; left: 1.2vh; top: -.8vh; color: rgb(var(--c1-rgb) / .35); mix-blend-mode: multiply; }
-/* paper grain and speckle over everything, multiplied in like real ink on paper */
 #bg .cc-grain { position: absolute; inset: 0; mix-blend-mode: multiply; opacity: .55; background-size: 300px 300px; }
 #bg .cc-dots { position: absolute; inset: 0; opacity: .35; background-image: radial-gradient(rgb(var(--ink-rgb) / .16) 20%, transparent 23%); background-size: 1.1vh 1.1vh; }
-/* a strip of the four inks down the left edge, like a printer's colour bar */
 #bg .cc-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 1vw; display: flex; flex-direction: column; border-right: var(--line); }
 #bg .cc-bar i { flex: 1; }
 #bg .cc-bar i:nth-child(1) { background: var(--c1); } #bg .cc-bar i:nth-child(2) { background: var(--c2); }
@@ -91,7 +71,6 @@ html, body { background: var(--paper); color: var(--ink); font-style: normal; fo
 #bg .cc-note b { display: inline-block; width: 1.3vh; height: 1.3vh; border: .2vh solid var(--ink); vertical-align: -.15vh; margin-right: .4vw; }
 body:not([data-view="home"]) #bg .cc-note { opacity: 0; }
 #bg .cc-note { transition: opacity .3s; }
-/* away from Home the poster steps back a little so lists stay easy to read */
 body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke { opacity: .55; }
 #bg .cc-smoke { transition: opacity .4s; }
 
@@ -151,7 +130,6 @@ body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke
 .dev.active .in { background: var(--c2); box-shadow: var(--echo-sm); transform: translateY(-1vh); }
 .dev.active .nm { color: var(--ink); }
 
-/* Cards: covers in thick ink frames; the chosen one lifts with echoes */
 .card .in, .card:nth-child(even) .in { transform: none; }
 .card .cover { border: .4vh solid var(--ink); box-shadow: .8vh .8vh 0 var(--ink); }
 .card.active .in { transform: translate(-.4vw, -1vh); }
@@ -187,8 +165,6 @@ body:not([data-view="home"]) #bg .rs, body:not([data-view="home"]) #bg .cc-smoke
 
 /* ============ Now playing: the cover as a panel with stacked echo frames ============ */
 #now { z-index: 6; }
-/* On Home the song title sits above the info card beside it, so a long title is never hidden behind it
-   (only the panel's own pieces take clicks, so the card stays clickable). */
 body[data-view="home"] #now { z-index: 11; pointer-events: none; }
 body[data-view="home"] #now > * { pointer-events: auto; }
 .np-tag { transform: none; }
@@ -205,7 +181,7 @@ body[data-view="home"] #now > * { pointer-events: auto; }
 .polaroid .photo::after { display: none; }
 .polaroid .pcap, .polaroid .tape { display: none; }
 .art-wrap .state { transform: rotate(-3deg); left: -2vw; bottom: auto; top: -2vh; background: var(--paper); color: var(--ink); border: var(--line); font: 400 1.8vh/1 var(--mono); letter-spacing: .08em; box-shadow: .4vh .4vh 0 var(--ink); }
-.np-text { transform: none; margin-top: 7vh; width: 27vw; }   /* clear of the info card beside it (and its echoes) */
+.np-text { transform: none; margin-top: 7vh; width: 27vw; }
 .np-title { overflow-wrap: anywhere; -webkit-line-clamp: 3; font: 400 4.8vh/1.02 var(--display); text-transform: uppercase; color: var(--ink); text-shadow: -.4vh .3vh 0 rgb(var(--c1-rgb) / .9), .4vh -.25vh 0 rgb(var(--c2-rgb) / .8), .8vh .6vh 0 rgb(var(--c4-rgb) / .6); letter-spacing: -.01em; }
 .np-artist { display: inline-block; font: 400 2.4vh/1.2 var(--mono); color: var(--ink); background: var(--c3); border: .3vh solid var(--ink); padding: .3vh .7vw; margin-top: 1.6vh; letter-spacing: .04em; }
 .np-album { font: 500 1.9vh/1.4 var(--text); color: var(--ink); opacity: .7; margin-top: .6vh; }
@@ -235,7 +211,6 @@ body[data-view="home"] #now > * { pointer-events: auto; }
 
 /* ============ Transitions ============ */
 #sweep .th { transform: none; position: absolute; translate: 0 0; }
-/* page change: four bands of colour in ink outlines sweep across, like smoke blowing past */
 #sweep .cc-band { translate: -200vw 0; left: -20vw; width: 140vw; height: 30vh; border-top: .5vh solid var(--ink); border-bottom: .5vh solid var(--ink); }
 #sweep .cc-band.b1 { top: -4vh; background: var(--c1); } #sweep .cc-band.b2 { top: 22vh; background: var(--c2); }
 #sweep .cc-band.b3 { top: 48vh; background: var(--c3); } #sweep .cc-band.b4 { top: 74vh; background: var(--c4); }
