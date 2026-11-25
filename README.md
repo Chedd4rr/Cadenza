@@ -123,23 +123,21 @@ time you open it. That's expected for free open-source apps; the steps below get
 
 **Mac**
 
-1. Download `Cadenza_x.y.z_aarch64.dmg`, open it and drag Cadenza into Applications.
+1. Download `Cadenza-x.y.z-Mac-AppleSilicon.dmg` (Apple Silicon Macs only), open it and drag Cadenza into Applications.
 2. Open Cadenza. macOS says it can't check it for malicious software: press **Done**, then go to
    System Settings → Privacy & Security, scroll down and press **Open Anyway** next to Cadenza. After
    that it opens normally.
 
 **Windows**
 
-1. Download `Cadenza_x.y.z_x64-setup.exe` and run it. If Windows says it protected your PC, press
+1. Download `Cadenza-x.y.z-Windows-Setup.exe` and run it. If Windows says it protected your PC, press
    **More info**, then **Run anyway**.
 2. It installs for your account only, so it doesn't ask for an administrator. Cadenza is then in the
    Start menu.
 
 **Linux**
 
-- **Ubuntu, Debian and others with `.deb`:** download `Cadenza_x.y.z_amd64.deb` and run
-  `sudo apt install ./Cadenza_x.y.z_amd64.deb`. Cadenza is then in your applications.
-- **Anything else:** download the `.AppImage`, make it runnable (`chmod +x Cadenza_*.AppImage`) and open
+- Download `Cadenza-x.y.z-Linux.AppImage`, make it runnable (`chmod +x Cadenza-*.AppImage`) and open
   it.
 - On GNOME, the tray icon needs the "AppIndicator" extension (Ubuntu has it already). Cadenza works
   without it too.

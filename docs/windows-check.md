@@ -4,7 +4,7 @@ Cadenza was built and tried in a Windows 11 virtual machine (no graphics acceler
 stuttered there). Before a release, spend 15 minutes on a real PC to rule out problems the VM could hide.
 
 **Get it:** Actions → Desktop app → Run workflow → windows (or the Release workflow's draft). Download the
-`Cadenza_…_x64-setup.exe` artifact. The run also runs `cargo test` on Windows: check that step is green.
+`Cadenza-…-Windows-Setup.exe` artifact. The run also runs `cargo test` on Windows: check that step is green.
 
 **Install:** run it. "Windows protected your PC" → More info → Run anyway. It installs for your account only,
 without asking for an administrator.

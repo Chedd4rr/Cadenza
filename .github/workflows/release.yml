@@ -96,3 +96,43 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --bundles ${{ matrix.bundles }} --config tauri.release.conf.json
+
+  # Gives the files plain names (the build's own names are technical) and points latest.json at them.
+  rename:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      TAG: v${{ needs.check.outputs.version }}
+      VER: ${{ needs.check.outputs.version }}
+    steps:
+      - name: Rename the files
+        run: |
+          set -euo pipefail
+          rel="$(gh api "repos/$REPO/releases" --paginate --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -1)"
+          [ -n "$rel" ] || { echo "No release for $TAG"; exit 1; }
+          assets="$(gh api "repos/$REPO/releases/$rel/assets" --paginate)"
+          pairs="
+          Cadenza_${VER}_aarch64.dmg|Cadenza-${VER}-Mac-AppleSilicon.dmg
+          Cadenza_${VER}_x64-setup.exe|Cadenza-${VER}-Windows-Setup.exe
+          Cadenza_${VER}_x64-setup.exe.sig|Cadenza-${VER}-Windows-Setup.exe.sig
+          Cadenza_${VER}_amd64.AppImage|Cadenza-${VER}-Linux.AppImage
+          Cadenza_${VER}_amd64.AppImage.sig|Cadenza-${VER}-Linux.AppImage.sig
+          Cadenza_aarch64.app.tar.gz|Cadenza-${VER}-Mac-AppleSilicon-Update.tar.gz
+          Cadenza_aarch64.app.tar.gz.sig|Cadenza-${VER}-Mac-AppleSilicon-Update.tar.gz.sig"
+          gh api -H "Accept: application/octet-stream" "repos/$REPO/releases/assets/$(echo "$assets" | jq -r '.[]|select(.name=="latest.json")|.id')" > latest.json
+          for p in $pairs; do
+            old="${p%%|*}"; new="${p##*|}"
+            id="$(echo "$assets" | jq -r --arg n "$old" '.[]|select(.name==$n)|.id')"
+            [ -n "$id" ] || { echo "Missing $old"; exit 1; }
+            grep -q "$old" latest.json || [[ "$old" == *.sig || "$old" == *.dmg ]] || { echo "$old isn't in latest.json"; exit 1; }
+            gh api -X PATCH "repos/$REPO/releases/assets/$id" -f name="$new" >/dev/null
+            sed -i "s|/$old\"|/$new\"|g" latest.json
+          done
+          jq . latest.json >/dev/null
+          old_id="$(echo "$assets" | jq -r '.[]|select(.name=="latest.json")|.id')"
+          gh api -X DELETE "repos/$REPO/releases/assets/$old_id"
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \
+            --data-binary @latest.json "https://uploads.github.com/repos/$REPO/releases/$rel/assets?name=latest.json" >/dev/null
+          cat latest.json
