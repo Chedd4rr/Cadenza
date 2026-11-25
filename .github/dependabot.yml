@@ -1,0 +1,9 @@
+# The GitHub actions the workflows use are pinned to exact commits (the version is in the comment after each
+# one). This asks GitHub to send a pull request when a newer version of one is out, so you read what changed
+# before it runs in a build. Nothing is updated without you merging it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

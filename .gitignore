@@ -1,0 +1,26 @@
+# What release.sh collects (installers and checksums), and zips
+build/
+*.zip
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+
+# Never commit keys or logins (these normally live outside the repo anyway)
+secrets.json
+credentials.json
+*.p12
+*.pem
+*.key
+.env
+
+# The Windows and Linux app (desktop/): build output, generated files and the librespot it bundles
+desktop/target/
+desktop/gen/
+desktop/binaries/
+desktop/librespot-src/
+desktop/librespot-src.new/

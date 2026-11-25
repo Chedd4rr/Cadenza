@@ -1,0 +1,11 @@
+{
+  "/Users/Aayaan/Documents/Cadenza/Sources/Cadenza/AppDelegate.swift" : {
+    "abi-baseline-json" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza.abi.json",
+    "const-values" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.swiftconstvalues",
+    "dependencies" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.d",
+    "diagnostics" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza-primary.dia",
+    "swiftdoc" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza.swiftdoc",
+    "swiftmodule" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza.swiftmodule",
+    "swiftsourceinfo" : "/Users/Aayaan/Documents/Cadenza/.build/out/Intermediates.noindex/Cadenza.build/Release/Cadenza-p.build/Objects-normal/arm64/Cadenza.swiftsourceinfo"
+  }
+}

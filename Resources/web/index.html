@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cadenza</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-view="none">
+
+<div id="bg"></div>
+
+<div id="clock">
+  <div class="date" id="c-date"></div>
+  <div class="meta"><div class="dow" id="c-dow"></div><div class="time" id="c-time"></div></div>
+</div>
+
+<main id="views">
+  <!-- HOME -->
+  <section class="view" id="v-home" hidden>
+    <nav id="menu"><div id="hl"><div class="shadow"></div><div class="face"></div><div class="cursor"></div></div></nav>
+    <div id="hint" class="st"><span id="hint-text"></span></div>
+    <div id="viz" class="st"><canvas id="viz-c"></canvas></div>
+    <div id="intel" class="st">
+      <div class="no" id="intel-no">01</div>
+      <div class="kick"><span id="intel-kick"></span></div>
+      <div class="head" id="intel-head"></div>
+      <div class="body" id="intel-body"></div>
+      <div class="foot"><b>⏎</b> <span id="intel-go">OPEN</span></div>
+    </div>
+  </section>
+
+  <!-- LIBRARY -->
+  <section class="view" id="v-library" hidden>
+    <h1 class="vh st"><span class="title" data-title="LIBRARY"></span><small id="lib-count"></small></h1>
+    <div class="scroller" id="lib-grid"></div>
+  </section>
+
+  <!-- PLAYLIST -->
+  <!-- PLAYLIST BUILDER: your playlist on the left, suggestions and search on the right -->
+  <section class="view" id="v-builder" hidden>
+    <h1 class="vh st"><span class="title" data-title="BUILD"></span><small id="bd-sub"></small></h1>
+    <div class="bd-cols">
+      <div class="bd-pane st" id="bd-left">
+        <div class="bd-top">
+          <label class="bd-namebox"><input id="bd-name" type="text" placeholder="Name your playlist" autocomplete="off" spellcheck="false"></label>
+          <span class="bd-stats" id="bd-stats"></span>
+        </div>
+        <div class="tracks scroller bd-list" id="bd-list"></div>
+        <div class="empty bd-empty" id="bd-empty">ADD SONGS FROM THE RIGHT</div>
+        <div class="bd-actions" id="bd-actions">
+          <button class="chip" data-a="save" data-icon="check">SAVE</button>
+          <button class="chip" data-a="spread" data-icon="artist">SPREAD ARTISTS</button>
+          <button class="chip" data-a="shuffle" data-icon="shuffle">SHUFFLE</button>
+          <button class="chip" data-a="undo" data-icon="refresh">UNDO</button>
+          <button class="chip" data-a="clear" data-icon="plus">NEW</button>
+        </div>
+      </div>
+      <div class="bd-pane st" id="bd-right">
+        <label class="bd-search"><span data-icon="search"></span><input id="bd-q" type="text" placeholder="Search songs and artists…" autocomplete="off" spellcheck="false"></label>
+        <div class="s-tabs bd-moods" id="bd-moods"></div>
+        <div class="bd-h"><span id="bd-rtitle">SUGGESTED</span><button class="chip" data-icon="refresh" id="bd-more">MORE IDEAS</button></div>
+        <div class="tracks scroller bd-sugg" id="bd-sugg"></div>
+        <div class="empty bd-empty" id="bd-sempty" hidden>FINDING SONGS…</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-playlist" hidden>
+    <div class="pl-hero st">
+      <div class="pl-cover" id="pl-cover"></div>
+      <div class="pl-meta">
+        <span class="kind" id="pl-kind">PLAYLIST</span>
+        <h1 id="pl-name"></h1>
+        <p id="pl-info"></p>
+        <div class="tags" id="pl-tags"></div>
+        <div class="pl-actions">
+          <button class="chip" id="pl-play" data-icon="play">PLAY ALL</button>
+          <button class="chip" id="pl-shuffle" data-icon="shuffle">SHUFFLE</button>
+          <button class="chip" id="pl-rename" data-icon="edit">EDIT</button>
+          <button class="chip" id="pl-share" data-icon="share">SHARE</button>
+          <button class="chip" id="pl-build" data-icon="listAdd">BUILD</button>
+          <button class="chip" id="pl-tools" data-icon="tools">TOOLS</button>
+          <button class="chip danger" id="pl-delete" data-icon="trash">DELETE</button>
+        </div>
+      </div>
+    </div>
+    <div class="tracks scroller" id="pl-tracks"></div>
+    <div class="notice" id="pl-notice" hidden></div>
+  </section>
+
+  <!-- ALBUM -->
+  <section class="view" id="v-album" hidden>
+    <div class="pl-hero st">
+      <div class="pl-cover" id="al-cover"></div>
+      <div class="pl-meta">
+        <span class="kind" id="al-kind">ALBUM</span>
+        <h1 id="al-name"></h1>
+        <p id="al-info"></p>
+        <div class="pl-actions">
+          <button class="chip" id="al-play" data-icon="play">PLAY</button>
+          <button class="chip" id="al-save" data-icon="heart">SAVE</button>
+          <button class="chip" id="al-artist" data-icon="artist">ARTIST</button>
+          <button class="chip" id="al-share" data-icon="share">SHARE</button>
+        </div>
+      </div>
+    </div>
+    <div class="tracks scroller" id="al-tracks"></div>
+  </section>
+
+  <!-- ARTIST -->
+  <section class="view" id="v-artist" hidden>
+    <div class="pl-hero ar-hero st">
+      <div class="pl-cover ar-photo" id="ar-photo"></div>
+      <div class="pl-meta">
+        <span class="kind">ARTIST</span>
+        <h1 id="ar-name"></h1>
+        <p id="ar-info"></p>
+        <div class="pl-actions">
+          <button class="chip" id="ar-play" data-icon="play">PLAY</button>
+          <button class="chip" id="ar-follow" data-icon="plus">FOLLOW</button>
+          <button class="chip" id="ar-share" data-icon="share">SHARE</button>
+        </div>
+      </div>
+    </div>
+    <div class="scroller ar-grid" id="ar-grid"></div>
+  </section>
+
+  <!-- LYRICS -->
+  <section class="view" id="v-lyrics" hidden>
+    <h1 class="vh st"><span class="title" data-title="LYRICS"></span><small id="ly-song"></small></h1>
+    <div class="ly-box st" id="ly-box"><div class="ly-lines" id="ly-lines"></div></div>
+    <div class="ly-credit">Lyrics from LRCLIB</div>
+  </section>
+
+  <!-- SEARCH -->
+  <section class="view" id="v-search" hidden>
+    <div class="search-bar st" id="search-bar">
+      <span class="lbl title" data-title="FIND" data-kind="tag"></span>
+      <label class="field"><input id="q" type="text" placeholder="Songs, artists, albums…" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div class="s-tabs st" id="s-tabs">
+      <button data-t="track" class="on">SONGS</button><button data-t="album">ALBUMS</button><button data-t="artist">ARTISTS</button><button data-t="playlist">PLAYLISTS</button><button data-t="lyrics">LYRICS</button>
+    </div>
+    <div class="results scroller" id="search-results"></div>
+    <div class="empty" id="search-empty">TYPE TO SEARCH</div>
+  </section>
+
+  <!-- QUEUE -->
+  <section class="view" id="v-queue" hidden>
+    <h1 class="vh st"><span class="title" data-title="QUEUE"></span><small id="q-count"></small></h1>
+    <div class="q-wrap">
+      <div class="q-now st" id="q-now">
+        <span class="lbl">NOW PLAYING</span>
+        <div class="art" id="q-art"></div>
+        <div class="t" id="q-title"></div>
+        <div class="a" id="q-artist"></div>
+      </div>
+      <div class="q-list scroller" id="q-list"></div>
+    </div>
+  </section>
+
+  <!-- OUTPUT -->
+  <section class="view" id="v-output" hidden>
+    <h1 class="vh st"><span class="title" data-title="DEVICES"></span></h1>
+    <div class="out-sub st" id="out-sub"></div>
+    <div class="scroller" id="out-grid"></div>
+  </section>
+
+  <!-- DJ -->
+  <section class="view" id="v-dj" hidden>
+    <h1 class="vh st"><span class="title" data-title="DJ"></span><small id="dj-status">OFF AIR</small></h1>
+    <div class="dj-wrap">
+      <div class="dj-deck st">
+        <div class="vinyl"><div class="grooves"></div><div class="label" id="dj-label"></div><div class="hole"></div></div>
+        <div class="tonearm"></div>
+      </div>
+      <div class="dj-side">
+        <div class="dj-say st"><span id="dj-say"></span></div>
+        <div class="scroller dj-actions" id="dj-actions"></div>
+        <div class="dj-segs st" id="dj-segs"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="view" id="v-history" hidden>
+    <h1 class="vh st"><span class="title" data-title="HISTORY"></span><small id="hist-count"></small></h1>
+    <div class="tracks scroller" id="hist-list"></div>
+  </section>
+
+  <!-- STATS: imported Spotify history, Last.fm or Cadenza's own listening history -->
+  <section class="view" id="v-stats" hidden>
+    <h1 class="vh st"><span class="title" data-title="STATS"></span><small id="st-range"></small></h1>
+    <div class="s-tabs st" id="st-tabs"><button data-r="7" class="on">THIS WEEK</button><button data-r="30">THIS MONTH</button><button data-r="365">THIS YEAR</button><button data-r="0">ALL TIME</button><span class="st-gap"></span><button id="st-source" hidden></button><button id="st-import">+ IMPORT</button></div>
+    <div class="st-tiles st" id="st-tiles"></div>
+    <div class="st-cols">
+      <div class="st-left st">
+        <div class="st-h">TOP ARTISTS</div>
+        <div class="st-artists" id="st-artists"></div>
+        <div class="st-h">WHEN YOU LISTEN</div>
+        <div class="st-hours" id="st-hours"></div>
+      </div>
+      <div class="st-right st">
+        <div class="st-h">TOP SONGS</div>
+        <div class="tracks scroller" id="st-songs"></div>
+      </div>
+    </div>
+    <div class="empty" id="st-empty" hidden></div>
+  </section>
+
+  <!-- FRIENDS: your Last.fm friends and how close your taste is -->
+  <section class="view" id="v-friends" hidden>
+    <h1 class="vh st"><span class="title" data-title="FRIENDS"></span><small id="fr-sub"></small></h1>
+    <div class="st-cols">
+      <div class="st-left st">
+        <div class="st-h" id="fr-h">TASTE MATCH</div>
+        <div class="st-tiles fr-tiles" id="fr-tiles"></div>
+        <div class="st-h">YOU BOTH LOVE</div>
+        <div class="st-artists" id="fr-shared"></div>
+        <div class="st-h">THEIR TOP ARTISTS</div>
+        <div class="st-artists" id="fr-top"></div>
+      </div>
+      <div class="st-right st">
+        <div class="st-h">FRIENDS</div>
+        <div class="tracks scroller" id="fr-list"></div>
+      </div>
+    </div>
+    <div class="empty" id="fr-empty" hidden></div>
+  </section>
+
+  <!-- TASTE: what autoplay has learned about you, and the controls to correct it -->
+  <section class="view" id="v-taste" hidden>
+    <h1 class="vh st"><span class="title" data-title="YOUR TASTE"></span><small id="tz-sub"></small></h1>
+    <div class="st-tiles st" id="tz-tiles"></div>
+    <div class="st-cols">
+      <div class="st-left st tz-scroll">
+        <div class="st-artists tz-left" id="tz-left"></div>
+      </div>
+      <div class="st-right st tz-scroll">
+        <div class="st-h">CONTROLS</div>
+        <div class="tracks" id="tz-list"></div>
+        <div class="st-h">BY TIME OF DAY</div>
+        <div class="tz-times" id="tz-times"></div>
+        <div class="st-h" id="tz-wh">WHAT MATTERS TO YOU</div>
+        <div class="st-artists" id="tz-weights"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMMANDS: every shortcut -->
+  <section class="view" id="v-commands" hidden>
+    <h1 class="vh st"><span class="title" data-title="COMMANDS"></span><small>EVERY SHORTCUT · ⏎ RUNS IT</small></h1>
+    <div class="scroller" id="cmd-list"></div>
+  </section>
+
+  <!-- EQUALIZER -->
+  <section class="view" id="v-eq" hidden>
+    <h1 class="vh st"><span class="title" data-title="EQUALIZER"></span><small id="eq-status"></small></h1>
+    <div class="eq-presets st" id="eq-presets"></div>
+    <div class="eq-board st" id="eq-board"></div>
+    <div class="eq-foot st">
+      <button class="chip" id="eq-toggle" data-icon="check">EQ ON</button>
+      <button class="chip" id="eq-reset" data-icon="refresh">FLAT</button>
+      <span class="eq-note" id="eq-note"></span>
+    </div>
+  </section>
+
+  <!-- SYSTEM -->
+  <section class="view" id="v-system" hidden>
+    <h1 class="vh st"><span class="title" data-title="SYSTEM"></span><small id="sys-sub"></small></h1>
+    <div class="scroller" id="sys-list"></div>
+    <div id="sys-log" class="st"><div class="h" id="sys-log-h">AUDIO ENGINE</div><pre id="sys-log-body"></pre></div>
+  </section>
+
+  <!-- SETUP (first run) -->
+  <section class="view" id="v-setup" hidden>
+    <h1 class="vh st"><span class="title" data-title="WELCOME"></span><small>LET'S CONNECT SPOTIFY</small></h1>
+    <div class="setup-step st"><span class="num">1</span><div class="body">Make a free Spotify developer app: <button class="setup-btn" id="setup-dash">OPEN SPOTIFY'S DASHBOARD</button><br>Press <b>Create app</b> and give it any name. Under <b>Redirect URIs</b> add <code id="setup-uri">http://127.0.0.1:8888</code> <button class="setup-btn" id="setup-copy">COPY</button>, tick <b>Web API</b>, and save. (An app you made for spotify-qt works too.)</div></div>
+    <div class="setup-step st"><span class="num">2</span><div class="body">Open the app's settings and copy its <b>Client ID</b> into here. <span id="setup-check"></span><input id="setup-cid" placeholder="Paste Client ID" spellcheck="false" autocomplete="off"></div></div>
+    <div class="setup-step st"><span class="num">3</span><div class="body">Log in. Your browser opens twice: once for Cadenza and once for its player. Approve both, then come back here. You need Spotify Premium.</div></div>
+    <button class="big-btn st" id="setup-go">LOG IN</button>
+    <div id="setup-msg"></div>
+  </section>
+</main>
+
+<aside id="now">
+  <div class="np-tag"><span class="k title" data-title="NOW PLAYING" data-kind="tag"></span><span class="v" id="np-device">—</span><button class="np-like" id="np-like" title="Like (L)" data-icon="heart"></button></div>
+  <div class="art-wrap" id="np-artwrap">
+    <div class="art polaroid" id="np-art"><div class="photo" id="np-photo"></div><div class="pcap" id="np-pcap"></div><i class="tape"></i></div>
+    <div class="state" id="np-state">❚❚ PAUSED</div>
+  </div>
+  <div class="np-text" id="np-text">
+    <div class="np-title" id="np-title">Nothing playing</div>
+    <div class="np-artist" id="np-artist"></div>
+    <div class="np-album" id="np-album"></div>
+    <div class="progress"><span class="t" id="np-pos">0:00</span><div class="bar"><div class="fill" id="np-fill"></div></div><span class="t" id="np-dur">0:00</span></div>
+    <div class="progress vol"><span class="t">VOL</span><div class="bar vbar" id="np-vol"><div class="fill" id="np-volfill"></div></div><span class="t" id="np-volv">–</span></div>
+  </div>
+  <div class="np-ctrl" id="np-ctrl">
+    <button data-c="shuffle" title="Shuffle (⌘S)"></button>
+    <button data-c="previous" title="Previous (⌘←)"></button>
+    <button data-c="toggle" class="main" title="Play / Pause (Space)"></button>
+    <button data-c="next" title="Next (⌘→)"></button>
+    <button data-c="repeat" title="Repeat (⌘R)"></button>
+  </div>
+</aside>
+
+<div id="scrim"></div>
+<aside id="drawer">
+  <div class="panel"></div>
+  <div class="content">
+    <h2 id="drawer-title">ADD TO<br>PLAYLIST</h2>
+    <div class="what" id="drawer-what"></div>
+    <div class="scroller" id="drawer-list"></div>
+  </div>
+</aside>
+
+<div id="modal">
+  <div class="box">
+    <h3 id="modal-title"></h3>
+    <p id="modal-text"></p>
+    <input id="modal-input" type="text" spellcheck="false" autocomplete="off">
+    <div id="modal-fields"></div>
+    <div class="btns"><button id="modal-ok">OK</button><button id="modal-cancel">CANCEL</button></div>
+  </div>
+</div>
+
+<div id="palette">
+  <div class="pal-box">
+    <div class="pal-in"><span class="pal-k">⌘K</span><input id="pal-q" type="text" placeholder="Anything: a song, a setting, a page, an action…" autocomplete="off" spellcheck="false"></div>
+    <div class="scroller" id="pal-list"></div>
+    <div class="pal-foot"><b>⏎</b> run  <b>⇧⏎</b> shuffle a playlist · queue a song  <b>esc</b> close</div>
+  </div>
+</div>
+
+<div id="stage" hidden>
+  <div class="sg-bg" id="sg-bg"></div>
+  <div class="sg-fx"></div>
+  <div class="sg-top"><span class="sg-brand">STAGE</span><button class="sg-exit" id="sg-exit" type="button">ESC · EXIT</button></div>
+  <div class="sg-main">
+    <div class="sg-artwrap"><div class="sg-art" id="sg-art"></div></div>
+    <div class="sg-info">
+      <div class="sg-title" id="sg-title"></div>
+      <div class="sg-artist" id="sg-artist"></div>
+      <div class="sg-album" id="sg-album"></div>
+      <div class="sg-lyrics" id="sg-lyrics"><div class="prev"></div><div class="cur"></div><div class="next"></div></div>
+    </div>
+  </div>
+  <canvas id="sg-viz"></canvas>
+  <div class="sg-bar"><span id="sg-pos">0:00</span><div class="sg-track"><i id="sg-fill"></i></div><span id="sg-dur">0:00</span></div>
+  <div class="sg-hint">SPACE PLAY / PAUSE  ·  ⌘← ⌘→ SKIP  ·  L LIKE  ·  ESC OR F TO LEAVE</div>
+</div>
+
+<div id="sweep"><i class="a"></i><i class="b"></i><i class="c"></i><i class="cover"></i></div>
+<div id="keys"></div>
+<div id="toast"></div>
+
+<script src="themes/themes.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cadenza",
+  "version": "1.0.0",
+  "identifier": "io.github.chedd4rr.cadenza",
+  "build": {
+    "frontendDist": "../Resources/web"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval' cadenza-files: http://cadenza-files.localhost",
+        "worker-src": "'self' blob:",
+        "connect-src": "'self' ipc: http://ipc.localhost cadenza-files: http://cadenza-files.localhost",
+        "img-src": "'self' https: data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "media-src": "'self' data: blob:",
+        "object-src": "'none'",
+        "frame-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
+      }
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Music",
+    "shortDescription": "A Spotify client with its own sound engine",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libasound2"
+        ]
+      }
+    },
+    "resources": {
+      "librespot-src/LICENSE": "licenses/librespot-LICENSE.txt"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": ""
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "cadenza"
+        ]
+      }
+    }
+  }
+}

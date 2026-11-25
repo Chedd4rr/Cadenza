@@ -1,0 +1,39 @@
+Report which file is playing and what the loudness setting does to it.
+
+librespot knows which file Spotify sends for each song (Ogg Vorbis 320 kbps, 160, MP3...) and how much it
+raises or lowers the song for loudness normalisation, but it doesn't say so anywhere Cadenza can read.
+Two log lines say it, each starting "Cadenza:" and naming the song, which Cadenza reads for the signal path
+panel on the EQ page. Nothing about how the music plays changes. librespot.sh applies this file.
+
+diff --git a/playback/src/player.rs b/playback/src/player.rs
+index 19ee182..4a01517 100644
+--- a/playback/src/player.rs
++++ b/playback/src/player.rs
+@@ -1173,6 +1173,9 @@ impl PlayerTrackLoader {
+                 NormalisationData::default()
+             });
+ 
++            // Which file Spotify is actually sending (Cadenza patch: shown in Cadenza's signal path).
++            info!("Cadenza: file <{}> {:?}", audio_item.uri, format);
++
+             let mut decoder = match decoder_type {
+                 Ok(decoder) => decoder,
+                 Err(e) if is_cached => {
+@@ -1925,6 +1928,17 @@ impl PlayerInternal {
+         };
+         let normalisation_factor =
+             NormalisationData::get_factor(&config, loaded_track.normalisation_data);
++        // What the loudness setting does to this song (Cadenza patch: shown in Cadenza's signal path).
++        if config.normalisation {
++            info!(
++                "Cadenza: playing <{}> loudness {:+.2} dB ({:?})",
++                loaded_track.audio_item.uri,
++                ratio_to_db(normalisation_factor),
++                config.normalisation_type
++            );
++        } else {
++            info!("Cadenza: playing <{}> loudness off", loaded_track.audio_item.uri);
++        }
+ 
+         if start_playback {
+             self.ensure_sink_running();
